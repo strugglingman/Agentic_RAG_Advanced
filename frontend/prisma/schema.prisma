@@ -1,0 +1,21 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider      = "prisma-client-js"
+  // include both so it works on Windows locally AND in Alpine (musl) Docker
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  name         String?
+  role         String   @default("staff")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  dept         String?
+}

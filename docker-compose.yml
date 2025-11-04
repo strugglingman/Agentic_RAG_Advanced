@@ -1,0 +1,23 @@
+version: '3.9'
+services:
+  backend:
+    build: ./backend
+    env_file: ./backend/.env
+    ports: ["5001:5001"]
+    volumes:
+      - ./backend/uploads:/app/uploads
+      - ./backend/chroma_db:/app/chroma_db
+
+  frontend:
+    build: ./frontend
+    ports: ["3000:3000"]
+    environment:
+      - FLASK_URL=http://backend:5001
+      - NEXTAUTH_URL=http://localhost:3000
+      - NEXTAUTH_SECRET=this is a test secret please change
+      - DATABASE_URL=postgresql://chatbot_user:wangting1@host.docker.internal:5432/chatbot?schema=chatbot
+      - AUTH_TRUST_HOST=true
+    depends_on:
+      - backend
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

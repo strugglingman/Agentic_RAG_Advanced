@@ -1,0 +1,60 @@
+# ---- Node / Next.js ----
+node_modules/
+.next/
+out/
+dist/
+build/
+# Next auth session + generated stuff (if any)
+.vercel/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.venv/
+venv/
+.mypy_cache/
+.pytest_cache/
+
+# ---- Environment / Secrets ----
+.env*
+*.env.local
+.env.local
+.env.development.local
+.env.production.local
+
+# ---- Databases / Vector stores ----
+backend/chroma_db/
+backend/uploads/
+*.sqlite3
+
+# If you want to keep uploads/chroma structure, add placeholder .keep files and remove from ignore.
+
+# ---- Logs / Reports (optional ignore) ----
+*.log
+report/*.json
+coverage/
+.coverage
+coverage.xml
+
+# ---- OS / Editor ----
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# ---- Docker artifacts ----
+**/*~
+
+# ---- Misc ----
+*.tmp
+*.swp
+materials/*
+
+# Uncomment if you generate large model files locally
+# models/
+
+# Keep README or schema files even in ignored folders by adding ! exceptions if needed.
