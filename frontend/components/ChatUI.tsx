@@ -17,7 +17,7 @@ const tstr = (ts?: number) => (ts ? new Date(ts).toLocaleTimeString() : '');
 
 export default function ChatPage() {
   const { selectedExts, selectedTags, customTags } = useFilters();
-  const { messages, setMessages, contexts, setContexts } = useChat();
+  const { messages, setMessages, contexts, setContexts, clearChat } = useChat();
   const [showContexts, setShowContexts] = useState(false);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
@@ -143,8 +143,23 @@ export default function ChatPage() {
             <div className="grid h-7 w-18 place-items-center rounded-md bg-neutral-900 text-xs font-semibold text-white">Chatbot</div>
             <div className="text-sm font-semibold">Assistant</div>
           </div>
-          <div className={cls('text-xs', busy ? 'text-blue-600' : 'text-neutral-500')}>
-            {busy ? 'Generating...' : 'Ready'}
+          <div className="flex items-center gap-3">
+            {messages.length > 0 && (
+              <button
+                onClick={() => {
+                  if (confirm('Clear chat history? This cannot be undone.')) {
+                    clearChat();
+                  }
+                }}
+                className="text-xs text-neutral-500 hover:text-red-600 transition"
+                disabled={busy}
+              >
+                Clear
+              </button>
+            )}
+            <div className={cls('text-xs', busy ? 'text-blue-600' : 'text-neutral-500')}>
+              {busy ? 'Generating...' : 'Ready'}
+            </div>
           </div>
         </header>
         {/* Conversation */}
