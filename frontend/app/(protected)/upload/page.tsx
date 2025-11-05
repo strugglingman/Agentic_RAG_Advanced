@@ -1,6 +1,5 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
-import { useSession } from 'next-auth/react';
 
 type FileRow = {
   file_id: string;     // backend response key
@@ -16,7 +15,6 @@ type FileRow = {
 const PRESET_TAGS = ['sentimental', 'ghost', 'finance', 'documentary', 'fiction', 'policy', 'hr'];
 
 export default function UploadPage() {
-  const { data, status } = useSession();
   const [serverFiles, setServerFiles] = useState<FileRow[]>([]);
   const [picked, setPicked] = useState<File[]>([]);
   const [busy, setBusy] = useState(false);

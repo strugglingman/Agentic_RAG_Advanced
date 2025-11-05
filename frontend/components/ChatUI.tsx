@@ -2,23 +2,26 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useFilters } from './filters-context';
+import { useChat } from './chat-context';
 import ShimmerBubble from './ShimmerBubble';
 
 type Role = 'user' | 'assistant';
 type Msg = { role: Role; content: string; ts?: number };
+type Context = { bm25: number; chunk: string; chunk_id: string; dept_id: string;
+  ext: string; file_for_user: boolean; file_id: string; hybrid: number; page: number; 
+  rerank: number; sem_sim: number; size_kb: number; source: string; tags: string; 
+  upload_at: string; uploaded_at_ts: number; user_id: string};
 
 const cls = (...s: Array<string | false | null | undefined>) => s.filter(Boolean).join(' ');
 const tstr = (ts?: number) => (ts ? new Date(ts).toLocaleTimeString() : '');
 
 export default function ChatPage() {
   const { selectedExts, selectedTags, customTags } = useFilters();
-
-  // chat state
-  const [messages, setMessages] = useState<Msg[]>([]);
+  const { messages, setMessages, contexts, setContexts } = useChat();
+  const [showContexts, setShowContexts] = useState(false);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
 
-  // ui
   const scrollRef = useRef<HTMLDivElement>(null);
   const streamingRef = useRef(false);
 
@@ -27,6 +30,8 @@ export default function ChatPage() {
     const el = scrollRef.current;
     if (!el) return;
     el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+
+    console.log(messages);
   }, [messages.length]);
 
   async function* streamChat(body: any) {
@@ -83,17 +88,26 @@ export default function ChatPage() {
       filters: filters_payload.length ? filters_payload : undefined
     };
 
+    let startContext = false;
+    let contextStr = '';
     try {
       for await (const chunk of streamChat(payload)) {
-        setMessages(curr => {
-          const copy = [...curr];
-          if (!copy.length) return copy;
-          copy[copy.length - 1] = {
-            ...copy[copy.length - 1],
-            content: copy[copy.length - 1].content + chunk,
-          };
-          return copy;
-        });
+        if (chunk.includes('__CONTEXT__:') || startContext) {
+          startContext = true;
+          contextStr += chunk;
+        }
+
+        if (!startContext) {
+          setMessages(curr => {
+            const copy = [...curr];
+            if (!copy.length) return copy;
+            copy[copy.length - 1] = {
+              ...copy[copy.length - 1],
+              content: copy[copy.length - 1].content + chunk,
+            };
+            return copy;
+          });
+        }
       }
     } catch (e: any) {
       setMessages(curr => {
@@ -103,11 +117,20 @@ export default function ChatPage() {
         return copy;
       });
     } finally {
+      if (contextStr) {
+        contextStr = contextStr.substring(contextStr.indexOf('__CONTEXT__:') + '__CONTEXT__:'.length).trim();
+        try {
+          const contextRaw = JSON.parse(contextStr);
+          const contextArr = Array.isArray(contextRaw) ? contextRaw : [];
+          const isContext = (o: any): o is Context => o && typeof o === 'object' && 'chunk' in o && 'source' in o && 'page' in o;
+          setContexts(contextArr.filter(isContext));
+        } catch (e) {
+          console.error('Failed to parse context JSON:', e);
+        }
+      }
+
       streamingRef.current = false;
       setBusy(false);
-
-      console.log('11111111111111');
-      console.log(messages);
     }
   }
 
@@ -159,6 +182,26 @@ export default function ChatPage() {
               ))
             )
             }
+            {contexts.length > 0 && (
+              <div className="mt-8">
+                <button
+                  type="button"
+                  onClick={() => setShowContexts(s => !s)}
+                  className="flex items-center gap-2 rounded-lg border px-3 py-2 text-sm font-medium bg-neutral-50 hover:bg-neutral-100 transition"
+                  aria-expanded={showContexts}
+                >
+                  <span>{showContexts ? '▾' : '▸'}</span>
+                  <span>Sources ({contexts.length})</span>
+                </button>
+                {showContexts && (
+                  <div className="mt-3 space-y-3">
+                    {contexts.map((c, idx) => (
+                      <ContextCard key={c.chunk_id || idx} context={c} index={idx} />
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
             {busy && (
               <div className="self-start">
                   <ShimmerBubble />
@@ -196,6 +239,69 @@ export default function ChatPage() {
           </form>
         </footer>
       </div>
+    </div>
+  );
+}
+
+// Individual collapsible context card
+function ContextCard({ context, index }: { context: Context; index: number }) {
+  const [open, setOpen] = useState(false);
+  // Build a compact score line
+  const scoreLine = useMemo(() => {
+    const parts: string[] = [];
+    if (typeof context.sem_sim === 'number') parts.push(`sem ${context.sem_sim.toFixed(2)}`);
+    if (typeof context.hybrid === 'number') parts.push(`hyb ${context.hybrid.toFixed(2)}`);
+    if (typeof context.rerank === 'number' && context.rerank > 0) parts.push(`rerank ${context.rerank.toFixed(2)}`);
+    return parts.join(' • ');
+  }, [context]);
+
+  const preview = useMemo(() => {
+    const text = context.chunk.replace(/\s+/g, ' ').trim();
+    const MAX = open ? 1200 : 320;
+    return text.length > MAX ? text.slice(0, MAX) + '…' : text;
+  }, [context.chunk, open]);
+
+  return (
+    <div className="rounded-lg border bg-white shadow-sm">
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        className="w-full text-left px-3 py-2 flex items-start justify-between gap-3 hover:bg-neutral-50"
+        aria-expanded={open}
+      >
+        <div className="flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs font-semibold px-1.5 py-0.5 rounded bg-neutral-900 text-white">{index + 1}</span>
+            <span className="text-sm font-medium truncate max-w-[240px]" title={context.source}>{context.source}</span>
+            <span className="text-xs text-neutral-500">p{context.page}</span>
+            {scoreLine && <span className="text-xs text-neutral-400">{scoreLine}</span>}
+          </div>
+          <div className="mt-1 text-xs text-neutral-600 line-clamp-4">
+            {preview}
+          </div>
+          {context.tags && (
+            <div className="mt-1 flex flex-wrap gap-1">
+              {context.tags.split(',').filter(Boolean).slice(0, 6).map(t => (
+                <span key={t} className="text-[10px] uppercase tracking-wide bg-neutral-200 text-neutral-700 px-1.5 py-0.5 rounded">
+                  {t.trim()}
+                </span>
+              ))}
+              {context.tags.split(',').filter(Boolean).length > 6 && (
+                <span className="text-[10px] text-neutral-500">+{context.tags.split(',').filter(Boolean).length - 6} more</span>
+              )}
+            </div>
+          )}
+        </div>
+        <div className="pl-2">
+          <span className="text-xs text-neutral-500">{open ? 'Hide' : 'Expand'}</span>
+        </div>
+      </button>
+      {open && (
+        <div className="border-t px-3 py-2 bg-neutral-50">
+          <div className="text-xs font-mono text-neutral-500">Chunk ID: {context.chunk_id}</div>
+          <div className="mt-1 text-xs text-neutral-700 whitespace-pre-wrap">{context.chunk}</div>
+        </div>
+      )}
     </div>
   );
 }
