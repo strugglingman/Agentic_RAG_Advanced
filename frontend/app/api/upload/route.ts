@@ -2,6 +2,7 @@ import { cookies } from 'next/headers'
 import { getServerSession } from 'next-auth';
 import { authOptions } from "@/lib/auth";
 import { NextResponse } from 'next/server';
+import { mintServiceToken, ServiceAuthError } from '@/lib/service-auth';
 
 export const runtime = 'nodejs'
 
@@ -19,15 +20,22 @@ export async function POST(req: Request) {
     }
 
     const form = await req.formData();
-    const headers = new Headers();
-    headers.set('x-session-id', sid);
-    headers.set('x-dept-id', session.user?.dept || '');
-    headers.set('x-user-id', session.user?.email || '');
+    let token: string = "";
+    try {
+        token = mintServiceToken({ email: session?.user?.email, dept: session?.user?.dept, sid });
+    } catch (error) {
+        if (error instanceof ServiceAuthError) {
+            return NextResponse.json({ error: error.message }, { status: error.status });
+        }
+    }
     const r = await fetch(`${process.env.FLASK_URL}/upload`, {
         method: 'POST',
         body: form,
-        headers: headers,
+        headers: {
+            'Authorization': `Bearer ${token}`
+        }
     })
+
     const ct = r.headers.get('Content-Type') ?? 'application/json'
     return new Response(r.body, { status: r.status, headers: { 'Content-Type': ct } })
 }

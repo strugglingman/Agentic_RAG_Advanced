@@ -2,6 +2,7 @@ import { cookies } from 'next/headers';
 import { NextRequest, NextResponse } from 'next/server';
 import { authOptions } from "@/lib/auth";
 import { getServerSession } from 'next-auth';
+import { mintServiceToken, ServiceAuthError } from "@/lib/service-auth";
 export const runtime = 'nodejs';
 
 function getOrCreateSid() {
@@ -22,13 +23,22 @@ export async function POST(req: NextRequest) {
 
     const body = await req.json();
     const sid = getOrCreateSid();
+
+    let serviceToken: string;
+    try {
+        serviceToken = mintServiceToken({ email: session?.user?.email, dept: session?.user?.dept, sid });
+    } catch (error) {
+        if (error instanceof ServiceAuthError) {
+            return NextResponse.json({ error: error.message }, { status: error.status });
+        }
+        return NextResponse.json({ error: "Unable to mint service token" }, { status: 500 });
+    }
+
     const r = await fetch(`${process.env.FLASK_URL}/chat`, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
-            'x-session-id': sid,
-            'x-user-id': session.user?.email || '',
-            'x-dept-id': session.user?.dept || '',
+            'Authorization': `Bearer ${serviceToken}`,
         },
         body: JSON.stringify(body)
     });

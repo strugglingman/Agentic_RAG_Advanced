@@ -2,6 +2,7 @@ import { cookies } from 'next/headers'
 import { getServerSession } from 'next-auth';
 import { authOptions } from "@/lib/auth";
 import { NextResponse } from 'next/server';
+import { mintServiceToken, ServiceAuthError } from '@/lib/service-auth';
 export const runtime = 'nodejs'
 
 export async function POST(req: Request) {
@@ -18,16 +19,22 @@ export async function POST(req: Request) {
     }
 
     const body = await req.text()
+    let token: string = "";
+    try {
+        token = mintServiceToken({ email: session?.user?.email, dept: session?.user?.dept, sid });
+    } catch (error) {
+        if (error instanceof ServiceAuthError) {
+            return NextResponse.json({ error: error.message }, { status: error.status });
+        }
+    }
     const r = await fetch(
         `${process.env.FLASK_URL}/ingest`,
         {
             method: 'POST',
             body: body,
             headers: {
-                'x-session-id': sid,
                 'Content-Type': 'application/json',
-                'x-user-id': session.user?.email || '',
-                'x-dept-id': session.user?.dept || '',
+                'Authorization': `Bearer ${token}`,
             }
         },
     )

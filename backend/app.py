@@ -1,4 +1,4 @@
-import os
+import os, base64, json
 from datetime import datetime, timedelta
 import numpy as np
 from sklearn.neighbors import NearestNeighbors
@@ -7,12 +7,12 @@ from sentence_transformers import CrossEncoder
 from dotenv import load_dotenv
 from pathlib import Path
 import logging
-import csv, json
+import csv
 import re
 from docx import Document
 from openai import OpenAI
 from pypdf import PdfReader
-from flask import Flask, request, jsonify, render_template_string, redirect, url_for, session, Response
+from flask import Flask, request, jsonify, Response, g
 from werkzeug.utils import secure_filename
 import chromadb
 from chromadb.utils.embedding_functions import sentence_transformer_embedding_function
@@ -22,6 +22,8 @@ from collections import defaultdict, deque
 import uuid, time
 from time import sleep
 from typing import Optional
+import jwt
+from functools import wraps
 
 load_dotenv()
 EMBED_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"  # fast, ~22MB
@@ -50,6 +52,9 @@ FOLDER_SHARED = "shared"
 DEPT_SPLIT = "|"
 dept_previous = ""
 user_previous = ""
+SERVICE_AUTH_SECRET = os.getenv("SERVICE_AUTH_SECRET", "")
+SERVICE_AUTH_ISSUER = os.getenv("SERVICE_AUTH_ISSUER", "your_service_name")
+SERVICE_AUTH_AUDIENCE = os.getenv("SERVICE_AUTH_AUDIENCE", "your_service_audience")
 
 embedding_fun = sentence_transformer_embedding_function.SentenceTransformerEmbeddingFunction(model_name=EMBED_MODEL_NAME)
 chroma_client = chromadb.PersistentClient(path=CHROMA_PATH)
@@ -105,11 +110,59 @@ def create_upload_dir(dept_id: str, user_id: str) -> str:
         return upload_dir
     except:
         return ""
-    
+
 def get_upload_dir(dept_id: str, user_id: str) -> str:
     folders = dept_id.split(DEPT_SPLIT)
     upload_dir = os.path.join("uploads", *folders, user_id)
     return upload_dir if os.path.exists(upload_dir) else ""
+
+def verify_identity():
+    if not SERVICE_AUTH_SECRET:
+        return None, ("Service Auth secret not configured.", 500)
+
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        return None, ("Missing or invalid Authorization header.", 401)
+    token = auth_header.split(" ", 1)[1].strip()
+    try:
+        claims = jwt.decode(
+            token,
+            SERVICE_AUTH_SECRET,
+            algorithms=["HS256"],
+            audience=SERVICE_AUTH_AUDIENCE,
+            issuer=SERVICE_AUTH_ISSUER,
+            options={"require": ["exp", "iat", "aud", "iss"]}
+        )
+    except Exception as e:
+        return None, (f"Invalid token: {str(e)}", 401)
+
+    email = claims.get("email", "")
+    if not email:
+        return None, ("Token missing required 'email' claim.", 403)
+    dept = claims.get("dept", "")
+    if not dept:
+        return None, ("Token missing required 'dept' claim.", 403)
+    sid = claims.get("sid", "")
+    if not sid:
+        return None, ("Token missing required 'sid' claim.", 403)
+
+    identity = {
+        "user_id": email,
+        "dept_id": dept,
+        "sid": sid
+    }
+
+    return identity, None
+
+def require_identity(fn):
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        identity, err = verify_identity()
+        if err:
+            return jsonify({"error": err[0]}), err[1]
+        g.identity = identity
+        return fn(*args, **kwargs)
+    return wrapper
 
 def build_prompt(query, ctx, use_ctx=False):
     if use_ctx:
@@ -319,7 +372,12 @@ def ingest_one(info: Optional[dict]) -> Optional[str]:
 
     return info.get("file_id", "") if docs else None
 
-def build_where():
+def build_where(dept_id, user_id):
+    if not dept_id:
+        raise ValueError("No organization ID provided in headers")
+    if not user_id:
+        raise ValueError("No user ID provided in headers")
+
     payload = request.get_json(force=True)
     filters = payload.get('filters', [])
     exts = next((f.get("exts") for f in filters if "exts" in f and isinstance(f.get("exts"), list)), None)
@@ -333,15 +391,8 @@ def build_where():
             where_clauses.append({"$or": [{"ext": ext} for ext in exts]})
 
     # build dept_id clause
-    dept_id = request.headers.get('x-dept-id', '')
-    if not dept_id:
-        raise ValueError("No organization ID provided in headers")
     where_clauses.append({"dept_id": dept_id})
-
     # build user_id clause if file_for_user is specified
-    user_id = request.headers.get('x-user-id', '')
-    if not user_id:
-        raise ValueError("No user ID provided in headers")
     where_clauses.append({ "$or": [
         {"file_for_user": False},
         {"user_id": user_id}
@@ -487,16 +538,17 @@ def retrieve(query, dept_id="", user_id="", top_k=TOP_K, where: dict | None = No
         return [], str(e)
 
 @app.post('/chat')
+@require_identity
 def chat():
-    sid = request.headers.get('x-session-id', 'anon')
-    dept_id = request.headers.get('x-dept-id', '')
-    user_id = request.headers.get('x-user-id', '')
+    dept_id = g.identity.get('dept_id', '')
+    user_id = g.identity.get('user_id', '')
     if not dept_id or not user_id:
         return jsonify({"error": "No organization ID or user ID provided in headers"}), 400
 
     payload = request.get_json(force=True)
     msgs = payload.get('messages', [])
 
+    sid = g.identity.get('sid', '')
     if sid not in SESSIONS:
         SESSIONS[sid] = deque(maxlen=2 * MAX_HISTORY)
     latest_user_msg = None
@@ -511,7 +563,7 @@ def chat():
     query = latest_user_msg.get("content").strip()
     try:
         # build where
-        where = build_where()
+        where = build_where(dept_id, user_id)
         print(f"Where clause: {where}")
         ctx, err = retrieve(query, dept_id=dept_id, user_id=user_id, top_k=TOP_K, where=where, use_hybrid=USE_HYBRID, use_reranker=USE_RERANKER)
         if err:
@@ -563,15 +615,15 @@ def chat():
         return jsonify({"error": str(e)}), 500
 
 @app.post('/upload')
+@require_identity
 def upload():
     if not request.files and not request.files.get("file"):
         return jsonify({"error": "No file part in the request"}), 400
-    dept_id = request.headers.get('x-dept-id', '')
-    if not dept_id:
-        return jsonify({"error": "No organization ID provided"}), 400
-    user_id = request.headers.get('x-user-id', '')
-    if not user_id:
-        return jsonify({"error": "No user ID provided"}), 400
+
+    user_id = g.identity.get("user_id", "")
+    dept_id = g.identity.get("dept_id", "")
+    if not user_id or not dept_id:
+        return jsonify({"error": "No user ID or organization ID provided"}), 400
 
     f = request.files['file']
     filename = secure_filename(f.filename)
@@ -615,6 +667,7 @@ def upload():
     return jsonify({"msg": "File uploaded successfully"}), 200
 
 @app.post('/ingest')
+@require_identity
 def ingest():
     body = request.get_json(force=True)
     file_id = body.get("file_id", "") if body else ""
@@ -623,10 +676,10 @@ def ingest():
         return jsonify({"message": "No correct file specified"}), 400
     if file_path != "ALL" and not os.path.exists(file_path):
         return jsonify({"message": "No correct file path specified"}), 400
-    dept_id = request.headers.get('x-dept-id', '')
+    dept_id = g.identity.get('dept_id', '')
     if not dept_id:
         return jsonify({"error": "No organization ID provided"}), 400
-    user_id = request.headers.get('x-user-id', '')
+    user_id = g.identity.get('user_id', '')
     if not user_id:
         return jsonify({"error": "No user ID provided"}), 400
 
@@ -674,11 +727,12 @@ def ingest():
     return jsonify({"message": msg}), 200
 
 @app.get('/files')
+@require_identity
 def list_files():
-    dept_id = request.headers.get('x-dept-id', '')
+    dept_id = g.identity.get('dept_id', '')
     if not dept_id:
         return jsonify({"error": "No organization ID provided"}), 400
-    user_id = request.headers.get('x-user-id', '')
+    user_id = g.identity.get('user_id', '')
     if not user_id:
         return jsonify({"error": "No user ID provided"}), 400
 
@@ -709,16 +763,6 @@ def list_files():
 
 @app.get('/org-structure')
 def org_structure():
-    dept_id = request.headers.get('x-dept-id', '')
-    if not dept_id:
-        return jsonify({"error": "No organization ID provided"}), 400
-    user_id = request.headers.get('x-user-id', '')
-    if not user_id:
-        return jsonify({"error": "No user ID provided"}), 400
-
-    if not os.path.exists(ORG_STRUCTURE_FILE):
-        return jsonify({"error": "Organization structure file not found"}), 404
-
     try:
         with open(ORG_STRUCTURE_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
