@@ -72,6 +72,10 @@ export default function UploadPage() {
     try {
       // sequential to be gentle on the server; switch to Promise.all for parallel
       for (const f of picked) {
+        if (f.size > (Number(process.env.NEXT_PUBLIC_UPLOAD_FILE_LIMIT_MB) || 25) * 1024 * 1024) {
+          throw new Error(`File must be < 25MB: ${f.name}`);
+        }
+
         const form = new FormData();
         form.append('file', f);
         form.append('file_for_user', fileForUser ? '1' : '0');
@@ -81,8 +85,12 @@ export default function UploadPage() {
           body: form,
         });
         if (!r.ok) {
-          const txt = await r.text().catch(() => '');
-          throw new Error(txt || `Upload failed (${r.status})`);
+          if(r.status === 413) {
+            throw new Error(`File too large: ${f.name}`);
+          } else {
+            const txt = await r.text().catch(() => '');
+            throw new Error(txt || `Upload failed (${r.status})`);
+          }
         }
       }
       await refresh();

@@ -1,8 +1,6 @@
-import os, base64, json
-from datetime import datetime, timedelta
+import os, json, magic
+from datetime import datetime
 import numpy as np
-from sklearn.neighbors import NearestNeighbors
-from sentence_transformers import SentenceTransformer
 from sentence_transformers import CrossEncoder
 from dotenv import load_dotenv
 from pathlib import Path
@@ -19,11 +17,10 @@ from chromadb.utils.embedding_functions import sentence_transformer_embedding_fu
 import hashlib
 from rank_bm25 import BM25Okapi
 from collections import defaultdict, deque
-import uuid, time
-from time import sleep
 from typing import Optional
 import jwt
 from functools import wraps
+from werkzeug.exceptions import RequestEntityTooLarge
 
 load_dotenv()
 EMBED_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"  # fast, ~22MB
@@ -55,6 +52,10 @@ user_previous = ""
 SERVICE_AUTH_SECRET = os.getenv("SERVICE_AUTH_SECRET", "")
 SERVICE_AUTH_ISSUER = os.getenv("SERVICE_AUTH_ISSUER", "your_service_name")
 SERVICE_AUTH_AUDIENCE = os.getenv("SERVICE_AUTH_AUDIENCE", "your_service_audience")
+MAX_UPLOAD_MB = float(os.getenv("MAX_UPLOAD_MB", "25"))
+UPLOAD_BASE = os.getenv("UPLOAD_BASE", "uploads")
+ALLOWED_EXTENSIONS = ""
+MIME_TYPES = ""
 
 embedding_fun = sentence_transformer_embedding_function.SentenceTransformerEmbeddingFunction(model_name=EMBED_MODEL_NAME)
 chroma_client = chromadb.PersistentClient(path=CHROMA_PATH)
@@ -69,6 +70,12 @@ SESSIONS: dict[str, deque] = defaultdict(lambda: deque(maxlen=2 * MAX_HISTORY))
 
 app = Flask(__name__)
 
+app.config["MAX_CONTENT_LENGTH"] = int(MAX_UPLOAD_MB * 1024 * 1024)
+@app.errorhandler(RequestEntityTooLarge)
+def file_too_large(e):
+    # This is for all content of the uploaded files + other http content
+    return jsonify({"error": f"Error: {str(e)}, Maximum upload size is {MAX_UPLOAD_MB} MB."}), e.code
+
 def get_reranker():
     global _reranker
     if _reranker is None:
@@ -79,6 +86,16 @@ def get_reranker():
             return None
 
     return _reranker
+
+def parse_env_param_to_list(param: str) -> list[str]:
+    try:
+        param_list = json.loads(param)
+        if isinstance(param_list, list) and all(isinstance(p, str) for p in param_list):
+            return param_list
+    except:
+        pass
+
+    return []
 
 def norm(xs):
     if not xs:
@@ -101,20 +118,55 @@ def unique_snippet(ctx, prefix=150):
 
     return out
 
+def canonical_path(base: Path, *sub_paths: str) -> Path:
+    base = base.resolve()
+    upload_path = (base / Path(*sub_paths)).resolve()
+    try:
+        upload_path.relative_to(base)
+    except ValueError:
+        raise ValueError("Attempted directory traversal in upload path")
+
+    return upload_path
+
+def validate_filename(f) -> str:
+    filename = secure_filename(f.filename)
+    # check file extension
+    if not allowed_file(filename):
+        return ""
+
+    # check mime type
+    head = f.stream.read(8192)
+    f.stream.seek(0)
+    mime = (magic.from_buffer(head, mime=True) or "").lower()
+    global MIME_TYPES
+    if not MIME_TYPES:
+        mime_types_str = os.getenv("MIME_TYPES", "[]")
+        MIME_TYPES = parse_env_param_to_list(mime_types_str)
+
+    mime_ok = any(mime.startswith(x) for x in MIME_TYPES)
+    if not mime_ok:
+        return ""
+    f.stream.seek(0)
+    return filename
+
 def create_upload_dir(dept_id: str, user_id: str) -> str:
     try:
         folders = dept_id.split(DEPT_SPLIT)
-        upload_dir = os.path.join("uploads", *folders, user_id)
-        print(f"Created upload directory: {upload_dir}")
-        os.makedirs(upload_dir, exist_ok=True)
+        upload_dir = Path(UPLOAD_BASE)
+        upload_dir = canonical_path(upload_dir, *folders, user_id)
+        upload_dir.mkdir(parents=True, exist_ok=True)
         return upload_dir
     except:
         return ""
 
 def get_upload_dir(dept_id: str, user_id: str) -> str:
     folders = dept_id.split(DEPT_SPLIT)
-    upload_dir = os.path.join("uploads", *folders, user_id)
-    return upload_dir if os.path.exists(upload_dir) else ""
+    try:
+        upload_dir = Path(UPLOAD_BASE)
+        upload_dir = canonical_path(upload_dir, *folders, user_id)
+        return str(upload_dir) if os.path.exists(str(upload_dir)) else ""
+    except:
+        return ""
 
 def verify_identity():
     if not SERVICE_AUTH_SECRET:
@@ -206,7 +258,13 @@ def get_session_history(sid, n=20):
     return [{"role": h["role"], "content": h["content"]} for h in list(SESSIONS[sid])[-n:]]
 
 def allowed_file(file_name: str) -> bool:
-    return file_name.lower().endswith((".txt", ".md", ".pdf", ".csv", ".json", ".docx"))
+    global ALLOWED_EXTENSIONS
+    if not ALLOWED_EXTENSIONS:
+        allowed_extensions_str = os.getenv("ALLOWED_EXTENSIONS", "[]")
+        ALLOWED_EXTENSIONS = parse_env_param_to_list(allowed_extensions_str)
+
+    return "." in file_name and file_name.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
+
 
 def read_text(file_path):
     ext = os.path.splitext(file_path)[1].lower()
@@ -626,9 +684,9 @@ def upload():
         return jsonify({"error": "No user ID or organization ID provided"}), 400
 
     f = request.files['file']
-    filename = secure_filename(f.filename)
-    if not allowed_file(filename):
-        return jsonify({"error": "File type not allowed"}), 400
+    filename = validate_filename(f)
+    if not filename:
+        return jsonify({"error": "File is not valid mime type or extension"}), 400
 
     file_for_user = request.form.get("file_for_user", "0")
     upload_dir = create_upload_dir(dept_id, FOLDER_SHARED)
@@ -636,7 +694,7 @@ def upload():
         upload_dir = create_upload_dir(dept_id, user_id)
     if not upload_dir:
         return jsonify({"error": "Failed to create upload directory"}), 500
-    file_path = os.path.join(upload_dir, filename)
+    file_path = canonical_path(upload_dir, filename)
     f.save(file_path)
 
     # save file meta info into file for further ingestion
@@ -648,11 +706,11 @@ def upload():
 
     file_info = {
             "file_id": hashlib.md5(f.filename.encode()).hexdigest(),
-            "file_path": file_path,
+            "file_path": str(file_path),
             "filename": filename,
-            "source": f.filename,
-            "ext": f.filename.split(".")[-1].lower(),
-            "size_kb": round(os.path.getsize(file_path) / 1024, 1),
+            "source": filename,
+            "ext": filename.rsplit(".", 1)[1].lower(),
+            "size_kb": round(os.path.getsize(str(file_path)) / 1024, 1),
             "tags": tags_str,
             "upload_at": datetime.now().isoformat(),
             "uploaded_at_ts": datetime.now().timestamp(),
@@ -661,7 +719,8 @@ def upload():
             "file_for_user": True if file_for_user == "1" else False,
             "ingested": False
     }
-    with open(os.path.join(upload_dir, f"{filename}.meta.json"), "w", encoding="utf-8") as info_f:
+    fileinfo_path = canonical_path(upload_dir, f"{filename}.meta.json")
+    with open(fileinfo_path, "w", encoding="utf-8") as info_f:
         json.dump(file_info, info_f, indent=2)
 
     return jsonify({"msg": "File uploaded successfully"}), 200
@@ -746,6 +805,7 @@ def list_files():
                 with open(os.path.join(dir_user, f), "r", encoding="utf-8") as info_f:
                     info = json.load(info_f)
                     if info.get("dept_id", "") == dept_id and ((not info.get("file_for_user", False)) or info.get("user_id") == user_id):
+                        info.pop("file_path", None)
                         files_info.append(info)
 
     # List shared files next
@@ -757,6 +817,7 @@ def list_files():
                 with open(os.path.join(dir_shared, f), "r", encoding="utf-8") as info_f:
                     info = json.load(info_f)
                     if info.get("dept_id", "") == dept_id and ((not info.get("file_for_user", False)) or info.get("user_id") == user_id):
+                        info.pop("file_path", None)
                         files_info.append(info)
 
     return jsonify({"files": files_info}), 200
@@ -777,6 +838,10 @@ def root():
 @app.get('/health')
 def health():
     return jsonify({ "status": "healthy" }), 200
+
+@app.get('/func-test')
+def func_test():
+    return list_files()
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5001, debug=True)
