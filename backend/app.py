@@ -20,7 +20,9 @@ from collections import defaultdict, deque
 from typing import Optional
 import jwt
 from functools import wraps
-from werkzeug.exceptions import RequestEntityTooLarge
+from werkzeug.exceptions import RequestEntityTooLarge, TooManyRequests
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 
 load_dotenv()
 EMBED_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"  # fast, ~22MB
@@ -56,6 +58,7 @@ MAX_UPLOAD_MB = float(os.getenv("MAX_UPLOAD_MB", "25"))
 UPLOAD_BASE = os.getenv("UPLOAD_BASE", "uploads")
 ALLOWED_EXTENSIONS = ""
 MIME_TYPES = ""
+RATE_LIMIT_STORAGE_URI = os.getenv("RATELIMIT_STORAGE_URI", "memory://")
 
 embedding_fun = sentence_transformer_embedding_function.SentenceTransformerEmbeddingFunction(model_name=EMBED_MODEL_NAME)
 chroma_client = chromadb.PersistentClient(path=CHROMA_PATH)
@@ -68,25 +71,6 @@ openAI_Client = OpenAI(api_key=OPENAI_KEY)
 _reranker = None
 SESSIONS: dict[str, deque] = defaultdict(lambda: deque(maxlen=2 * MAX_HISTORY))
 
-app = Flask(__name__)
-
-app.config["MAX_CONTENT_LENGTH"] = int(MAX_UPLOAD_MB * 1024 * 1024)
-@app.errorhandler(RequestEntityTooLarge)
-def file_too_large(e):
-    # This is for all content of the uploaded files + other http content
-    return jsonify({"error": f"Error: {str(e)}, Maximum upload size is {MAX_UPLOAD_MB} MB."}), e.code
-
-def get_reranker():
-    global _reranker
-    if _reranker is None:
-        try:
-            _reranker = CrossEncoder(RERANKER_MODEL_NAME)
-        except Exception as exc:
-            logging.warning("Failed to load reranker %s: %s", RERANKER_MODEL_NAME, exc)
-            return None
-
-    return _reranker
-
 def parse_env_param_to_list(param: str) -> list[str]:
     try:
         param_list = json.loads(param)
@@ -96,6 +80,84 @@ def parse_env_param_to_list(param: str) -> list[str]:
         pass
 
     return []
+
+def require_identity(fn):
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        identity = getattr(g, 'identity', None)
+        if not identity:
+            return jsonify({"error": "Unauthorized"}), 401
+        else:
+            user_id = identity.get('user_id', '')
+            dept_id = identity.get('dept_id', '')
+            sid = identity.get('sid', '')
+            if not user_id or not dept_id or not sid:
+                return jsonify({"error": "Unauthorized"}), 401
+        return fn(*args, **kwargs)
+    return wrapper
+
+app = Flask(__name__)
+# Set maximum upload size
+app.config["MAX_CONTENT_LENGTH"] = int(MAX_UPLOAD_MB * 1024 * 1024)
+@app.errorhandler(RequestEntityTooLarge)
+def file_too_large(e):
+    # This is for all content of the uploaded files + other http content
+    return jsonify({"error": f"Error: {str(e)}, Maximum upload size is {MAX_UPLOAD_MB} MB."}), e.code
+
+@app.before_request
+def load_identity():
+    g.identity = None
+    if not SERVICE_AUTH_SECRET:
+        return
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        return
+    token = auth_header.split(" ", 1)[1].strip()
+    try:
+        claims = jwt.decode(
+            token,
+            SERVICE_AUTH_SECRET,
+            algorithms=["HS256"],
+            audience=SERVICE_AUTH_AUDIENCE,
+            issuer=SERVICE_AUTH_ISSUER,
+            options={"require": ["exp", "iat", "aud", "iss"]}
+        )
+    except:
+        return
+
+    email = claims.get("email", "")
+    dept = claims.get("dept", "")
+    sid = claims.get("sid", "")
+    if not email or not dept or not sid:
+        return
+
+    g.identity = {
+        "user_id": email,
+        "dept_id": dept,
+        "sid": sid
+    }
+
+# Initialize the Limiter for Rate limit
+def get_limiter_key():
+    if not g.identity:
+        return get_remote_address()
+
+    return f"{g.identity.get('dept_id','')}-{g.identity.get('user_id','')}"
+
+limiter = Limiter(
+    #key_func=get_remote_address,  # Use the client's IP address for rate limiting
+    key_func=get_limiter_key, # stronger, use user credential as key if available and use ip address for non-authenticated
+    storage_uri=RATE_LIMIT_STORAGE_URI, # save the rate limit counters, in-memory by default
+    app=app,
+    default_limits=["50 per day", "10 per minute"]  # Default limits
+)
+# Handle rate limiting errors
+@app.errorhandler(TooManyRequests)
+def ratelimit_error(e):
+    return jsonify({"error": "Too many requests. Please try again later."}), 429
+
+def make_id(text):
+    return hashlib.md5(text.encode("utf-8")).hexdigest()
 
 def norm(xs):
     if not xs:
@@ -168,53 +230,16 @@ def get_upload_dir(dept_id: str, user_id: str) -> str:
     except:
         return ""
 
-def verify_identity():
-    if not SERVICE_AUTH_SECRET:
-        return None, ("Service Auth secret not configured.", 500)
+def get_reranker():
+    global _reranker
+    if _reranker is None:
+        try:
+            _reranker = CrossEncoder(RERANKER_MODEL_NAME)
+        except Exception as exc:
+            logging.warning("Failed to load reranker %s: %s", RERANKER_MODEL_NAME, exc)
+            return None
 
-    auth_header = request.headers.get("Authorization", "")
-    if not auth_header.startswith("Bearer "):
-        return None, ("Missing or invalid Authorization header.", 401)
-    token = auth_header.split(" ", 1)[1].strip()
-    try:
-        claims = jwt.decode(
-            token,
-            SERVICE_AUTH_SECRET,
-            algorithms=["HS256"],
-            audience=SERVICE_AUTH_AUDIENCE,
-            issuer=SERVICE_AUTH_ISSUER,
-            options={"require": ["exp", "iat", "aud", "iss"]}
-        )
-    except Exception as e:
-        return None, (f"Invalid token: {str(e)}", 401)
-
-    email = claims.get("email", "")
-    if not email:
-        return None, ("Token missing required 'email' claim.", 403)
-    dept = claims.get("dept", "")
-    if not dept:
-        return None, ("Token missing required 'dept' claim.", 403)
-    sid = claims.get("sid", "")
-    if not sid:
-        return None, ("Token missing required 'sid' claim.", 403)
-
-    identity = {
-        "user_id": email,
-        "dept_id": dept,
-        "sid": sid
-    }
-
-    return identity, None
-
-def require_identity(fn):
-    @wraps(fn)
-    def wrapper(*args, **kwargs):
-        identity, err = verify_identity()
-        if err:
-            return jsonify({"error": err[0]}), err[1]
-        g.identity = identity
-        return fn(*args, **kwargs)
-    return wrapper
+    return _reranker
 
 def build_prompt(query, ctx, use_ctx=False):
     if use_ctx:
@@ -367,12 +392,18 @@ def build_bm25(dept_id: str, user_id: str):
         _bm25_docs = []
         _bm25_metas = []
 
-def ingest_one(info: Optional[dict]) -> Optional[str]:
+def ingest_one(info: Optional[dict], app_user_id: str, app_dept_id: str) -> Optional[str]:
     if not info:
         return None
     dept_id = info.get("dept_id", "")
     user_id = info.get("user_id", "")
     if not dept_id or not user_id:
+        return None
+    file_for_user = info.get("file_for_user", False)
+    if file_for_user and (dept_id != app_dept_id or user_id != app_user_id):
+        return None
+    ingested = info.get("ingested", False)
+    if ingested:
         return None
     file_path = info.get("file_path", "")
     if not os.path.exists(file_path):
@@ -383,11 +414,7 @@ def ingest_one(info: Optional[dict]) -> Optional[str]:
 
     # chunking - now returns list of (page_num, chunk_text) tuples
     chunks_with_pages = make_chunks(pages_text)
-    def make_id(text):
-        return hashlib.md5(text.encode("utf-8")).hexdigest()
-
     filename = info.get("filename", os.path.basename(file_path))
-    file_for_user = info.get("file_for_user", False)
     # upsert to chroma
     ids, docs, metas = [], [], []
     seen = set()
@@ -425,7 +452,7 @@ def ingest_one(info: Optional[dict]) -> Optional[str]:
 
     # set ingested flag
     with open(file_path + ".meta.json", "w", encoding="utf-8") as info_f:
-        info["ingested"] = "True"
+        info["ingested"] = True
         json.dump(info, info_f, indent=2)
 
     return info.get("file_id", "") if docs else None
@@ -597,6 +624,7 @@ def retrieve(query, dept_id="", user_id="", top_k=TOP_K, where: dict | None = No
 
 @app.post('/chat')
 @require_identity
+@limiter.limit("30 per minute; 500 per day")
 def chat():
     dept_id = g.identity.get('dept_id', '')
     user_id = g.identity.get('user_id', '')
@@ -695,6 +723,11 @@ def upload():
     if not upload_dir:
         return jsonify({"error": "Failed to create upload directory"}), 500
     file_path = canonical_path(upload_dir, filename)
+
+    # check same file exits
+    if os.path.exists(file_path):
+        return jsonify({"error": "File with the same name already exists"}), 400
+    
     f.save(file_path)
 
     # save file meta info into file for further ingestion
@@ -705,7 +738,7 @@ def upload():
         tags_str = ",".join(tags_raw) if tags_raw else ""
 
     file_info = {
-            "file_id": hashlib.md5(f.filename.encode()).hexdigest(),
+            "file_id": make_id(filename),
             "file_path": str(file_path),
             "filename": filename,
             "source": filename,
@@ -731,6 +764,7 @@ def ingest():
     body = request.get_json(force=True)
     file_id = body.get("file_id", "") if body else ""
     file_path = body.get("file_path", "") if body else ""
+    file_path = os.path.join(UPLOAD_BASE, file_path) if file_path and file_path != "ALL" else file_path
     if not file_id:
         return jsonify({"message": "No correct file specified"}), 400
     if file_path != "ALL" and not os.path.exists(file_path):
@@ -763,12 +797,12 @@ def ingest():
     ingested_info = ""
     if file_id == "ALL":
         for info in meta_data_all:
-            fid = ingest_one(info)
+            fid = ingest_one(info, app_user_id=user_id, app_dept_id=dept_id)
             if fid:
                 ingested_info += f"{fid}\n"
     else:
         info = next((m for m in meta_data_all if m.get("file_id") == file_id), None)
-        fid = ingest_one(info)
+        fid = ingest_one(info, app_user_id=user_id, app_dept_id=dept_id)
         if fid:
             ingested_info = f"{fid}\n"
 
@@ -805,7 +839,8 @@ def list_files():
                 with open(os.path.join(dir_user, f), "r", encoding="utf-8") as info_f:
                     info = json.load(info_f)
                     if info.get("dept_id", "") == dept_id and ((not info.get("file_for_user", False)) or info.get("user_id") == user_id):
-                        info.pop("file_path", None)
+                        # Include a sanitized or relative file path
+                        info["file_path"] = os.path.relpath(info.get("file_path", ""), UPLOAD_BASE)
                         files_info.append(info)
 
     # List shared files next
@@ -817,12 +852,14 @@ def list_files():
                 with open(os.path.join(dir_shared, f), "r", encoding="utf-8") as info_f:
                     info = json.load(info_f)
                     if info.get("dept_id", "") == dept_id and ((not info.get("file_for_user", False)) or info.get("user_id") == user_id):
-                        info.pop("file_path", None)
+                        # Include a sanitized or relative file path
+                        info["file_path"] = os.path.relpath(info.get("file_path", ""), UPLOAD_BASE)
                         files_info.append(info)
 
     return jsonify({"files": files_info}), 200
 
 @app.get('/org-structure')
+@limiter.limit("1 per minute; 10 per day", key_func=get_remote_address)
 def org_structure():
     try:
         with open(ORG_STRUCTURE_FILE, "r", encoding="utf-8") as f:
@@ -832,14 +869,17 @@ def org_structure():
         return jsonify({"error": f"Failed to read organization structure: {str(ex)}"}), 500
 
 @app.get('/')
+@limiter.exempt
 def root():
     return jsonify({ "message": "Server is running." }), 200
 
 @app.get('/health')
+@limiter.exempt # Exempt health check from rate limiting
 def health():
     return jsonify({ "status": "healthy" }), 200
 
 @app.get('/func-test')
+@limiter.exempt
 def func_test():
     return list_files()
 

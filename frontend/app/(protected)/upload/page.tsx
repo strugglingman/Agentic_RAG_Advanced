@@ -39,7 +39,7 @@ export default function UploadPage() {
       size_kb: x.size_kb,
       upload_at: x.upload_at,
       tags: x.tags ?? [],
-      ingested: x.ingested === 'True',
+      ingested: x.ingested ?? false,
     }));
     setServerFiles(rows);
 
@@ -194,6 +194,7 @@ export default function UploadPage() {
               <div>
                 <div className="text-sm">{f.file_id}</div>
                 <div className="text-sm">{f.filename}</div>
+                <div className="text-sm">{f.file_path}</div>
                 <div className="text-xs text-gray-500">
                   {f.size_kb.toFixed(1)} KB · {f.ext}
                 </div>
