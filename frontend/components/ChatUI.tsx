@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useFilters } from './filters-context';
 import { useChat } from './chat-context';
 import ShimmerBubble from './ShimmerBubble';
@@ -33,7 +33,33 @@ export default function ChatPage() {
   const [busy, setBusy] = useState(false);
   const [recognition, setRecognition] = useState<SpeechRecognition | null>(null);
   const [isRecording, setIsRecording] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
   const [language, setLanguage] = useState('en-US');
+
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const streamingRef = useRef(false);
+  const speakingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearSpeakingTimer = useCallback(() => {
+    if (speakingTimeoutRef.current) {
+      clearTimeout(speakingTimeoutRef.current);
+      speakingTimeoutRef.current = null;
+    }
+  }, []);
+
+  const pulseSpeaking = useCallback((duration = 1000) => {
+    setIsSpeaking(true);
+    clearSpeakingTimer();
+    speakingTimeoutRef.current = setTimeout(() => {
+      setIsSpeaking(false);
+      speakingTimeoutRef.current = null;
+    }, duration);
+  }, [clearSpeakingTimer, setIsSpeaking]);
+
+  const stopSpeaking = useCallback(() => {
+    clearSpeakingTimer();
+    setIsSpeaking(false);
+  }, [clearSpeakingTimer, setIsSpeaking]);
 
   useEffect(() => {
     if ('webkitSpeechRecognition' in window) {
@@ -48,20 +74,43 @@ export default function ChatPage() {
         .join(' ');
 
         setInput(transcript);
+        pulseSpeaking();
       };
 
       recog.onerror = (event) => {
         console.error('Speech recognition error', event.error);
+        stopSpeaking();
+        setIsRecording(false);
+      };
+
+      recog.onspeechstart = () => {
+        pulseSpeaking();
+      };
+
+      recog.onspeechend = () => {
+        stopSpeaking();
+      };
+
+      recog.onstart = () => {
+        stopSpeaking();
+      };
+
+      recog.onend = () => {
+        setIsRecording(false);
+        stopSpeaking();
       };
 
       setRecognition(recog);
     } else {
       console.warn('Speech Recognition API not supported in this browser.');
     }
-  }, [language])
+  }, [language, pulseSpeaking, stopSpeaking]);
 
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const streamingRef = useRef(false);
+  useEffect(() => {
+    return () => {
+      clearSpeakingTimer();
+    };
+  }, [clearSpeakingTimer]);
 
   // autoscroll on new message
   useEffect(() => {
@@ -175,6 +224,7 @@ export default function ChatPage() {
   const startRecording = () => {
     if (recognition) {
       setIsRecording(true);
+      stopSpeaking();
       recognition.start();
     }
   };
@@ -182,6 +232,7 @@ export default function ChatPage() {
   const stopRecording = () => {
     if (recognition) {
       setIsRecording(false);
+      stopSpeaking();
       recognition.stop();
     }
   };
@@ -313,11 +364,11 @@ export default function ChatPage() {
               {isRecording ? (
                 <>
                   <div className="flex items-center gap-1">
-                    <div className="h-5 w-1 bg-red-600 animate-listening" style={{ animationDelay: '0ms' }}></div>
-                    <div className="h-5 w-1 bg-red-600 animate-listening" style={{ animationDelay: '150ms' }}></div>
-                    <div className="h-5 w-1 bg-red-600 animate-listening" style={{ animationDelay: '300ms' }}></div>
-                    <div className="h-5 w-1 bg-red-600 animate-listening" style={{ animationDelay: '450ms' }}></div>
-                    <div className="h-5 w-1 bg-red-600 animate-listening" style={{ animationDelay: '600ms' }}></div>
+                    <div className={cls('h-5 w-1 bg-red-600', isSpeaking && 'animate-listening')} style={{ animationDelay: '0ms' }}></div>
+                    <div className={cls('h-5 w-1 bg-red-600', isSpeaking && 'animate-listening')} style={{ animationDelay: '150ms' }}></div>
+                    <div className={cls('h-5 w-1 bg-red-600', isSpeaking && 'animate-listening')} style={{ animationDelay: '300ms' }}></div>
+                    <div className={cls('h-5 w-1 bg-red-600', isSpeaking && 'animate-listening')} style={{ animationDelay: '450ms' }}></div>
+                    <div className={cls('h-5 w-1 bg-red-600', isSpeaking && 'animate-listening')} style={{ animationDelay: '600ms' }}></div>
                   </div>
                   <span className="text-red-600 font-medium">Listening...</span>
                 </>
