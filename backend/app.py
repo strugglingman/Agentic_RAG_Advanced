@@ -149,7 +149,7 @@ limiter = Limiter(
     key_func=get_limiter_key, # stronger, use user credential as key if available and use ip address for non-authenticated
     storage_uri=RATE_LIMIT_STORAGE_URI, # save the rate limit counters, in-memory by default
     app=app,
-    default_limits=["50 per day", "10 per minute"]  # Default limits
+    default_limits=["500 per day", "20 per minute"]  # Default limits
 )
 # Handle rate limiting errors
 @app.errorhandler(TooManyRequests)
@@ -624,7 +624,7 @@ def retrieve(query, dept_id="", user_id="", top_k=TOP_K, where: dict | None = No
 
 @app.post('/chat')
 @require_identity
-@limiter.limit("30 per minute; 500 per day")
+@limiter.limit("30 per minute; 1000 per day")
 def chat():
     dept_id = g.identity.get('dept_id', '')
     user_id = g.identity.get('user_id', '')

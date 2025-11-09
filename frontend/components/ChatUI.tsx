@@ -11,9 +11,19 @@ type Context = { bm25: number; chunk: string; chunk_id: string; dept_id: string;
   ext: string; file_for_user: boolean; file_id: string; hybrid: number; page: number; 
   rerank: number; sem_sim: number; size_kb: number; source: string; tags: string; 
   upload_at: string; uploaded_at_ts: number; user_id: string};
-
+  
 const cls = (...s: Array<string | false | null | undefined>) => s.filter(Boolean).join(' ');
 const tstr = (ts?: number) => (ts ? new Date(ts).toLocaleTimeString() : '');
+const languages = [
+  { code: 'en-US', text: 'English' },
+  { code: 'sv-SE', text: 'Svenska' },
+  { code: 'fi-FI', text: 'Suomi' },
+  { code: 'fr-FR', text: 'Français' },
+  { code: 'de-DE', text: 'Deutsch' },
+  { code: 'zh-CN', text: '中文' },
+  { code: 'zh-TW', text: '繁體中文' },
+  { code: 'ja-JP', text: '日本語' }
+];
 
 export default function ChatPage() {
   const { selectedExts, selectedTags, customTags } = useFilters();
@@ -21,6 +31,34 @@ export default function ChatPage() {
   const [showContexts, setShowContexts] = useState(false);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
+  const [recognition, setRecognition] = useState<SpeechRecognition | null>(null);
+  const [isRecording, setIsRecording] = useState(false);
+  const [language, setLanguage] = useState('en-US');
+
+  useEffect(() => {
+    if ('webkitSpeechRecognition' in window) {
+      const recog = new webkitSpeechRecognition() as SpeechRecognition;
+      recog.continuous = true; // continue listening until user stops
+      recog.interimResults = true;
+      recog.lang = language;
+
+      recog.onresult = (event) => {
+        const transcript = Array.from(event.results)
+        .map((result) => result[0].transcript)
+        .join(' ');
+
+        setInput(transcript);
+      };
+
+      recog.onerror = (event) => {
+        console.error('Speech recognition error', event.error);
+      };
+
+      setRecognition(recog);
+    } else {
+      console.warn('Speech Recognition API not supported in this browser.');
+    }
+  }, [language])
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const streamingRef = useRef(false);
@@ -134,6 +172,20 @@ export default function ChatPage() {
     }
   }
 
+  const startRecording = () => {
+    if (recognition) {
+      setIsRecording(true);
+      recognition.start();
+    }
+  };
+
+  const stopRecording = () => {
+    if (recognition) {
+      setIsRecording(false);
+      recognition.stop();
+    }
+  };
+
   return (
     <div className="h-full w-full bg-neutral-100 flex justify-center">
       <div className="flex h-full w-full max-w-6xl flex-col border-x border-neutral-200 bg-white shadow-sm">
@@ -237,20 +289,64 @@ export default function ChatPage() {
             }}
             className="mx-auto flex max-w-3xl items-end gap-2 px-4 py-3"
           >
-          <textarea
-            className="text-[16px] flex-1 min-h-[44px] max-h-[160px] resize-y rounded-xl border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-neutral-900/20"
-            placeholder="Send a message..."
-            value={input}
-            onChange={e => setInput(e.target.value)}
-            rows={2}
-          />
-          <button
-            type="submit"
-            disabled={busy || !input.trim()}
-            className="text-[18px] h-10 px-6 rounded-xl bg-neutral-900 text-white text-sm disabled:opacity-50"
-          >
-            Send
-          </button>
+          <div className="flex items-end gap-1 w-full">
+            <textarea
+              className="text-[16px] flex-grow resize-y rounded-xl border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-neutral-900/20 w-full md:w-[85%]"
+              placeholder="Send a message..."
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              rows={2} // Keep the height unchanged
+            />
+            <button
+              type="submit"
+              disabled={busy || !input.trim()}
+              className="text-[18px] h-10 px-6 rounded-xl bg-neutral-900 text-white text-sm disabled:opacity-50"
+            >
+              Send
+            </button>
+            <button
+              type="button"
+              onClick={isRecording ? stopRecording : startRecording}
+              className="h-10 px-4 rounded-xl text-sm transition-all flex items-center gap-2"
+              disabled={busy}
+            >
+              {isRecording ? (
+                <>
+                  <div className="flex items-center gap-1">
+                    <div className="h-5 w-1 bg-red-600 animate-listening" style={{ animationDelay: '0ms' }}></div>
+                    <div className="h-5 w-1 bg-red-600 animate-listening" style={{ animationDelay: '150ms' }}></div>
+                    <div className="h-5 w-1 bg-red-600 animate-listening" style={{ animationDelay: '300ms' }}></div>
+                    <div className="h-5 w-1 bg-red-600 animate-listening" style={{ animationDelay: '450ms' }}></div>
+                    <div className="h-5 w-1 bg-red-600 animate-listening" style={{ animationDelay: '600ms' }}></div>
+                  </div>
+                  <span className="text-red-600 font-medium">Listening...</span>
+                </>
+              ) : (
+                <>
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-neutral-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M12 14a4 4 0 0 0 4-4V5a4 4 0 0 0-8 0v5a4 4 0 0 0 4 4z" />
+                    <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                    <line x1="12" y1="19" x2="12" y2="23" />
+                    <line x1="8" y1="23" x2="16" y2="23" />
+                  </svg>
+                  <span className="text-neutral-500">Voice Input</span>
+                </>
+              )}
+            </button>
+            <div className="flex items-center gap-2">
+              <label htmlFor="language" className="text-sm font-medium text-neutral-700">Language:</label>
+              <select
+                id="language"
+                value={language}
+                onChange={(e) => setLanguage(e.target.value)}
+                className="text-sm border border-neutral-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-neutral-900/20 bg-white shadow-sm"
+              >
+                {languages.map(({code, text}) => (
+                    <option value={code}>{text}</option>
+                ))}
+              </select>
+            </div>
+          </div>
           </form>
         </footer>
       </div>
