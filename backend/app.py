@@ -848,7 +848,7 @@ def chat():
         # build where
         where = build_where(dept_id, user_id)
         print(f"Where clause: {where}")
-        ctx, err = retrieve(
+        ctx, _ = retrieve(
             query,
             dept_id=dept_id,
             user_id=user_id,
@@ -857,11 +857,19 @@ def chat():
             use_hybrid=USE_HYBRID,
             use_reranker=USE_RERANKER,
         )
-        if err:
-            print(f"Retrieval error: {err}")
-            return jsonify({"error": err}), 500
+
         if not ctx:
-            return jsonify({"error": "No relevant documents found"}), 200
+            # append latest user message to session history even if no answer found
+            if latest_user_msg:
+                SESSIONS[sid].append(
+                    {
+                        "role": latest_user_msg.get("role"),
+                        "content": latest_user_msg.get("content"),
+                    }
+                )
+            no_answer = "Based on the provided documents, I don't have enough information to answer your question."
+            SESSIONS[sid].append({"role": "assistant", "content": no_answer})
+            return Response(no_answer, mimetype="text/plain")
 
         # filter tags
         filters = payload.get("filters", [])
