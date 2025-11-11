@@ -1,4 +1,9 @@
-import os, jwt, time, pytest
+import os
+import jwt
+import time
+import pytest
+import sys
+sys.path.insert(0, os.path.abspath(os.path.dirname(__file__) + '/..'))
 from app import app as flask_app
 
 SERVICE_AUTH_SECRET = os.getenv("SERVICE_AUTH_SECRET", "test-secret")
