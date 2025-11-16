@@ -85,6 +85,7 @@ class Config:
     MCP_SERVER_COMMAND = os.getenv(
         "MCP_SERVER_COMMAND", "npx -y @modelcontextprotocol/server-brave-search"
     )  # e.g., "npx -y @modelcontextprotocol/server-brave-search"
+    BRAVE_API_KEY = os.getenv("BRAVE_API_KEY", "")
 
 
 class DevelopmentConfig(Config):

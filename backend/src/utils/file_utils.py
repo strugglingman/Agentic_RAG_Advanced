@@ -16,6 +16,7 @@ def canonical_path(base: Path, *sub_paths: str) -> Path:
     """Resolve canonical path and prevent directory traversal"""
     base = base.resolve()
     upload_path = (base / Path(*sub_paths)).resolve()
+    # check if upload_path is within base
     try:
         upload_path.relative_to(base)
     except ValueError:

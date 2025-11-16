@@ -8,7 +8,6 @@ from src.middleware.auth import require_identity
 from src.utils.sanitizer import sanitize_text
 from src.services.retrieval import retrieve, build_where, build_prompt
 from src.config.settings import Config
-from src.services.mcp_client import search_external
 from src.utils.safety import looks_like_injection, scrub_context
 from src.utils.stream_utils import stream_text_smart
 
@@ -90,25 +89,7 @@ def chat(collection):
         )
 
         # try MCP to use external knowledge if no context found
-        if not ctx and Config.USE_MCP:
-            print("-----------------------------------")
-            print("come into MCP search")
-
-            # Low confidence - try MCP server
-            def mcp_generate():
-                try:
-                    yield "[Searching external sources...]\n\n"
-                    external_answer = search_external(query)
-                    yield external_answer
-                    yield "\n\n[This answer is from external sources, not your uploaded documents]"
-                except Exception as e:
-                    # logger.error(f"MCP search failed: {e}")
-                    yield "Based on the provided documents, I don't have enough information..."
-                finally:
-                    yield f"\n__CONTEXT__:{json.dumps([])}"
-
-            return Response(mcp_generate(), mimetype="text/plain")
-        elif not ctx:
+        if not ctx:
             # Append latest user message to session history even if no answer found
             if latest_user_msg:
                 SESSIONS[sid].append(
@@ -118,9 +99,8 @@ def chat(collection):
                     }
                 )
             no_answer = "Based on the provided documents, I don't have enough information to answer your question."
-            stream_text_smart(no_answer)
             SESSIONS[sid].append({"role": "assistant", "content": no_answer})
-            return Response((no_answer), mimetype="text/plain")
+            return Response(stream_text_smart(no_answer), mimetype="text/plain")
 
         # Filter tags
         filters = payload.get("filters", [])
@@ -196,39 +176,3 @@ def chat(collection):
         return Response(generate(), mimetype="text/plain")
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
-
-def build_where_clause(dept_id: str, user_id: str, payload: dict):
-    """Build where clause for vector search"""
-    if not dept_id:
-        raise ValueError("No organization ID provided")
-    if not user_id:
-        raise ValueError("No user ID provided")
-
-    filters = payload.get("filters", [])
-    exts = next(
-        (
-            f.get("exts")
-            for f in filters
-            if "exts" in f and isinstance(f.get("exts"), list)
-        ),
-        None,
-    )
-
-    where_clauses = []
-
-    if exts:
-        if len(exts) == 1:
-            where_clauses.append({"ext": exts[0]})
-        elif len(exts) > 1:
-            where_clauses.append({"$or": [{"ext": ext} for ext in exts]})
-
-    where_clauses.append({"dept_id": dept_id})
-    where_clauses.append({"$or": [{"file_for_user": False}, {"user_id": user_id}]})
-
-    if len(where_clauses) > 1:
-        return {"$and": where_clauses}
-    elif len(where_clauses) == 1:
-        return where_clauses[0]
-    else:
-        return None
