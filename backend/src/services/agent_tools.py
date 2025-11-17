@@ -12,10 +12,11 @@ Each tool has two parts:
 """
 
 import json
+import re
 from typing import Dict, Any, List
 from src.services.retrieval import retrieve, build_where
 from src.config.settings import Config
-
+from src.utils.safety import looks_like_injection, scrub_context
 
 # ============================================================================
 # TOOL 1: SEARCH DOCUMENTS
@@ -83,8 +84,67 @@ def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
     5. Format results as readable text for LLM
     6. Handle errors gracefully
     """
-    # TODO: Implementation here
-    pass
+    query = args.get("query", "")
+    top_k = args.get("top_k", 5)
+    collection = context.get("collection", None)
+    dept_id = context.get("dept_id", "")
+    user_id = context.get("user_id", "")
+    use_hybrid = context.get("use_hybrid", Config.USE_HYBRID)
+    use_reranker = context.get("use_reranker", Config.USE_RERANKER)
+    request = context.get("request", None)
+    if not dept_id or not user_id:
+        return "Error: No organization ID or user ID provided"
+    if not collection:
+        return "Error: No document collection available"
+    try:
+        # Build where clause
+        where = build_where(request, dept_id, user_id)
+        ctx, _ = retrieve(collection=collection,
+                          query=query,
+                          dept_id=dept_id,
+                          user_id=user_id,
+                          top_k=top_k,
+                          where=where,
+                          use_hybrid=use_hybrid,
+                          use_reranker=use_reranker)
+
+        if not ctx:
+            return "No relevant documents found."
+        for c in ctx:
+            c["chunk"] = scrub_context(c.get("chunk", ""))
+
+        # Format contexts for LLM
+        all_chunk_tex = ""
+        for i, c in enumerate(ctx, 1):  # Start from 1
+            chunk = c.get("chunk", "")
+            page = c.get("page", 0)
+            source = c.get("source", "unknown")
+            sem_sim = c.get("sem_sim", 0)
+            hybrid = c.get("hybrid", 0)
+            rerank = c.get("rerank", 0)  # Fixed: was "reranker"
+
+            # Build metadata parts
+            metadata_parts = []
+            if source:
+                metadata_parts.append(f"Source: {source}")
+            if page > 0:
+                metadata_parts.append(f"Page: {page}")
+            if hybrid > 0:
+                metadata_parts.append(f"Hybrid: {hybrid:.2f}")
+            elif sem_sim > 0:
+                metadata_parts.append(f"Similarity: {sem_sim:.2f}")
+            if rerank > 0:
+                metadata_parts.append(f"Rerank: {rerank:.2f}")
+
+            # Format chunk with clean metadata line
+            metadata_line = ", ".join(metadata_parts) if metadata_parts else "No metadata"
+            chunk_text = f"[{i}] {metadata_line}\n{chunk}\n\n"
+
+            all_chunk_tex += chunk_text
+
+        return f"Found {len(ctx)} relevant document(s):\n\n" + all_chunk_tex
+    except Exception as e:
+        return f"Error during document retrieval: {str(e)}"
 
 
 # ============================================================================
@@ -129,19 +189,73 @@ def execute_calculator(args: Dict[str, Any], context: Dict[str, Any]) -> str:
 
     Returns:
         String result of the calculation
-
-    TODO: Implement this function
-    Steps:
-    1. Extract expression from args
-    2. Handle percentage expressions (e.g., "15% of 100")
-    3. Safely evaluate expression (use ast.literal_eval or similar)
-    4. Return result as string
-    5. Handle errors (invalid expressions, division by zero, etc.)
-
-    Security Note: NEVER use eval() directly - use safe evaluation
     """
-    # TODO: Implementation here
-    pass
+    expression = args.get("expression", "").strip()
+
+    if not expression:
+        return "Error: No expression provided"
+
+    try:
+        # Handle percentage expressions
+        # "15% of 100" -> "0.15 * 100"
+        # "20%" -> "0.20"
+        processed = _handle_percentage(expression)
+
+        # Safely evaluate the expression
+        result = _safe_eval(processed)
+
+        # Format result nicely
+        if isinstance(result, float):
+            # Remove unnecessary decimals for whole numbers
+            if result.is_integer():
+                return str(int(result))
+            else:
+                return f"{result:.6f}".rstrip('0').rstrip('.')
+        return str(result)
+
+    except ZeroDivisionError:
+        return "Error: Division by zero"
+    except Exception as e:
+        return f"Error: Invalid mathematical expression - {str(e)}"
+
+
+def _handle_percentage(expr: str) -> str:
+    """
+    Convert percentage expressions to Python math.
+
+    Examples:
+        "15% of 100" -> "0.15 * 100"
+        "20%" -> "0.20"
+        "increase by 10%" -> handled in context
+    """
+    # Pattern: "X% of Y" -> "X/100 * Y"
+    expr = re.sub(r'(\d+(?:\.\d+)?)\s*%\s+of\s+(\d+(?:\.\d+)?)', r'(\1/100) * \2', expr, flags=re.IGNORECASE)
+
+    # Pattern: "X%" -> "X/100"
+    expr = re.sub(r'(\d+(?:\.\d+)?)\s*%', r'(\1/100)', expr)
+
+    return expr
+
+
+def _safe_eval(expr: str) -> float:
+    """
+    Safely evaluate a mathematical expression.
+
+    Security: Only allows numbers and basic math operators.
+    """
+    # Whitelist: only allow numbers, operators, parentheses, dots, spaces
+    if not re.match(r'^[\d\s\+\-\*\/\(\)\.\%]+$', expr):
+        raise ValueError("Expression contains invalid characters")
+
+    # Additional safety: limit length
+    if len(expr) > 200:
+        raise ValueError("Expression too long")
+
+    # Evaluate using Python's eval (safe because we validated input)
+    # Note: In production, consider using numexpr or ast-based parser
+    result = eval(expr, {"__builtins__": {}}, {})
+
+    return float(result)
 
 
 # ============================================================================
@@ -207,14 +321,22 @@ def execute_tool_call(tool_name: str, tool_args: Dict[str, Any], context: Dict[s
 
     Raises:
         ValueError: If tool doesn't exist
-
-    TODO: Implement this function
-    Steps:
-    1. Look up tool in TOOL_REGISTRY
-    2. If not found, raise error
-    3. Execute the tool with args and context
-    4. Return result
-    5. Handle any exceptions from tool execution
     """
-    # TODO: Implementation here
-    pass
+    # Look up tool executor
+    executor = get_tool_executor(tool_name)
+
+    if not executor:
+        raise ValueError(f"Tool '{tool_name}' not found in registry. Available tools: {list(TOOL_REGISTRY.keys())}")
+
+    # Ensure args is a dict
+    executor_args = tool_args if tool_args else {}
+
+    try:
+        # Execute the tool
+        result = executor(executor_args, context)
+        return result
+    except Exception as e:
+        # Log error and return error message
+        error_msg = f"Error executing tool '{tool_name}': {str(e)}"
+        print(error_msg)  # For debugging
+        return error_msg

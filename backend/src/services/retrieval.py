@@ -171,8 +171,8 @@ def build_prompt(query, ctx, use_ctx=False):
 
 
 def retrieve(
-    collection,
-    query,
+    collection=None,
+    query="",
     dept_id="",
     user_id="",
     top_k=TOP_K,
@@ -196,6 +196,11 @@ def retrieve(
     Returns:
         Tuple of (context_list, error_message)
     """
+    if collection is None:
+        return [], "No collection provided"
+    if not query:
+        return [], "Empty query"
+
     global dept_previous, user_previous
 
     try:

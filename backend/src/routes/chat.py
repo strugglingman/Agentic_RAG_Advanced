@@ -78,8 +78,8 @@ def chat(collection):
 
         # Retrieve relevant documents
         ctx, _ = retrieve(
-            collection,
-            query,
+            collection=collection,
+            query=query,
             dept_id=dept_id,
             user_id=user_id,
             top_k=Config.TOP_K,
