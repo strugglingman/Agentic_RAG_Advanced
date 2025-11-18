@@ -115,9 +115,8 @@ class Agent:
 
         messages = self._build_initial_messages(query, messages_history)
 
-        for iteration in range(self.max_iterations):
+        for _ in range(self.max_iterations):
             res = self._call_llm(messages)
-
             if self._has_tool_calls(res):
                 assistant_message = res.choices[0].message
                 tool_results = self._execute_tools(res, context)

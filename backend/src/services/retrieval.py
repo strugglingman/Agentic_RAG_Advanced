@@ -52,7 +52,9 @@ def get_reranker():
         try:
             _reranker = CrossEncoder(Config.RERANKER_MODEL_NAME)
         except Exception as exc:
-            logging.warning("Failed to load reranker %s: %s", Config.RERANKER_MODEL_NAME, exc)
+            logging.warning(
+                "Failed to load reranker %s: %s", Config.RERANKER_MODEL_NAME, exc
+            )
             return None
     return _reranker
 
@@ -432,12 +434,12 @@ def retrieve(
         return [], str(e)
 
 
-def build_where(request, dept_id, user_id):
+def build_where(payload, dept_id, user_id):
     """
     Build ChromaDB where clause from request filters.
 
     Args:
-        request: Flask request object
+        payload: Dictionary containing request data
         dept_id: Department ID
         user_id: User ID
 
@@ -449,7 +451,6 @@ def build_where(request, dept_id, user_id):
     if not user_id:
         raise ValueError("No user ID provided in headers")
 
-    payload = request.get_json(force=True)
     filters = payload.get("filters", [])
     exts = next(
         (

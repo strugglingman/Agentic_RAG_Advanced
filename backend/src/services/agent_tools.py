@@ -91,14 +91,14 @@ def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
     user_id = context.get("user_id", "")
     use_hybrid = context.get("use_hybrid", Config.USE_HYBRID)
     use_reranker = context.get("use_reranker", Config.USE_RERANKER)
-    request = context.get("request", None)
+    request_data = context.get("request_data", {})
     if not dept_id or not user_id:
         return "Error: No organization ID or user ID provided"
     if not collection:
         return "Error: No document collection available"
     try:
         # Build where clause
-        where = build_where(request, dept_id, user_id)
+        where = build_where(request_data, dept_id, user_id)
         ctx, _ = retrieve(
             collection=collection,
             query=query,

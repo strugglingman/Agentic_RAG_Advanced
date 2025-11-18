@@ -74,7 +74,7 @@ def chat(collection):
 
     try:
         # Build where clause
-        where = build_where(request, dept_id, user_id)
+        where = build_where(payload, dept_id, user_id)
         print(f"Where clause: {where}")
 
         # Retrieve relevant documents
@@ -221,7 +221,7 @@ def chat_agent(collection):
             "collection": collection,
             "dept_id": dept_id,
             "user_id": user_id,
-            "request": request,  # For build_where and filters
+            "request_data": payload,  # For build_where and filters, but can not pass request directly, active request context changed.
             "use_hybrid": Config.USE_HYBRID,
             "use_reranker": Config.USE_RERANKER,
         }
