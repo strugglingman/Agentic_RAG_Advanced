@@ -123,6 +123,11 @@ def create_app(config_name="development"):
     inject_collection(chat_route)
     app.view_functions[chat_endpoint] = inject_collection(chat_route)
 
+    # Inject collection into chat_agent endpoint
+    chat_agent_endpoint = f"{chat_bp.name}.chat_agent"
+    chat_agent_route = app.view_functions[chat_agent_endpoint]
+    app.view_functions[chat_agent_endpoint] = inject_collection(chat_agent_route)
+
     ingest_endpoint = f"{ingest_bp.name}.ingest"
     ingest_route = app.view_functions[ingest_endpoint]
     app.view_functions[ingest_endpoint] = inject_collection(ingest_route)
@@ -132,8 +137,9 @@ def create_app(config_name="development"):
         app.view_functions[f"{org_bp.name}.org_structure"]
     )
 
-    # Apply rate limiting to chat endpoint
+    # Apply rate limiting to chat endpoints
     limiter.limit("30 per minute; 1000 per day")(app.view_functions[chat_endpoint])
+    limiter.limit("30 per minute; 1000 per day")(app.view_functions[chat_agent_endpoint])
 
     # Health check routes
     @app.get("/")

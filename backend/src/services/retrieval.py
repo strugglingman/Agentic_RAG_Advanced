@@ -10,21 +10,7 @@ from rank_bm25 import BM25Okapi
 from sentence_transformers import CrossEncoder
 from typing import Optional
 from src.utils.safety import coverage_ok
-
-# Configuration from environment
-CANDIDATES = 20
-FUSE_ALPHA = 0.5  # weight for BM25 in hybrid search
-MIN_HYBRID = 0.1  # confidence gate for hybrid
-AVG_HYBRID = 0.1  # confidence gate for hybrid
-MIN_SEM_SIM = 0.35  # confidence gate for semantic-only
-AVG_SEM_SIM = 0.2  # confidence gate for semantic-only
-MIN_RERANK = 0.5  # minimum rerank score threshold
-AVG_RERANK = 0.3  # average rerank score threshold for coverage
-TOP_K = 5
-
-RERANKER_MODEL_NAME = os.getenv(
-    "RERANKER_MODEL_NAME", "cross-encoder/ms-marco-MiniLM-L-6-v2"
-)
+from src.config.settings import Config
 
 # Global state for BM25 index (cached per user/dept)
 _bm25 = None
@@ -64,9 +50,9 @@ def get_reranker():
     global _reranker
     if _reranker is None:
         try:
-            _reranker = CrossEncoder(RERANKER_MODEL_NAME)
+            _reranker = CrossEncoder(Config.RERANKER_MODEL_NAME)
         except Exception as exc:
-            logging.warning("Failed to load reranker %s: %s", RERANKER_MODEL_NAME, exc)
+            logging.warning("Failed to load reranker %s: %s", Config.RERANKER_MODEL_NAME, exc)
             return None
     return _reranker
 
@@ -175,7 +161,7 @@ def retrieve(
     query="",
     dept_id="",
     user_id="",
-    top_k=TOP_K,
+    top_k=None,
     where: dict | None = None,
     use_hybrid=False,
     use_reranker=False,
@@ -188,7 +174,7 @@ def retrieve(
         query: User's question
         dept_id: Department ID for filtering
         user_id: User ID for filtering
-        top_k: Number of top results to return
+        top_k: Number of top results to return (defaults to Config.TOP_K)
         where: ChromaDB where clause for filtering
         use_hybrid: Whether to use hybrid search (BM25 + semantic)
         use_reranker: Whether to use reranker
@@ -201,12 +187,15 @@ def retrieve(
     if not query:
         return [], "Empty query"
 
+    if top_k is None:
+        top_k = Config.TOP_K
+
     global dept_previous, user_previous
 
     try:
         res = collection.query(
             query_texts=[query],
-            n_results=max(CANDIDATES, top_k),
+            n_results=max(Config.CANDIDATES, top_k),
             where=where,
             include=["documents", "metadatas", "distances"],
         )
@@ -259,7 +248,7 @@ def retrieve(
 
             if _bm25 and _bm25_docs:
                 _bm25_scores = _bm25.get_scores(query.split())
-                count = max(CANDIDATES, top_k)
+                count = max(Config.CANDIDATES, top_k)
                 top_indexes = np.argsort(_bm25_scores)[::-1][:count]
                 # Normalize BM25 scores BEFORE union (within BM25 top-N)
                 bm25_norm = norm([_bm25_scores[i] for i in top_indexes])
@@ -329,8 +318,8 @@ def retrieve(
 
                 # Calculate hybrid with normalized scores (both already in [0,1])
                 for item in ctx_candidates:
-                    item["hybrid"] = FUSE_ALPHA * item.get("bm25", 0.0) + (
-                        1 - FUSE_ALPHA
+                    item["hybrid"] = Config.FUSE_ALPHA * item.get("bm25", 0.0) + (
+                        1 - Config.FUSE_ALPHA
                     ) * item.get("sem_sim", 0.0)
 
                 # Confidence gate on hybrid
@@ -339,7 +328,7 @@ def retrieve(
                     if ctx_candidates
                     else 0
                 )
-                if max_hybrid < MIN_HYBRID:
+                if max_hybrid < Config.MIN_HYBRID:
                     return (
                         [],
                         "No relevant documents found after applying hybrid confidence threshold.",
@@ -350,8 +339,8 @@ def retrieve(
                 covered = coverage_ok(
                     scores,
                     topk=min(len(ctx_candidates), top_k * 2),
-                    score_avg=AVG_HYBRID,
-                    score_min=MIN_HYBRID,
+                    score_avg=Config.AVG_HYBRID,
+                    score_min=Config.MIN_HYBRID,
                 )
                 if not covered:
                     return (
@@ -365,7 +354,7 @@ def retrieve(
         else:
             # Confidence gate on semantic-only (already normalized in ctx_original)
             ctx_candidates = [item for item in ctx_original]
-            if max(sims_raw) < MIN_SEM_SIM:
+            if max(sims_raw) < Config.MIN_SEM_SIM:
                 return (
                     [],
                     "No relevant documents found after applying semantic confidence threshold.",
@@ -374,8 +363,8 @@ def retrieve(
             covered = coverage_ok(
                 sims_raw,
                 topk=min(len(ctx_candidates), top_k),
-                score_avg=AVG_SEM_SIM,
-                score_min=MIN_SEM_SIM,
+                score_avg=Config.AVG_SEM_SIM,
+                score_min=Config.MIN_SEM_SIM,
             )
             if not covered:
                 return (
@@ -407,7 +396,7 @@ def retrieve(
                     if rerank_scores is not None and len(rerank_scores) > 0
                     else 0
                 )
-                if max_rerank_score < MIN_RERANK:
+                if max_rerank_score < Config.MIN_RERANK:
                     return (
                         [],
                         "No relevant documents found after applying rerank confidence threshold.",
@@ -417,8 +406,8 @@ def retrieve(
                 covered = coverage_ok(
                     scores=rerank_scores.tolist(),
                     topk=min(len(rerank_scores), top_k),
-                    score_avg=AVG_RERANK,
-                    score_min=MIN_RERANK,
+                    score_avg=Config.AVG_RERANK,
+                    score_min=Config.MIN_RERANK,
                 )
                 if not covered:
                     return (

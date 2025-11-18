@@ -112,41 +112,46 @@ def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
 
         if not ctx:
             return "No relevant documents found."
+
+        # Store raw contexts in context dict for agent to access later
+        if "_retrieved_contexts" not in context:
+            context["_retrieved_contexts"] = []
+        context["_retrieved_contexts"].extend(ctx)
+
         for c in ctx:
             c["chunk"] = scrub_context(c.get("chunk", ""))
 
-        # Format contexts for LLM
-        all_chunk_tex = ""
-        for i, c in enumerate(ctx, 1):  # Start from 1
-            chunk = c.get("chunk", "")
-            page = c.get("page", 0)
-            source = c.get("source", "unknown")
-            sem_sim = c.get("sem_sim", 0)
-            hybrid = c.get("hybrid", 0)
-            rerank = c.get("rerank", 0)  # Fixed: was "reranker"
-
-            # Build metadata parts
-            metadata_parts = []
-            if source:
-                metadata_parts.append(f"Source: {source}")
-            if page > 0:
-                metadata_parts.append(f"Page: {page}")
-            if hybrid > 0:
-                metadata_parts.append(f"Hybrid: {hybrid:.2f}")
-            elif sem_sim > 0:
-                metadata_parts.append(f"Similarity: {sem_sim:.2f}")
-            if rerank > 0:
-                metadata_parts.append(f"Rerank: {rerank:.2f}")
-
-            # Format chunk with clean metadata line
-            metadata_line = (
-                ", ".join(metadata_parts) if metadata_parts else "No metadata"
+        # Format contexts for LLM using the same high-quality formatting as build_prompt()
+        # This creates detailed context headers with source, page, and scores
+        context_str = "\n\n".join(
+            (
+                f"Context {i+1} (Source: {c.get('source', 'unknown')}"
+                + (f", Page: {c['page']}" if c.get("page", 0) > 0 else "")
+                + f"):\n{c.get('chunk', '')}\n"
+                + (
+                    f"Hybrid score: {c['hybrid']:.2f}"
+                    if c.get("hybrid") is not None
+                    else ""
+                )
+                + (
+                    f", Rerank score: {c['rerank']:.2f}"
+                    if c.get("rerank") is not None
+                    else ""
+                )
             )
-            chunk_text = f"[{i}] {metadata_line}\n{chunk}\n\n"
+            for i, c in enumerate(ctx)
+        )
 
-            all_chunk_tex += chunk_text
-
-        return f"Found {len(ctx)} relevant document(s):\n\n" + all_chunk_tex
+        # Return formatted contexts with instructions for the LLM
+        return (
+            f"Found {len(ctx)} relevant document(s):\n\n"
+            f"{context_str}\n\n"
+            f"Instructions: Answer the question concisely by synthesizing information from the contexts above. "
+            f"Include bracket citations [n] for every sentence (e.g., [1], [2]). "
+            f"At the end of your answer, cite the sources you used. For each source file, list the specific page numbers "
+            f"from the contexts you referenced (look at the 'Page:' information in each context header). "
+            f"Format: 'Sources: filename1.pdf (pages 15, 23), filename2.pdf (page 7)'"
+        )
     except Exception as e:
         return f"Error during document retrieval: {str(e)}"
 
