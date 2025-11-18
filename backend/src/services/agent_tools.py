@@ -99,14 +99,16 @@ def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
     try:
         # Build where clause
         where = build_where(request, dept_id, user_id)
-        ctx, _ = retrieve(collection=collection,
-                          query=query,
-                          dept_id=dept_id,
-                          user_id=user_id,
-                          top_k=top_k,
-                          where=where,
-                          use_hybrid=use_hybrid,
-                          use_reranker=use_reranker)
+        ctx, _ = retrieve(
+            collection=collection,
+            query=query,
+            dept_id=dept_id,
+            user_id=user_id,
+            top_k=top_k,
+            where=where,
+            use_hybrid=use_hybrid,
+            use_reranker=use_reranker,
+        )
 
         if not ctx:
             return "No relevant documents found."
@@ -137,7 +139,9 @@ def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
                 metadata_parts.append(f"Rerank: {rerank:.2f}")
 
             # Format chunk with clean metadata line
-            metadata_line = ", ".join(metadata_parts) if metadata_parts else "No metadata"
+            metadata_line = (
+                ", ".join(metadata_parts) if metadata_parts else "No metadata"
+            )
             chunk_text = f"[{i}] {metadata_line}\n{chunk}\n\n"
 
             all_chunk_tex += chunk_text
@@ -210,7 +214,7 @@ def execute_calculator(args: Dict[str, Any], context: Dict[str, Any]) -> str:
             if result.is_integer():
                 return str(int(result))
             else:
-                return f"{result:.6f}".rstrip('0').rstrip('.')
+                return f"{result:.6f}".rstrip("0").rstrip(".")
         return str(result)
 
     except ZeroDivisionError:
@@ -229,10 +233,15 @@ def _handle_percentage(expr: str) -> str:
         "increase by 10%" -> handled in context
     """
     # Pattern: "X% of Y" -> "X/100 * Y"
-    expr = re.sub(r'(\d+(?:\.\d+)?)\s*%\s+of\s+(\d+(?:\.\d+)?)', r'(\1/100) * \2', expr, flags=re.IGNORECASE)
+    expr = re.sub(
+        r"(\d+(?:\.\d+)?)\s*%\s+of\s+(\d+(?:\.\d+)?)",
+        r"(\1/100) * \2",
+        expr,
+        flags=re.IGNORECASE,
+    )
 
     # Pattern: "X%" -> "X/100"
-    expr = re.sub(r'(\d+(?:\.\d+)?)\s*%', r'(\1/100)', expr)
+    expr = re.sub(r"(\d+(?:\.\d+)?)\s*%", r"(\1/100)", expr)
 
     return expr
 
@@ -244,7 +253,7 @@ def _safe_eval(expr: str) -> float:
     Security: Only allows numbers and basic math operators.
     """
     # Whitelist: only allow numbers, operators, parentheses, dots, spaces
-    if not re.match(r'^[\d\s\+\-\*\/\(\)\.\%]+$', expr):
+    if not re.match(r"^[\d\s\+\-\*\/\(\)\.\%]+$", expr):
         raise ValueError("Expression contains invalid characters")
 
     # Additional safety: limit length
@@ -290,6 +299,7 @@ This tells the LLM what tools are available.
 # HELPER FUNCTIONS
 # ============================================================================
 
+
 def get_tool_executor(tool_name: str):
     """
     Get the execution function for a tool by name.
@@ -307,7 +317,9 @@ def get_tool_executor(tool_name: str):
     return TOOL_REGISTRY.get(tool_name)
 
 
-def execute_tool_call(tool_name: str, tool_args: Dict[str, Any], context: Dict[str, Any]) -> str:
+def execute_tool_call(
+    tool_name: str, tool_args: Dict[str, Any], context: Dict[str, Any]
+) -> str:
     """
     Execute a tool call from the LLM.
 
@@ -326,7 +338,9 @@ def execute_tool_call(tool_name: str, tool_args: Dict[str, Any], context: Dict[s
     executor = get_tool_executor(tool_name)
 
     if not executor:
-        raise ValueError(f"Tool '{tool_name}' not found in registry. Available tools: {list(TOOL_REGISTRY.keys())}")
+        raise ValueError(
+            f"Tool '{tool_name}' not found in registry. Available tools: {list(TOOL_REGISTRY.keys())}"
+        )
 
     # Ensure args is a dict
     executor_args = tool_args if tool_args else {}

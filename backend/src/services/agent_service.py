@@ -82,8 +82,19 @@ class Agent:
         6. If final answer: return it
         7. If max iterations reached: return error message
         """
-        # TODO: Implementation here
-        pass
+        messages = self._build_messages(query, messages_history)
+        for _ in range(self.max_iterations):
+            res = self._call_llm(messages)
+            if self._has_tool_calls(res):
+                assistant_message = res.choices[0].message
+                tool_results = self._execute_tools(res, context)
+                messages = self._append_tool_results(
+                    messages, assistant_message, tool_results
+                )
+            else:
+                return self._get_final_answer(res)
+
+        return "Error: Maximum iterations reached without final answer."
 
     def _call_llm(self, messages: List[Dict[str, str]]) -> Any:
         """
@@ -102,8 +113,15 @@ class Agent:
         3. Set tool_choice="auto" (let LLM decide)
         4. Return response
         """
-        # TODO: Implementation here
-        pass
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=messages,
+            tools=self.tools,
+            tool_choice="auto",
+            temperature=self.temperature,
+        )
+
+        return response
 
     def _has_tool_calls(self, response: Any) -> bool:
         """
@@ -121,13 +139,11 @@ class Agent:
         2. Check if message.tool_calls exists and is not None
         3. Return boolean
         """
-        # TODO: Implementation here
-        pass
+        has_tool_calls = response.choices[0].message.tool_calls is not None
+        return has_tool_calls
 
     def _execute_tools(
-        self,
-        response: Any,
-        context: Dict[str, Any]
+        self, response: Any, context: Dict[str, Any]
     ) -> List[Dict[str, str]]:
         """
         Execute all tool calls from LLM response.
@@ -156,8 +172,19 @@ class Agent:
             "content": result_string
         }
         """
-        # TODO: Implementation here
-        pass
+        tool_calls = response.choices[0].message.tool_calls
+        if tool_calls is None:
+            return []
+        tool_responses = []
+        for tool_call in tool_calls:
+            tool_name = tool_call.function.name
+            tool_args = json.loads(tool_call.function.arguments)
+            result = execute_tool_call(tool_name, tool_args, context)
+            tool_responses.append(
+                {"role": "tool", "tool_call_id": tool_call.id, "content": result}
+            )
+
+        return tool_responses
 
     def _build_messages(
         self,
@@ -186,8 +213,20 @@ class Agent:
         - Be concise and accurate
         - Cite sources when using search_documents
         """
-        # TODO: Implementation here
-        pass
+        system_msg = {
+            "role": "system",
+            "content": """
+                        You are an AI assistant that uses tools to answer user questions.
+                        Use the provided tools when necessary to find accurate information.
+                        Be concise and provide clear answers.
+                        When using the search_documents tool, always cite your sources in the format [source: document_title].
+                       """.strip(),
+        }
+        user_msg = {"role": "user", "content": query}
+        if messages_history:
+            return [system_msg] + messages_history + [user_msg]
+        else:
+            return [system_msg, user_msg]
 
     def _get_final_answer(self, response: Any) -> str:
         """
@@ -204,8 +243,9 @@ class Agent:
         1. Access response.choices[0].message.content
         2. Return content or default message if None
         """
-        # TODO: Implementation here
-        pass
+        content = response.choices[0].message.content
+        result = content.strip() if content else ""
+        return result if result else "I'm sorry, I couldn't generate an answer."
 
     def _append_tool_results(
         self,
@@ -233,13 +273,20 @@ class Agent:
 
         Note: The assistant message must include tool_calls for OpenAI API
         """
-        # TODO: Implementation here
-        pass
+        assistant_message_dict = {
+            "role": "assistant",
+            "content": assistant_message.content if assistant_message.content else "",
+            "tool_calls": assistant_message.tool_calls,
+        }
+        messages.append(assistant_message_dict)
+        messages.extend(tool_results)
+        return messages
 
 
 # ============================================================================
 # HELPER FUNCTIONS (Optional)
 # ============================================================================
+
 
 def format_tool_call_for_logging(tool_call) -> str:
     """
