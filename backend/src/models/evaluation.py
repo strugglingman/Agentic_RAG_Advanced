@@ -20,19 +20,26 @@ from enum import Enum
 # ============================================================================
 # STEP 1: Define Enums
 # ============================================================================
+# These to define the retrieval quality levels
+class QualityLevel(str, Enum):
+    """Quality levels for retrieval evaluation."""
+    EXCELLENT = "excellent"
+    GOOD = "good"
+    PARTIAL = "partial"
+    POOR = "poor"
 
-# TODO: Create QualityLevel enum
-# Should have: EXCELLENT, GOOD, PARTIAL, POOR
-# Hint: Use string enum - class QualityLevel(str, Enum)
+# These to define the action recommended based on the result of evaluation
+class RecommendationAction(str, Enum):
+    ANSWER = "answer"
+    REFINE = "refine"
+    EXTERNAL = "external"
+    CLARIFY = "clarify"
 
-# TODO: Create RecommendationAction enum
-# Should have: ANSWER, REFINE, EXTERNAL, CLARIFY
-# These are the actions the evaluator can recommend
-
-# TODO: Create ReflectionMode enum
-# Should have: FAST, BALANCED, THOROUGH
 # These control evaluation speed vs accuracy tradeoff
-
+class ReflectionMode(str , Enum):
+    FAST = "fast"
+    BALANCED = "balanced"
+    THOROUGH = "thorough"
 
 # ============================================================================
 # STEP 2: Define Input Model (EvaluationCriteria)
@@ -59,6 +66,17 @@ from enum import Enum
 #       contexts=[{"chunk": "...", "score": 0.89}],
 #       search_metadata={"hybrid": True}
 #   )
+@dataclass
+class EvaluationCriteria:
+    """Data class for evaluation criteria."""
+    query: str
+    contexts: List[Dict[str, Any]] = field(default_factory=list)
+    search_metadata: Optional[Dict[str, Any]] = None
+    mode: Optional[ReflectionMode] = ReflectionMode.BALANCED
+
+    def __post_init__(self):
+        if not self.query or not self.query.strip():
+            raise ValueError("Query must be a non-empty string.")
 
 
 # ============================================================================
@@ -97,7 +115,13 @@ from enum import Enum
 #   - Confidence must be 0.0-1.0
 #   - Coverage must be 0.0-1.0
 #   - All relevance_scores must be 0.0-1.0
-
+@dataclass
+class EvaluationResult:
+    """Data class for evaluation result."""
+    quality: QualityLevel
+    confidence: float
+    coverage: float
+    relevance_scores: list[float] = field(default_factory=list)
 
 # ============================================================================
 # STEP 4: Define Configuration Model (ReflectionConfig)
