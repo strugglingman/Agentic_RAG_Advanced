@@ -87,6 +87,61 @@ class Config:
     )  # e.g., "npx -y @modelcontextprotocol/server-brave-search"
     BRAVE_API_KEY = os.getenv("BRAVE_API_KEY", "")
 
+    # Self-Reflection / Retrieval Evaluation settings (Week 1)
+    # Master switch - enables/disables the entire self-reflection feature
+    USE_SELF_REFLECTION = os.getenv("USE_SELF_REFLECTION", "false").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+    # Performance mode: "fast", "balanced", "thorough"
+    # - "fast": Heuristics only, no LLM (50ms, cheap)
+    # - "balanced": Light LLM check (500ms, moderate) - RECOMMENDED
+    # - "thorough": Full LLM evaluation (2s, expensive)
+    REFLECTION_MODE = os.getenv("REFLECTION_MODE", "balanced")
+
+    # Quality thresholds (0.0-1.0)
+    # These determine when to recommend different actions
+    REFLECTION_THRESHOLD_EXCELLENT = float(
+        os.getenv("REFLECTION_THRESHOLD_EXCELLENT", "0.85")
+    )  # Confidence > 0.85 ? excellent quality
+    REFLECTION_THRESHOLD_GOOD = float(
+        os.getenv("REFLECTION_THRESHOLD_GOOD", "0.70")
+    )  # Confidence > 0.70 ? good quality
+    REFLECTION_THRESHOLD_PARTIAL = float(
+        os.getenv("REFLECTION_THRESHOLD_PARTIAL", "0.50")
+    )  # Confidence > 0.50 ? partial quality, else poor
+
+    # Minimum number of contexts required to proceed with answer
+    # If retrieved contexts < this number, recommend refine/external
+    REFLECTION_MIN_CONTEXTS = int(os.getenv("REFLECTION_MIN_CONTEXTS", "1"))
+
+    # Automatic action flags (for future integration with other tools)
+    # Week 1: These log recommendations only
+    # Week 2+: These trigger actual actions when tools are ready
+    REFLECTION_AUTO_REFINE = os.getenv("REFLECTION_AUTO_REFINE", "true").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }  # Auto-refine query if quality is poor
+    REFLECTION_AUTO_EXTERNAL = os.getenv(
+        "REFLECTION_AUTO_EXTERNAL", "false"
+    ).lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }  # Auto-search external if poor (requires MCP, Week 3)
+
+    # Maximum refinement attempts before giving up
+    # Prevents infinite refinement loops
+    REFLECTION_MAX_REFINEMENT_ATTEMPTS = int(
+        os.getenv("REFLECTION_MAX_REFINEMENT_ATTEMPTS", "3")
+    )
+
 
 class DevelopmentConfig(Config):
     """Development configuration"""

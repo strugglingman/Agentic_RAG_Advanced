@@ -7,8 +7,8 @@ This module provides:
 3. State management - tracks conversation and tool results
 
 ReAct Loop:
-    User Query → LLM (with tools) → Tool Call → Execute Tool →
-    Tool Result → LLM (continue) → Final Answer
+    User Query ? LLM (with tools) ? Tool Call ? Execute Tool ?
+    Tool Result ? LLM (continue) ? Final Answer
 """
 
 import json
@@ -117,6 +117,10 @@ class Agent:
 
         for _ in range(self.max_iterations):
             res = self._call_llm(messages)
+            print("000000000000000000000")
+            print(messages)
+            print("111111111111111111111")
+            print(res.choices[0].message)
             if self._has_tool_calls(res):
                 assistant_message = res.choices[0].message
                 tool_results = self._execute_tools(res, context)
