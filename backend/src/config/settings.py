@@ -117,6 +117,10 @@ class Config:
     # Minimum number of contexts required to proceed with answer
     # If retrieved contexts < this number, recommend refine/external
     REFLECTION_MIN_CONTEXTS = int(os.getenv("REFLECTION_MIN_CONTEXTS", "1"))
+    # Average score threshold for contexts (0.0-1.0)
+    REFLECTION_AVG_SCORE = float(os.getenv("REFLECTION_AVG_SCORE", "0.6"))
+    # Keyword overlap threshold (0.0-1.0)
+    REFLECTION_KEYWORD_OVERLAP = float(os.getenv("REFLECTION_KEYWORD_OVERLAP", "0.3"))
 
     # Automatic action flags (for future integration with other tools)
     # Week 1: These log recommendations only

@@ -118,6 +118,74 @@ def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
             context["_retrieved_contexts"] = []
         context["_retrieved_contexts"].extend(ctx)
 
+        # =================================================================
+        # TODO: SELF-REFLECTION EVALUATION (Week 1: Evaluation Only)
+        # =================================================================
+        # After retrieval, evaluate quality before returning results to LLM
+        #
+        # Steps:
+        # 1. Check if Config.USE_SELF_REFLECTION is True
+        # 2. If enabled:
+        #    a. Import required classes:
+        #       from src.services.retrieval_evaluator import RetrievalEvaluator
+        #       from src.models.evaluation import ReflectionConfig, EvaluationCriteria
+        #
+        #    b. Load configuration:
+        #       config = ReflectionConfig.from_settings(Config)
+        #
+        #    c. Get OpenAI client from context:
+        #       openai_client = context.get("openai_client")
+        #
+        #    d. Create evaluator:
+        #       evaluator = RetrievalEvaluator(
+        #           config=config,
+        #           openai_client=openai_client
+        #       )
+        #
+        #    e. Prepare contexts for evaluation (add scores):
+        #       eval_contexts = []
+        #       for c in ctx:
+        #           eval_context = {
+        #               "chunk": c.get("chunk", ""),
+        #               "score": c.get("hybrid") or c.get("rerank") or c.get("distance", 0.5)
+        #           }
+        #           eval_contexts.append(eval_context)
+        #
+        #    f. Build evaluation criteria:
+        #       criteria = EvaluationCriteria(
+        #           query=query,
+        #           contexts=eval_contexts,
+        #           search_metadata={
+        #               "hybrid": use_hybrid,
+        #               "reranker": use_reranker,
+        #               "top_k": top_k,
+        #           },
+        #           mode=config.mode
+        #       )
+        #
+        #    g. Run evaluation:
+        #       eval_result = evaluator.evaluate(criteria)
+        #
+        #    h. Store evaluation result in context:
+        #       context["_last_evaluation"] = eval_result
+        #
+        #    i. Log evaluation result:
+        #       print(f"[SELF-REFLECTION] Quality: {eval_result.quality.value}, "
+        #             f"Confidence: {eval_result.confidence:.2f}, "
+        #             f"Recommendation: {eval_result.recommendation.value}")
+        #       print(f"[SELF-REFLECTION] Reasoning: {eval_result.reasoning}")
+        #       if eval_result.issues:
+        #           print(f"[SELF-REFLECTION] Issues: {', '.join(eval_result.issues)}")
+        #
+        #    j. Week 1 Note: For now, just log the evaluation
+        #       Week 2+: Will take actions based on recommendation
+        #       - REFINE: Reformulate query and retry
+        #       - EXTERNAL: Trigger MCP external search
+        #       - CLARIFY: Ask user for clarification
+        #
+        # 3. Continue with normal flow (format and return contexts)
+        # =================================================================
+
         for c in ctx:
             c["chunk"] = scrub_context(c.get("chunk", ""))
 

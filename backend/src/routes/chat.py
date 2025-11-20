@@ -217,6 +217,17 @@ def chat_agent(collection):
 
     try:
         # Build context for agent (all system parameters)
+        # =================================================================
+        # TODO: Add OpenAI client to context for self-reflection
+        # =================================================================
+        # The RetrievalEvaluator needs the OpenAI client for BALANCED/THOROUGH modes
+        #
+        # Add this line to the agent_context dict below:
+        #     "openai_client": openai_client,
+        #
+        # This allows the evaluator to make LLM calls for quality assessment
+        # =================================================================
+
         agent_context = {
             "collection": collection,
             "dept_id": dept_id,
@@ -224,6 +235,8 @@ def chat_agent(collection):
             "request_data": payload,  # For build_where and filters, but can not pass request directly, active request context changed.
             "use_hybrid": Config.USE_HYBRID,
             "use_reranker": Config.USE_RERANKER,
+            # TODO: Uncomment this line when implementing self-reflection:
+            # "openai_client": openai_client,
         }
 
         # Get session history (EXACT same as /chat)
