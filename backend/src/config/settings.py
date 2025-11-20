@@ -89,7 +89,7 @@ class Config:
 
     # Self-Reflection / Retrieval Evaluation settings (Week 1)
     # Master switch - enables/disables the entire self-reflection feature
-    USE_SELF_REFLECTION = os.getenv("USE_SELF_REFLECTION", "false").lower() in {
+    USE_SELF_REFLECTION = os.getenv("USE_SELF_REFLECTION", "true").lower() in {
         "1",
         "true",
         "yes",

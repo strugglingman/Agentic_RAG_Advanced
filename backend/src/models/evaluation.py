@@ -153,15 +153,9 @@ class ReflectionConfig:
     auto_external: bool
     min_contexts: int
     max_refinement_attempts: int
-    thresholds: Dict[str, float] = field(
-        default_factory=lambda: {
-            "excellent": 0.85,
-            "good": 0.70,
-            "partial": 0.50,
-        }
-    )
-    avg_score: float = 0.5
-    keyword_overlap: float = 0.3
+    thresholds: Dict[str, float]
+    avg_score: float
+    keyword_overlap: float
 
     @classmethod
     def from_settings(cls, config_class) -> "ReflectionConfig":
@@ -289,6 +283,11 @@ if __name__ == "__main__":
             auto_external=False,
             min_contexts=1,
             max_refinement_attempts=3,
+            thresholds={
+                "excellent": 0.85,
+                "good": 0.70,
+                "partial": 0.50,
+            },
             avg_score=0.6,
             keyword_overlap=0.3,
         )

@@ -39,9 +39,7 @@ class RetrievalEvaluator:
         openai_client: OpenAI client for LLM-based evaluation (required for BALANCED/THOROUGH)
     """
 
-    def __init__(
-        self, config: ReflectionConfig, openai_client: Optional[OpenAI] = None
-    ):
+    def __init__(self, config: ReflectionConfig, openai_client: Optional[OpenAI] = None):
         """
         Initialize the evaluator.
 
@@ -169,20 +167,13 @@ class RetrievalEvaluator:
         context_text = self._extract_context_text(criteria.contexts)
         keyword_overlap = self._calculate_keyword_overlap(query_keywords, context_text)
         relevance_scores = self._extract_relevance_scores(criteria.contexts)
-        avg_score = (
-            sum(relevance_scores) / len(relevance_scores) if relevance_scores else 0.0
-        )
+        avg_score = sum(relevance_scores) / len(relevance_scores) if relevance_scores else 0.0
         min_score = min(relevance_scores) if relevance_scores else 0.0
         context_presence = 1.0 if context_count > 0 else 0.0
         # Calculate evaluation confidence
         evaluation_confidence = min(
             1.0,
-            (
-                keyword_overlap * 0.4
-                + avg_score * 0.3
-                + min_score * 0.2
-                + context_presence * 0.1
-            ),
+            (keyword_overlap * 0.4 + avg_score * 0.3 + min_score * 0.2 + context_presence * 0.1),
         )
         coverage = keyword_overlap if context_count > 0 else 0.0
         issues = self._detect_issues(context_count, avg_score, keyword_overlap)
@@ -232,7 +223,7 @@ class RetrievalEvaluator:
         TODO: Implement BALANCED mode evaluation
         Steps:
         1. Call self._evaluate_fast(criteria) to get baseline result
-        2. Check if confidence is borderline (0.5 <= confidence < 0.75):
+        2. Check if confidence is borderline (partial <= confidence < good threshold):
            - If yes, call _quick_llm_check() to validate
            - Get adjusted_confidence and llm_reasoning
            - Update result.confidence = adjusted_confidence
@@ -241,7 +232,19 @@ class RetrievalEvaluator:
         3. Update result.mode_used = ReflectionMode.BALANCED
         4. Return result
         """
-        pass
+        result = self._evaluate_fast(criteria=criteria)
+        partial_threshold = self.config.thresholds["partial"]
+        good_threshold = self.config.thresholds["good"]
+        if partial_threshold <= result.confidence < good_threshold:
+            adjusted_confidence, llm_reasoning = self._quick_llm_check(
+                criteria.query, criteria.contexts, result.confidence
+            )
+            result.confidence = adjusted_confidence
+            result.reasoning = llm_reasoning
+            result.quality = self.config.get_quality_level(adjusted_confidence)
+
+        result.mode_used = ReflectionMode.BALANCED
+        return result
 
     def _quick_llm_check(
         self, query: str, contexts: List[Dict[str, Any]], baseline_confidence: float
@@ -302,7 +305,52 @@ class RetrievalEvaluator:
         Error handling:
         - If LLM call fails, return (baseline_confidence, "LLM check failed")
         """
-        pass
+        try:
+            formatted_contexts = "\n".join(
+                [f"{i+1}] {c.get('chunk', '')[:300]}" for i, c in enumerate(contexts)]
+            )
+            prompt = f"""
+                You are evaluating whether retrieved contexts can answer a user's query.
+
+                USER QUERY: {query}
+
+                RETRIEVED CONTEXTS:
+                {formatted_contexts}
+
+                QUESTION: Can these contexts adequately answer the user's query?
+
+                Respond in this exact format:
+                ANSWER: [yes/partial/no]
+                REASONING: [one sentence explanation]
+
+                Be strict: only answer 'yes' if contexts directly and completely answer the query.
+            """
+            response = self.client.chat.completions.create(
+                model="gpt-4o-mini",
+                temperature=0.0,
+                max_tokens=150,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            content = response.choices[0].message.content
+            answer_match = re.search(r"ANSWER:\s*(yes|partial|no)", content, re.IGNORECASE)
+            reasoning_match = re.search(r"REASONING:\s*(.*)", content, re.IGNORECASE)
+
+            if not answer_match or answer_match.group(1).lower() not in ["yes", "partial", "no"]:
+                return baseline_confidence, "LLM check failed"
+            answer = answer_match.group(1).lower()
+            adjusted = baseline_confidence
+            if answer == "yes":
+                adjusted = min(1.0, baseline_confidence + 0.1)
+            elif answer == "no":
+                adjusted = max(0.0, baseline_confidence - 0.1)
+
+            reasoning = (
+                reasoning_match.group(1).strip() if reasoning_match else "No reasoning provided"
+            )
+
+            return adjusted, reasoning
+        except Exception as e:
+            return baseline_confidence, f"LLM check failed: {str(e)}"
 
     # =========================================================================
     # THOROUGH MODE: Full LLM Evaluation
@@ -382,7 +430,107 @@ class RetrievalEvaluator:
 
         7. Return result
         """
-        pass
+        # Step 1: Format contexts into numbered list with full text
+        formatted_contexts = "\n\n".join(
+            [f"Context {i+1}:\n{c.get('chunk', '')}" for i, c in enumerate(criteria.contexts)]
+        )
+
+        # Step 2: Build detailed evaluation prompt
+        prompt = (
+            "You are an expert retrieval quality evaluator. "
+            "Analyze whether the retrieved contexts can answer the user's query.\n\n"
+            f"USER QUERY:\n{criteria.query}\n\n"
+            f"RETRIEVED CONTEXTS:\n{formatted_contexts}\n\n"
+            "Evaluate the following:\n\n"
+            "1. RELEVANCE: Rate each context's relevance (0.0-1.0 per context)\n"
+            "2. COVERAGE: Do contexts fully cover all aspects of the query? (0.0-1.0)\n"
+            "3. CONFIDENCE: Overall confidence these contexts can answer the query (0.0-1.0)\n"
+            '4. ISSUES: List any problems (e.g., "context too generic", "missing key information")\n'
+            "5. MISSING: What query aspects are not covered?\n"
+            "6. RECOMMENDATION: What should we do?\n"
+            "   - ANSWER: Contexts are sufficient\n"
+            "   - REFINE: Reformulate query to get better results\n"
+            "   - EXTERNAL: Search external sources\n"
+            "   - CLARIFY: Query is ambiguous\n\n"
+            "Respond in JSON format:\n"
+            "{\n"
+            '    "relevance_scores": [0.0-1.0, ...],\n'
+            '    "coverage": 0.0-1.0,\n'
+            '    "confidence": 0.0-1.0,\n'
+            '    "issues": ["issue1", "issue2"],\n'
+            '    "missing_aspects": ["aspect1", "aspect2"],\n'
+            '    "recommendation": "ANSWER|REFINE|EXTERNAL|CLARIFY",\n'
+            '    "reasoning": "one sentence explanation"\n'
+            "}"
+        )
+
+        # Step 3: Call OpenAI API
+        try:
+            response = self.client.chat.completions.create(
+                model="gpt-4o-mini",
+                temperature=0.0,
+                response_format={"type": "json_object"},
+                messages=[{"role": "user", "content": prompt}],
+            )
+
+            # Step 4: Parse LLM JSON response
+            content = response.choices[0].message.content
+            llm_result = json.loads(content)
+
+            # Extract and validate fields
+            relevance_scores = llm_result.get("relevance_scores", [])
+            coverage = float(llm_result.get("coverage", 0.0))
+            confidence = float(llm_result.get("confidence", 0.0))
+            issues = llm_result.get("issues", [])
+            missing_aspects = llm_result.get("missing_aspects", [])
+            recommendation_str = llm_result.get("recommendation", "CLARIFY").upper()
+            reasoning = llm_result.get("reasoning", "LLM evaluation completed")
+
+            # Clamp scores to [0.0, 1.0]
+            relevance_scores = [max(0.0, min(1.0, float(s))) for s in relevance_scores]
+            coverage = max(0.0, min(1.0, coverage))
+            confidence = max(0.0, min(1.0, confidence))
+
+            # Convert recommendation string to enum
+            recommendation_map = {
+                "ANSWER": RecommendationAction.ANSWER,
+                "REFINE": RecommendationAction.REFINE,
+                "EXTERNAL": RecommendationAction.EXTERNAL,
+                "CLARIFY": RecommendationAction.CLARIFY,
+            }
+            recommendation = recommendation_map.get(
+                recommendation_str, RecommendationAction.CLARIFY
+            )
+
+            # Step 5: Build EvaluationResult
+            quality = self.config.get_quality_level(confidence)
+
+            result = EvaluationResult(
+                quality=quality,
+                confidence=confidence,
+                coverage=coverage,
+                recommendation=recommendation,
+                reasoning=reasoning,
+                relevance_scores=relevance_scores,
+                issues=issues,
+                missing_aspects=missing_aspects,
+                metrics={
+                    "llm_evaluation": True,
+                    "context_count": len(criteria.contexts),
+                },
+                mode_used=ReflectionMode.THOROUGH,
+            )
+
+            return result
+
+        except json.JSONDecodeError as e:
+            # Step 6: Error handling - JSON parsing failed
+            print(f"THOROUGH mode JSON parsing failed: {e}")
+            return self._evaluate_balanced(criteria)
+        except Exception as e:
+            # Step 6: Error handling - LLM call failed
+            print(f"THOROUGH mode failed: {e}")
+            return self._evaluate_balanced(criteria)
 
     # =========================================================================
     # HELPER METHODS
@@ -463,9 +611,7 @@ class RetrievalEvaluator:
 
         return " ".join(texts).lower()
 
-    def _calculate_keyword_overlap(
-        self, keywords: List[str], context_text: str
-    ) -> float:
+    def _calculate_keyword_overlap(self, keywords: List[str], context_text: str) -> float:
         """
         Calculate keyword overlap score.
 
@@ -510,8 +656,8 @@ class RetrievalEvaluator:
         2. Check conditions and append issues:
            - If context_count == 0: "No contexts retrieved"
            - If context_count < self.config.min_contexts: f"Only {context_count} contexts (min: {min_contexts})"
-           - If avg_score < 0.5: f"Low average relevance: {avg_score:.2f}"
-           - If keyword_overlap < 0.3: f"Poor keyword match: {keyword_overlap:.2f}"
+           - If avg_score < self.config.avg_score: f"Low average relevance: {avg_score:.2f}"
+           - If keyword_overlap < self.config.keyword_overlap: f"Poor keyword match: {keyword_overlap:.2f}"
         3. Return issues list
         """
         issues = []
@@ -528,9 +674,7 @@ class RetrievalEvaluator:
 
         return issues
 
-    def _identify_missing_aspects(
-        self, keywords: List[str], context_text: str
-    ) -> List[str]:
+    def _identify_missing_aspects(self, keywords: List[str], context_text: str) -> List[str]:
         """
         Identify query aspects not covered by contexts.
 
@@ -564,14 +708,14 @@ class RetrievalEvaluator:
 
         TODO: Implement recommendation logic
         Decision tree:
-        1. If confidence >= self.config.thresholds["excellent"]:
+        1. If context_count == 0:
+           - return (RecommendationAction.REFINE, "No contexts found - query refinement recommended")
+
+        2. If confidence >= self.config.thresholds["excellent"]:
            - return (RecommendationAction.ANSWER, "High confidence - contexts directly answer query")
 
-        2. If confidence >= self.config.thresholds["good"]:
+        3. If confidence >= self.config.thresholds["good"]:
            - return (RecommendationAction.ANSWER, "Good confidence - contexts provide sufficient information")
-
-        3. If context_count == 0:
-           - return (RecommendationAction.EXTERNAL, "No contexts found - may need external search")
 
         4. If confidence >= self.config.thresholds["partial"]:
            - return (RecommendationAction.REFINE, "Partial confidence - query refinement may help")
@@ -583,20 +727,18 @@ class RetrievalEvaluator:
             return (
                 RecommendationAction.REFINE,
                 "No contexts found - query refinement recommended",
-                # RecommendationAction.EXTERNAL,
-                # "No contexts found - may need external search",
             )
-        if confidence >= self.config.thresholds.get("excellent", 0.85):
+        if confidence >= self.config.thresholds["excellent"]:
             return (
                 RecommendationAction.ANSWER,
                 "High confidence - contexts directly answer query",
             )
-        if confidence >= self.config.thresholds.get("good", 0.7):
+        if confidence >= self.config.thresholds["good"]:
             return (
                 RecommendationAction.ANSWER,
                 "Good confidence - contexts provide sufficient information",
             )
-        if confidence >= self.config.thresholds.get("partial", 0.5):
+        if confidence >= self.config.thresholds["partial"]:
             return (
                 RecommendationAction.REFINE,
                 "Partial confidence - query refinement may help",
