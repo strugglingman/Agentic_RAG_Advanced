@@ -49,7 +49,10 @@ class Config:
     MAX_HISTORY = int(os.getenv("MAX_HISTORY", "6"))
 
     # OpenAI
+    OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    OPENAI_TEMPERATURE = float(os.getenv("OPENAI_TEMPERATURE", "0.1"))
     OPENAI_KEY = os.getenv("OPENAI_API_KEY", "")
+    AGENT_MAX_ITERATIONS = int(os.getenv("AGENT_MAX_ITERATIONS", "5"))
 
     # Database
     CHROMA_PATH = os.getenv("CHROMA_PATH", "./chroma_db")

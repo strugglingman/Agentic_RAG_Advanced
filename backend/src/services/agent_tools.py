@@ -19,6 +19,7 @@ from src.config.settings import Config
 from src.utils.safety import looks_like_injection, scrub_context
 from src.services.retrieval_evaluator import RetrievalEvaluator
 from src.models.evaluation import ReflectionConfig, EvaluationCriteria
+from src.services.query_refiner import QueryRefiner
 
 # ============================================================================
 # TOOL 1: SEARCH DOCUMENTS
@@ -77,14 +78,15 @@ def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
     Returns:
         Formatted string result for LLM containing document chunks
 
-    TODO: Implement this function
-    Steps:
-    1. Extract query and top_k from args
-    2. Get collection, dept_id, user_id from context
-    3. Build where clause using build_where()
-    4. Call retrieve() with all parameters
-    5. Format results as readable text for LLM
-    6. Handle errors gracefully
+    Flow with refinement loop:
+    1. Retrieve contexts with original query
+    2. Evaluate quality
+    3. If REFINE recommended and attempts < MAX:
+       - Refine query
+       - Retrieve again
+       - Re-evaluate
+       - Repeat until ANSWER or max attempts
+    4. Return best contexts found
     """
     query = args.get("query", "")
     top_k = args.get("top_k", 5)
@@ -101,9 +103,12 @@ def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
     try:
         # Build where clause
         where = build_where(request_data, dept_id, user_id)
+
+        # Initial retrieval
+        current_query = query
         ctx, _ = retrieve(
             collection=collection,
-            query=query,
+            query=current_query,
             dept_id=dept_id,
             user_id=user_id,
             top_k=top_k,
@@ -116,16 +121,16 @@ def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
             return "No relevant documents found."
 
         # Store raw contexts in context dict for agent to access later
-        if "_retrieved_contexts" not in context:
-            context["_retrieved_contexts"] = []
-        context["_retrieved_contexts"].extend(ctx)
+        context["_retrieved_contexts"] = ctx
 
         if Config.USE_SELF_REFLECTION:
             config = ReflectionConfig.from_settings(Config)
             client = context.get("openai_client", None)
             evaluator = RetrievalEvaluator(config=config, openai_client=client)
+
+            # Initial evaluation
             criteria = EvaluationCriteria(
-                query=query,
+                query=current_query,
                 contexts=ctx,
                 search_metadata={
                     "hybrid": use_hybrid,
@@ -134,12 +139,10 @@ def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
                 },
                 mode=config.mode,
             )
-
             eval_result = evaluator.evaluate(criteria)
-            # Store evaluation result in context (for Week 2+ action-taking)
             context["_last_evaluation"] = eval_result
 
-            # Log evaluation result (Week 1: logging only, Week 2+: take actions)
+            # Log initial evaluation
             print(f"[SELF-REFLECTION] Quality: {eval_result.quality.value}, "
                   f"Confidence: {eval_result.confidence:.2f}, "
                   f"Recommendation: {eval_result.recommendation.value}")
@@ -148,6 +151,95 @@ def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
                 print(f"[SELF-REFLECTION] Issues: {', '.join(eval_result.issues)}")
             if eval_result.missing_aspects:
                 print(f"[SELF-REFLECTION] Missing aspects: {', '.join(eval_result.missing_aspects)}")
+
+            # Refinement loop with local counter
+            if Config.REFLECTION_AUTO_REFINE:
+                refinement_count = 0  # Local counter for this tool call
+                max_attempts = Config.REFLECTION_MAX_REFINEMENT_ATTEMPTS
+                openai_model = context.get("model", Config.OPENAI_MODEL)
+                temperature = context.get("temperature", Config.OPENAI_TEMPERATURE)
+                query_refiner = QueryRefiner(
+                    openai_client=client,
+                    model=openai_model,
+                    temperature=temperature
+                )
+
+                # Track refinement history for this tool call (for logging)
+                refinement_history = []
+
+                while (eval_result.should_refine and
+                       refinement_count < max_attempts):
+
+                    refinement_count += 1
+                    print(f"[QUERY_REFINER] Refinement attempt {refinement_count}/{max_attempts}")
+
+                    # Refine the query (use current_query, not original)
+                    refined_query = query_refiner.refine_query(
+                        original_query=current_query,
+                        eval_result=eval_result,
+                        context_hint=" ".join([c.get("chunk", "")[:100] for c in ctx])
+                    )
+
+                    # Track for logging
+                    refinement_history.append({
+                        "attempt": refinement_count,
+                        "from": current_query,
+                        "to": refined_query,
+                    })
+                    print(f"[QUERY_REFINER] '{current_query}' -> '{refined_query}'")
+
+                    # Update current query for next iteration
+                    current_query = refined_query
+
+                    # Retrieve with refined query
+                    ctx, _ = retrieve(
+                        collection=collection,
+                        query=current_query,
+                        dept_id=dept_id,
+                        user_id=user_id,
+                        top_k=top_k,
+                        where=where,
+                        use_hybrid=use_hybrid,
+                        use_reranker=use_reranker,
+                    )
+
+                    if not ctx:
+                        print(f"[QUERY_REFINER] No results for refined query, keeping previous results")
+                        # Restore previous contexts
+                        ctx = context["_retrieved_contexts"]
+                        break
+
+                    # Update stored contexts
+                    context["_retrieved_contexts"] = ctx
+
+                    # Re-evaluate
+                    criteria = EvaluationCriteria(
+                        query=current_query,
+                        contexts=ctx,
+                        search_metadata={
+                            "hybrid": use_hybrid,
+                            "reranker": use_reranker,
+                            "top_k": top_k,
+                        },
+                        mode=config.mode,
+                    )
+                    eval_result = evaluator.evaluate(criteria)
+                    context["_last_evaluation"] = eval_result
+
+                    # Log refined evaluation
+                    print(f"[SELF-REFLECTION] (Attempt {refinement_count}) Quality: {eval_result.quality.value}, "
+                          f"Confidence: {eval_result.confidence:.2f}, "
+                          f"Recommendation: {eval_result.recommendation.value}")
+
+                # Log final status
+                if refinement_count > 0:
+                    if refinement_count >= max_attempts and eval_result.should_refine:
+                        print(f"[QUERY_REFINER] Max refinement attempts ({max_attempts}) reached")
+                    else:
+                        print(f"[QUERY_REFINER] Refinement complete after {refinement_count} attempt(s)")
+
+                    # Store history in context for debugging (optional)
+                    context["_refinement_history"] = refinement_history
 
         # Continue with normal flow: format and return contexts
         for c in ctx:

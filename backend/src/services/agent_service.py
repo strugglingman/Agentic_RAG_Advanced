@@ -36,9 +36,9 @@ class Agent:
     def __init__(
         self,
         openai_client: OpenAI,
-        max_iterations: int = 5,
-        model: str = "gpt-4o-mini",
-        temperature: float = 0.1,
+        max_iterations: int = int(Config.AGENT_MAX_ITERATIONS),
+        model: str = Config.OPENAI_MODEL,
+        temperature: float = Config.OPENAI_TEMPERATURE,
     ):
         """
         Initialize the agent.

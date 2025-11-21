@@ -225,6 +225,8 @@ def chat_agent(collection):
             "use_hybrid": Config.USE_HYBRID,
             "use_reranker": Config.USE_RERANKER,
             "openai_client": openai_client,  # For self-reflection LLM calls
+            "model": Config.OPENAI_MODEL,
+            "temperature": Config.OPENAI_TEMPERATURE,
         }
 
         # Get session history (EXACT same as /chat)
@@ -233,9 +235,9 @@ def chat_agent(collection):
         # Create agent
         agent = Agent(
             openai_client,
-            max_iterations=5,
-            model="gpt-4o-mini",
-            temperature=0.1,
+            max_iterations=int(Config.AGENT_MAX_ITERATIONS),
+            model=Config.OPENAI_MODEL,
+            temperature=Config.OPENAI_TEMPERATURE,
         )
 
         def generate():
