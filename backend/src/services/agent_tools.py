@@ -241,6 +241,37 @@ def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
                     # Store history in context for debugging (optional)
                     context["_refinement_history"] = refinement_history
 
+            # =================================================================
+            # TODO: Day 4 - Progressive Fallback to Clarification
+            # =================================================================
+            # Add clarification logic here after refinement loop completes.
+            #
+            # Steps:
+            # 1. Import ClarificationHelper at top of file:
+            #    from src.services.clarification_helper import ClarificationHelper
+            #
+            # 2. Check if max attempts reached AND still poor quality:
+            #    if refinement_count >= max_attempts and eval_result.should_clarify:
+            #
+            # 3. Create clarifier and generate message:
+            #    clarifier = ClarificationHelper(openai_client=client)
+            #    clarification_msg = clarifier.generate_clarification(
+            #        query=query,  # Original query (not refined)
+            #        eval_result=eval_result,
+            #        max_attempts_reached=True,
+            #        context_hint="documents in collection",
+            #    )
+            #
+            # 4. Log and decide how to return:
+            #    print(f"[CLARIFICATION] Returning clarification message")
+            #
+            # 5. Options for returning:
+            #    Option A (strict): return clarification_msg  # Instead of contexts
+            #    Option B (soft): Prepend clarification to contexts (let agent decide)
+            #
+            # Note: Consider adding REFLECTION_AUTO_CLARIFY config setting
+            # =================================================================
+
         # Continue with normal flow: format and return contexts
         for c in ctx:
             c["chunk"] = scrub_context(c.get("chunk", ""))
