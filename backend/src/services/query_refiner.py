@@ -29,7 +29,7 @@ class QueryRefiner:
         self,
         openai_client: OpenAI,
         model: str = "gpt-4o-mini",
-        temperature: float = 0.3,
+        temperature: float = 0.1,
     ):
         """
         Initialize the query refiner.
@@ -92,7 +92,11 @@ class QueryRefiner:
             print("[QUERY_REFINER] No OpenAI client provided, using simple refinement.")
             return self._simple_refinement(original_query, eval_result)
 
-        refine_prompt = self._build_refinement_prompt(original_query=original_query, eval_result=eval_result, context_hint=context_hint)
+        refine_prompt = self._build_refinement_prompt(
+            original_query=original_query,
+            eval_result=eval_result,
+            context_hint=context_hint,
+        )
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
@@ -103,14 +107,19 @@ class QueryRefiner:
                         "role": "system",
                         "content": "You are a query refinement expert who improves user search queries for document retrieval systems.",
                     },
-                    {"role": "user", "content": refine_prompt}
-                ]
+                    {"role": "user", "content": refine_prompt},
+                ],
             )
-            refined_query = response.choices[0].message.content.strip().strip('"').strip("'")
+            refined_query = (
+                response.choices[0].message.content.strip().strip('"').strip("'")
+            )
             # Simple validation
-            if (len(refined_query) < 5 or refined_query.lower() == original_query.lower()):
+            if (
+                len(refined_query) < 5
+                or refined_query.lower() == original_query.lower()
+            ):
                 return original_query
-            
+
             return refined_query
         except Exception as e:
             print(f"[QUERY_REFINER] LLM error: {e}. Falling back to simple refinement.")
@@ -159,11 +168,15 @@ class QueryRefiner:
         7. Join all parts with newlines and return
         """
         refined_prompt_parts: list[str] = []
-        refined_prompt_parts.append(f'Original query: "{original_query}" The search returned poor results. Here\'s why:')
+        refined_prompt_parts.append(
+            f'Original query: "{original_query}" The search returned poor results. Here\'s why:'
+        )
         issue_section = ""
         if eval_result.issues:
             issue_section += "\nIssues:"
-            issue_section += "\n" + "\n".join(f" - {issue}" for issue in eval_result.issues)
+            issue_section += "\n" + "\n".join(
+                f" - {issue}" for issue in eval_result.issues
+            )
             refined_prompt_parts.append(issue_section)
         missing_section = ""
         if eval_result.missing_aspects:
@@ -268,7 +281,9 @@ def should_refine(eval_result: EvaluationResult, context: Dict[str, Any]) -> boo
 
     refinement_count = context.get("_refinement_count", 0)
     if refinement_count >= Config.REFLECTION_MAX_REFINEMENT_ATTEMPTS:
-        print(f"[QUERY_REFINER] Max refinement attempts ({Config.REFLECTION_MAX_REFINEMENT_ATTEMPTS}) reached")
+        print(
+            f"[QUERY_REFINER] Max refinement attempts ({Config.REFLECTION_MAX_REFINEMENT_ATTEMPTS}) reached"
+        )
         return False
 
     return True
@@ -307,11 +322,13 @@ def track_refinement(context: Dict[str, Any], original_query: str, refined_query
         context["_original_query"] = original_query
         context["_refinement_history"] = []
     context["_refinement_count"] += 1
-    context["_refinement_history"].append({
-        "attempt": context["_refinement_count"],
-        "from": original_query,
-        "to": refined_query,
-    })
+    context["_refinement_history"].append(
+        {
+            "attempt": context["_refinement_count"],
+            "from": original_query,
+            "to": refined_query,
+        }
+    )
     print(f"[QUERY_REFINER] Refinement attempt {context['_refinement_count']}")
     print(f"[QUERY_REFINER] Original: {original_query}")
     print(f"[QUERY_REFINER] Refined: {refined_query}")

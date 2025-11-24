@@ -149,6 +149,26 @@ class Config:
         os.getenv("REFLECTION_MAX_REFINEMENT_ATTEMPTS", "3")
     )
 
+    # =============================================================================
+    # WEB SEARCH CONFIGURATION (Week 3)
+    # =============================================================================
+    # Master switch - enables/disables the web search fallback feature
+    WEB_SEARCH_ENABLED: bool = os.getenv("WEB_SEARCH_ENABLED", "false").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+    # Search provider: "duckduckgo" (free, no API key) or "tavily" (requires API key)
+    WEB_SEARCH_PROVIDER: str = os.getenv("WEB_SEARCH_PROVIDER", "duckduckgo")
+
+    # Maximum number of web search results to return
+    WEB_SEARCH_MAX_RESULTS: int = int(os.getenv("WEB_SEARCH_MAX_RESULTS", "5"))
+
+    # Tavily API key (optional, only needed if using Tavily provider)
+    TAVILY_API_KEY: str = os.getenv("TAVILY_API_KEY", "")
+
 
 class DevelopmentConfig(Config):
     """Development configuration"""

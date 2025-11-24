@@ -20,6 +20,7 @@ from src.utils.safety import looks_like_injection, scrub_context
 from src.services.retrieval_evaluator import RetrievalEvaluator
 from src.models.evaluation import ReflectionConfig, EvaluationCriteria
 from src.services.query_refiner import QueryRefiner
+from src.services.clarification_helper import ClarificationHelper
 
 # ============================================================================
 # TOOL 1: SEARCH DOCUMENTS
@@ -123,6 +124,9 @@ def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
         # Store raw contexts in context dict for agent to access later
         context["_retrieved_contexts"] = ctx
 
+        # Initialize clarification message (set by self-reflection if quality is poor)
+        clarification_msg = None
+
         if Config.USE_SELF_REFLECTION:
             config = ReflectionConfig.from_settings(Config)
             client = context.get("openai_client", None)
@@ -143,49 +147,67 @@ def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
             context["_last_evaluation"] = eval_result
 
             # Log initial evaluation
-            print(f"[SELF-REFLECTION] Quality: {eval_result.quality.value}, "
-                  f"Confidence: {eval_result.confidence:.2f}, "
-                  f"Recommendation: {eval_result.recommendation.value}")
+            print(
+                f"[SELF-REFLECTION] Quality: {eval_result.quality.value}, "
+                f"Confidence: {eval_result.confidence:.2f}, "
+                f"Recommendation: {eval_result.recommendation.value}"
+            )
             print(f"[SELF-REFLECTION] Reasoning: {eval_result.reasoning}")
             if eval_result.issues:
                 print(f"[SELF-REFLECTION] Issues: {', '.join(eval_result.issues)}")
             if eval_result.missing_aspects:
-                print(f"[SELF-REFLECTION] Missing aspects: {', '.join(eval_result.missing_aspects)}")
+                print(
+                    f"[SELF-REFLECTION] Missing aspects: {', '.join(eval_result.missing_aspects)}"
+                )
 
-            # Refinement loop with local counter
-            if Config.REFLECTION_AUTO_REFINE:
-                refinement_count = 0  # Local counter for this tool call
+            # =================================================================
+            # Handle Direct CLARIFY (confidence < 0.5) - skip refinement
+            # =================================================================
+            if eval_result.should_clarify:
+                clarifier = ClarificationHelper(openai_client=client)
+                clarification_msg = clarifier.generate_clarification(
+                    query=query,
+                    eval_result=eval_result,
+                    max_attempts_reached=False,
+                    context_hint="uploaded documents",
+                )
+                print(f"[CLARIFICATION] Direct clarify (confidence < 0.5)")
+
+            # Refinement loop with local counter (only if not already CLARIFY)
+            refinement_count = 0
+            if Config.REFLECTION_AUTO_REFINE and not eval_result.should_clarify:
                 max_attempts = Config.REFLECTION_MAX_REFINEMENT_ATTEMPTS
                 openai_model = context.get("model", Config.OPENAI_MODEL)
                 temperature = context.get("temperature", Config.OPENAI_TEMPERATURE)
                 query_refiner = QueryRefiner(
-                    openai_client=client,
-                    model=openai_model,
-                    temperature=temperature
+                    openai_client=client, model=openai_model, temperature=temperature
                 )
 
                 # Track refinement history for this tool call (for logging)
                 refinement_history = []
 
-                while (eval_result.should_refine and
-                       refinement_count < max_attempts):
+                while eval_result.should_refine and refinement_count < max_attempts:
 
                     refinement_count += 1
-                    print(f"[QUERY_REFINER] Refinement attempt {refinement_count}/{max_attempts}")
+                    print(
+                        f"[QUERY_REFINER] Refinement attempt {refinement_count}/{max_attempts}"
+                    )
 
                     # Refine the query (use current_query, not original)
                     refined_query = query_refiner.refine_query(
                         original_query=current_query,
                         eval_result=eval_result,
-                        context_hint=" ".join([c.get("chunk", "")[:100] for c in ctx])
+                        context_hint=" ".join([c.get("chunk", "")[:100] for c in ctx]),
                     )
 
                     # Track for logging
-                    refinement_history.append({
-                        "attempt": refinement_count,
-                        "from": current_query,
-                        "to": refined_query,
-                    })
+                    refinement_history.append(
+                        {
+                            "attempt": refinement_count,
+                            "from": current_query,
+                            "to": refined_query,
+                        }
+                    )
                     print(f"[QUERY_REFINER] '{current_query}' -> '{refined_query}'")
 
                     # Update current query for next iteration
@@ -204,7 +226,9 @@ def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
                     )
 
                     if not ctx:
-                        print(f"[QUERY_REFINER] No results for refined query, keeping previous results")
+                        print(
+                            f"[QUERY_REFINER] No results for refined query, keeping previous results"
+                        )
                         # Restore previous contexts
                         ctx = context["_retrieved_contexts"]
                         break
@@ -227,50 +251,41 @@ def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
                     context["_last_evaluation"] = eval_result
 
                     # Log refined evaluation
-                    print(f"[SELF-REFLECTION] (Attempt {refinement_count}) Quality: {eval_result.quality.value}, "
-                          f"Confidence: {eval_result.confidence:.2f}, "
-                          f"Recommendation: {eval_result.recommendation.value}")
+                    print(
+                        f"[SELF-REFLECTION] (Attempt {refinement_count}) Quality: {eval_result.quality.value}, "
+                        f"Confidence: {eval_result.confidence:.2f}, "
+                        f"Recommendation: {eval_result.recommendation.value}"
+                    )
 
                 # Log final status
                 if refinement_count > 0:
                     if refinement_count >= max_attempts and eval_result.should_refine:
-                        print(f"[QUERY_REFINER] Max refinement attempts ({max_attempts}) reached")
+                        print(
+                            f"[QUERY_REFINER] Max refinement attempts ({max_attempts}) reached"
+                        )
                     else:
-                        print(f"[QUERY_REFINER] Refinement complete after {refinement_count} attempt(s)")
+                        print(
+                            f"[QUERY_REFINER] Refinement complete after {refinement_count} attempt(s)"
+                        )
 
                     # Store history in context for debugging (optional)
                     context["_refinement_history"] = refinement_history
 
             # =================================================================
-            # TODO: Day 4 - Progressive Fallback to Clarification
+            # Progressive Fallback: max attempts reached → clarification
             # =================================================================
-            # Add clarification logic here after refinement loop completes.
-            #
-            # Steps:
-            # 1. Import ClarificationHelper at top of file:
-            #    from src.services.clarification_helper import ClarificationHelper
-            #
-            # 2. Check if max attempts reached AND still poor quality:
-            #    if refinement_count >= max_attempts and eval_result.should_clarify:
-            #
-            # 3. Create clarifier and generate message:
-            #    clarifier = ClarificationHelper(openai_client=client)
-            #    clarification_msg = clarifier.generate_clarification(
-            #        query=query,  # Original query (not refined)
-            #        eval_result=eval_result,
-            #        max_attempts_reached=True,
-            #        context_hint="documents in collection",
-            #    )
-            #
-            # 4. Log and decide how to return:
-            #    print(f"[CLARIFICATION] Returning clarification message")
-            #
-            # 5. Options for returning:
-            #    Option A (strict): return clarification_msg  # Instead of contexts
-            #    Option B (soft): Prepend clarification to contexts (let agent decide)
-            #
-            # Note: Consider adding REFLECTION_AUTO_CLARIFY config setting
-            # =================================================================
+            if Config.REFLECTION_AUTO_REFINE and not eval_result.should_clarify:
+                if refinement_count >= max_attempts and eval_result.should_refine:
+                    clarifier = ClarificationHelper(openai_client=client)
+                    clarification_msg = clarifier.generate_clarification(
+                        query=query,  # Original query (not refined)
+                        eval_result=eval_result,
+                        max_attempts_reached=True,
+                        context_hint="uploaded documents",
+                    )
+                    print(
+                        f"[CLARIFICATION] Max attempts reached, returning clarification"
+                    )
 
         # Continue with normal flow: format and return contexts
         for c in ctx:
@@ -298,7 +313,7 @@ def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
         )
 
         # Return formatted contexts with instructions for the LLM
-        return (
+        result = (
             f"Found {len(ctx)} relevant document(s):\n\n"
             f"{context_str}\n\n"
             f"Instructions: Answer the question concisely by synthesizing information from the contexts above. "
@@ -307,6 +322,14 @@ def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
             f"from the contexts you referenced (look at the 'Page:' information in each context header). "
             f"Format: 'Sources: filename1.pdf (pages 15, 23), filename2.pdf (page 7)'"
         )
+
+        # Prepend clarification message if quality was poor
+        if clarification_msg:
+            result = (
+                f"[QUALITY WARNING]\n{clarification_msg}\n\n" f"---\n\n" f"{result}"
+            )
+
+        return result
     except Exception as e:
         return f"Error during document retrieval: {str(e)}"
 

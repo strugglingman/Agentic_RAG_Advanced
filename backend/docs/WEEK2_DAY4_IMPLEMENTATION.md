@@ -22,25 +22,44 @@ Day 4 implements the remaining Week 2 features:
 
 ```python
 # agent_tools.py - Current behavior
+# Only handles REFINE recommendation (0.50 ≤ confidence < 0.70)
 while eval_result.should_refine and refinement_count < max_attempts:
     # Refine and retry
     ...
 
-# After max attempts: just returns whatever contexts were found
-# NO clarification message if still poor quality
+# Problems:
+# 1. Direct CLARIFY (confidence < 0.50) is NOT handled - skips refinement but no message
+# 2. After max attempts: just returns whatever contexts were found
 ```
 
 ### Target State (After Day 4):
 
 ```python
-# agent_tools.py - With clarification fallback
+# agent_tools.py - With full clarification support
+
+# NEW: Handle direct CLARIFY (confidence < 0.50) BEFORE refinement
+if eval_result.should_clarify:
+    return clarification_helper.generate_clarification(query, eval_result, max_attempts_reached=False)
+
+# Refinement loop (only for REFINE recommendation: 0.50 ≤ confidence < 0.70)
 while eval_result.should_refine and refinement_count < max_attempts:
     # Refine and retry
     ...
 
-# NEW: After max attempts, if still poor → return clarification message
+# NEW: After max refinement attempts, if still poor → return clarification message
 if refinement_count >= max_attempts and eval_result.should_refine:
-    return clarification_helper.generate_clarification(query, eval_result)
+    return clarification_helper.generate_clarification(query, eval_result, max_attempts_reached=True)
+```
+
+### Logic Flow Summary:
+
+```
+Evaluation Result:
+├── confidence ≥ 0.70 (ANSWER)    → Return contexts directly
+├── 0.50 ≤ confidence < 0.70 (REFINE) → Try refinement loop
+│   ├── Refinement succeeds       → Return improved contexts
+│   └── Max attempts reached      → Return clarification message
+└── confidence < 0.50 (CLARIFY)   → Return clarification message directly (skip refinement)
 ```
 
 ---
@@ -94,7 +113,6 @@ class ClarificationHelper:
         self,
         query: str,
         eval_result: EvaluationResult,
-        refinement_attempted: bool = False,
         max_attempts_reached: bool = False,
         context_hint: Optional[str] = None,
     ) -> str:
@@ -104,12 +122,16 @@ class ClarificationHelper:
         Args:
             query: Original user query
             eval_result: Evaluation result with issues
-            refinement_attempted: Whether refinement was tried
-            max_attempts_reached: Whether max refinements reached
+            max_attempts_reached: Whether max refinements reached (implies refinement was attempted)
             context_hint: Optional hint about document collection
 
         Returns:
             Clarification message string
+
+        Scenarios:
+            - max_attempts_reached=True: Refinement was tried but failed → _max_attempts_message
+            - No contexts found: Nothing retrieved → _no_results_message
+            - Direct CLARIFY (confidence < 0.5): Poor quality → _ambiguous_query_message
         """
         if max_attempts_reached:
             return self._max_attempts_message(query, eval_result, context_hint)
@@ -264,42 +286,59 @@ if __name__ == "__main__":
 from src.services.clarification_helper import ClarificationHelper
 ```
 
-### Step 2.2: Add clarification after refinement loop
+### Step 2.2: Add DIRECT clarification BEFORE refinement loop
 
-**Location**: After the refinement loop (around line 243), before formatting contexts
+**Location**: After initial evaluation, BEFORE refinement loop (around line 155)
 
-**Find this code** (around line 234-242):
+**Purpose**: Handle CLARIFY recommendation (confidence < 0.50) directly without attempting refinement.
+
 ```python
-                # Log final status
-                if refinement_count > 0:
-                    if refinement_count >= max_attempts and eval_result.should_refine:
-                        print(f"[QUERY_REFINER] Max refinement attempts ({max_attempts}) reached")
-                    else:
-                        print(f"[QUERY_REFINER] Refinement complete after {refinement_count} attempt(s)")
-
-                    # Store history in context for debugging (optional)
-                    context["_refinement_history"] = refinement_history
+            # Handle direct CLARIFY (confidence < 0.50) - skip refinement
+            if eval_result.should_clarify:
+                clarifier = ClarificationHelper(openai_client=client)
+                clarification_msg = clarifier.generate_clarification(
+                    query=query,
+                    eval_result=eval_result,
+                    max_attempts_reached=False,  # No refinement attempted
+                    context_hint="documents in collection",
+                )
+                print(f"[CLARIFICATION] Direct clarify (confidence < 0.50)")
+                # Option A: return clarification_msg
+                # Option B: prepend to contexts
 ```
 
-**Add clarification logic after** (insert around line 243):
+### Step 2.3: Add clarification AFTER refinement loop (progressive fallback)
+
+**Location**: After the refinement loop (around line 268), before formatting contexts
+
+**Purpose**: Handle case where refinement was tried but max attempts reached without success.
+
 ```python
-                # Progressive fallback: if still poor after max attempts, return clarification
-                if refinement_count >= max_attempts and eval_result.should_clarify:
+            # Progressive fallback: if still poor after max attempts, return clarification
+            if Config.REFLECTION_AUTO_REFINE:
+                if refinement_count >= max_attempts and eval_result.should_refine:
                     clarifier = ClarificationHelper(openai_client=client)
                     clarification_msg = clarifier.generate_clarification(
                         query=query,  # Original query
                         eval_result=eval_result,
-                        max_attempts_reached=True,
-                        context_hint=f"documents in collection",
+                        max_attempts_reached=True,  # Refinement was attempted
+                        context_hint="documents in collection",
                     )
-                    print(f"[CLARIFICATION] Returning clarification message")
-                    # Still return contexts, but prepend clarification
-                    # This lets the agent know the quality is poor
+                    print(f"[CLARIFICATION] Max attempts reached, returning clarification")
+                    # Option A: return clarification_msg
+                    # Option B: prepend to contexts
 ```
 
-**Note**: The exact integration depends on your preference:
-- **Option A**: Return clarification message instead of contexts (strict)
-- **Option B**: Prepend clarification to contexts (let agent decide)
+### Integration Summary:
+
+| Scenario | Location | `max_attempts_reached` |
+|----------|----------|------------------------|
+| Direct CLARIFY (confidence < 0.50) | Before refinement loop | `False` |
+| Post-refinement fallback | After refinement loop | `True` |
+
+**Note**: The exact return behavior depends on your preference:
+- **Option A (strict)**: Return clarification message instead of contexts
+- **Option B (soft)**: Prepend clarification to contexts (let agent decide)
 
 ---
 
@@ -330,32 +369,39 @@ python -m src.services.clarification_helper
 
 ### Test 2: Integration test scenarios
 
-**Scenario A: Successful refinement (no clarification)**
+**Scenario A: Good quality (ANSWER) - no clarification**
+```
+Query: "What is the vacation policy?"
+→ Initial eval: ANSWER (confidence ≥ 0.70)
+→ Result: Returns contexts directly (no refinement, no clarification)
+```
+
+**Scenario B: Successful refinement (REFINE → ANSWER)**
 ```
 Query: "Tell me about PTO"
-→ Initial eval: REFINE
+→ Initial eval: REFINE (confidence = 0.55)
 → Refinement: "paid time off vacation policy"
-→ New eval: ANSWER
-→ Result: Returns contexts (no clarification needed)
+→ New eval: ANSWER (confidence = 0.78)
+→ Result: Returns improved contexts (no clarification needed)
 ```
 
-**Scenario B: Max attempts reached → clarification**
+**Scenario C: Max attempts reached → clarification (REFINE → REFINE → ... → clarify)**
 ```
 Query: "xyz abc nonsense"
-→ Initial eval: REFINE
-→ Refinement 1: still poor
-→ Refinement 2: still poor
-→ Refinement 3: still poor
+→ Initial eval: REFINE (confidence = 0.52)
+→ Refinement 1: still poor (confidence = 0.54)
+→ Refinement 2: still poor (confidence = 0.53)
+→ Refinement 3: still poor (confidence = 0.55)
 → Max attempts reached
-→ Result: Returns clarification message
+→ Result: Returns clarification message (max_attempts_reached=True)
 ```
 
-**Scenario C: Direct clarification (no contexts)**
+**Scenario D: Direct clarification (CLARIFY) - skip refinement**
 ```
 Query: "What is the weather?"
-→ No contexts found
-→ Eval: CLARIFY (not REFINE)
-→ Result: Returns clarification message immediately
+→ Initial eval: CLARIFY (confidence = 0.25, < 0.50)
+→ Result: Returns clarification message immediately (max_attempts_reached=False)
+→ Note: Refinement loop is SKIPPED entirely
 ```
 
 ---
@@ -373,19 +419,27 @@ Query: "What is the weather?"
 
 ## ✅ Day 4 Checklist
 
-- [ ] Create `clarification_helper.py`
-- [ ] Implement `ClarificationHelper` class
+### Part 1: ClarificationHelper Service
+- [x] Create `clarification_helper.py` (skeleton exists)
 - [ ] Implement `_no_results_message()`
 - [ ] Implement `_ambiguous_query_message()`
 - [ ] Implement `_max_attempts_message()`
 - [ ] Add test block
-- [ ] Run standalone tests
-- [ ] Import in `agent_tools.py`
-- [ ] Add clarification logic after refinement loop
-- [ ] Test Scenario A: refinement success
-- [ ] Test Scenario B: max attempts → clarification
-- [ ] Test Scenario C: direct clarification
-- [ ] (Optional) Add configuration settings
+- [ ] Run standalone tests: `python -m src.services.clarification_helper`
+
+### Part 2: Integration in agent_tools.py
+- [ ] Import ClarificationHelper at top of file
+- [ ] Add direct CLARIFY handling BEFORE refinement loop (confidence < 0.50)
+- [ ] Add post-refinement fallback AFTER refinement loop (max attempts reached)
+
+### Part 3: Testing
+- [ ] Test Scenario A: ANSWER (good quality, no clarification)
+- [ ] Test Scenario B: REFINE → ANSWER (successful refinement)
+- [ ] Test Scenario C: REFINE → max attempts → clarification
+- [ ] Test Scenario D: Direct CLARIFY (confidence < 0.50, skip refinement)
+
+### Part 4: Optional
+- [ ] Add `REFLECTION_AUTO_CLARIFY` config setting
 
 ---
 

@@ -179,7 +179,7 @@ class RetrievalEvaluator:
         issues = self._detect_issues(context_count, avg_score, keyword_overlap)
         missing_aspects = self._identify_missing_aspects(query_keywords, context_text)
         recommendation, reasoning = self._determine_recommendation(
-            evaluation_confidence, context_count
+            evaluation_confidence, context_count, criteria.query
         )
         quality_level = self.config.get_quality_level(evaluation_confidence)
 
@@ -693,41 +693,133 @@ class RetrievalEvaluator:
         """
         return [kw for kw in keywords if kw.lower() not in context_text.lower()]
 
+    def _is_external_query(self, query: str) -> bool:
+        """
+        Check if query appears to need external/real-time information.
+
+        Detects queries that likely cannot be answered from internal documents:
+        - Real-time data (prices, weather, news)
+        - Current/latest information
+        - General knowledge not in company docs
+
+        Args:
+            query: User query string
+
+        Returns:
+            True if query appears to need external information
+
+        Examples:
+            "What is the current inflation rate?" → True
+            "What is the weather today?" → True
+            "What is our vacation policy?" → False
+            "How do I apply for leave?" → False
+        """
+        if not query:
+            return False
+
+        query_lower = query.lower()
+
+        # Real-time / current data indicators
+        time_indicators = [
+            "current",
+            "latest",
+            "today",
+            "now",
+            "live",
+            "real-time",
+            "recent",
+            "this week",
+            "this month",
+            "this year",
+        ]
+
+        # External data types
+        external_data_types = [
+            "weather",
+            "stock price",
+            "stock market",
+            "news",
+            "trending",
+            "inflation rate",
+            "exchange rate",
+            "cryptocurrency",
+            "bitcoin",
+        ]
+
+        # General knowledge patterns (unlikely in company docs)
+        general_knowledge = [
+            "who is",
+            "what is a ",
+            "what is an ",
+            "what are ",
+            "how does",
+            "define ",
+            "meaning of",
+            "history of",
+        ]
+
+        # Check time indicators
+        for indicator in time_indicators:
+            if indicator in query_lower:
+                return True
+
+        # Check external data types
+        for data_type in external_data_types:
+            if data_type in query_lower:
+                return True
+
+        # Check general knowledge patterns
+        for pattern in general_knowledge:
+            if query_lower.startswith(pattern):
+                return True
+
+        return False
+
     def _determine_recommendation(
-        self, confidence: float, context_count: int
+        self, confidence: float, context_count: int, query: str = ""
     ) -> Tuple[RecommendationAction, str]:
         """
-        Determine recommendation based on confidence and context count.
+        Determine recommendation based on confidence, context count, and query.
 
         Args:
             confidence: Confidence score (0.0-1.0)
             context_count: Number of contexts
+            query: Original user query (for EXTERNAL detection)
 
         Returns:
             Tuple of (RecommendationAction, reasoning)
 
-        TODO: Implement recommendation logic
         Decision tree:
         1. If context_count == 0:
-           - return (RecommendationAction.REFINE, "No contexts found - query refinement recommended")
+           - If query looks like external request → EXTERNAL
+           - Else → REFINE
 
-        2. If confidence >= self.config.thresholds["excellent"]:
-           - return (RecommendationAction.ANSWER, "High confidence - contexts directly answer query")
+        2. If confidence >= threshold["excellent"]:
+           - return ANSWER
 
-        3. If confidence >= self.config.thresholds["good"]:
-           - return (RecommendationAction.ANSWER, "Good confidence - contexts provide sufficient information")
+        3. If confidence >= threshold["good"]:
+           - return ANSWER
 
-        4. If confidence >= self.config.thresholds["partial"]:
-           - return (RecommendationAction.REFINE, "Partial confidence - query refinement may help")
+        4. If confidence >= threshold["partial"]:
+           - return REFINE
 
-        5. Else:
-           - return (RecommendationAction.CLARIFY, "Low confidence - query may be ambiguous or out of scope")
+        5. Else (confidence < partial):
+           - If query looks like external request → EXTERNAL
+           - Else → CLARIFY
         """
+        # No contexts found
         if context_count == 0:
+            if self._is_external_query(query):
+                return (
+                    RecommendationAction.EXTERNAL,
+                    "No contexts found - query appears to need external/real-time information",
+                )
             return (
                 RecommendationAction.REFINE,
                 "No contexts found - query refinement recommended",
             )
+
+        # High confidence - answer directly
         if confidence >= self.config.thresholds["excellent"]:
             return (
                 RecommendationAction.ANSWER,
@@ -738,10 +830,19 @@ class RetrievalEvaluator:
                 RecommendationAction.ANSWER,
                 "Good confidence - contexts provide sufficient information",
             )
+
+        # Partial confidence - try refinement
         if confidence >= self.config.thresholds["partial"]:
             return (
                 RecommendationAction.REFINE,
                 "Partial confidence - query refinement may help",
+            )
+
+        # Low confidence - check if external or clarify
+        if self._is_external_query(query):
+            return (
+                RecommendationAction.EXTERNAL,
+                "Low confidence - query appears to need external/real-time information",
             )
         return (
             RecommendationAction.CLARIFY,

@@ -33,7 +33,7 @@ class ClarificationHelper:
         self,
         openai_client: Optional[OpenAI] = None,
         model: str = "gpt-4o-mini",
-        temperature: float = 0.5,
+        temperature: float = 0.1,
     ):
         """
         Initialize clarification helper.
@@ -57,7 +57,6 @@ class ClarificationHelper:
         self,
         query: str,
         eval_result: EvaluationResult,
-        refinement_attempted: bool = False,
         max_attempts_reached: bool = False,
         context_hint: Optional[str] = None,
     ) -> str:
@@ -67,12 +66,16 @@ class ClarificationHelper:
         Args:
             query: Original user query
             eval_result: Evaluation result with issues/missing_aspects
-            refinement_attempted: Whether refinement was tried
-            max_attempts_reached: Whether max refinement attempts reached
+            max_attempts_reached: Whether max refinement attempts reached (implies refinement was attempted)
             context_hint: Optional hint about document collection
 
         Returns:
             Clarification message string
+
+        Scenarios:
+        1. max_attempts_reached=True: Refinement was tried but failed → _max_attempts_message
+        2. No contexts found: Nothing retrieved → _no_results_message
+        3. Direct CLARIFY (confidence < 0.5): Poor quality, skip refinement → _ambiguous_query_message
 
         TODO: Implement message routing
         Steps:
@@ -83,7 +86,16 @@ class ClarificationHelper:
         3. Else:
            - Return self._ambiguous_query_message(query, eval_result, context_hint)
         """
-        pass
+        if max_attempts_reached:
+            return self._max_attempts_message(
+                query, eval_result=eval_result, context_hint=context_hint
+            )
+        elif not eval_result.issues or "No contexts" in str(eval_result.issues):
+            return self._no_results_message(query, context_hint=context_hint)
+        else:
+            return self._ambiguous_query_message(
+                query, eval_result=eval_result, context_hint=context_hint
+            )
 
     def _no_results_message(
         self,
@@ -112,7 +124,17 @@ class ClarificationHelper:
            - Add: f"Note: I searched in {context_hint}"
         4. Return formatted message
         """
-        pass
+        message_base = (
+            f'I couldn\'t find any relevant information for: "{query}".\n\n'
+            "Suggestions to improve your query:\n"
+            "- The information might not be in the uploaded documents.\n"
+            "- Try using different keywords.\n"
+            "- Be more specific about what you're looking for.\n"
+        )
+        if context_hint:
+            message_base += f"\nNote: I have searched in {context_hint}."
+
+        return message_base
 
     def _ambiguous_query_message(
         self,
@@ -146,7 +168,25 @@ class ClarificationHelper:
            - "Providing more context"
         5. Return formatted message
         """
-        pass
+        message = f'Your query "{query}" returned low-quality results.\n\n'
+        if eval_result.issues:
+            message += "Issues found:\n"
+            for issue in eval_result.issues[:3]:
+                message += f"- {issue}\n"
+        if eval_result.missing_aspects:
+            message += (
+                f"\nMissing keywords: {', '.join(eval_result.missing_aspects[:5])}\n"
+            )
+        message += (
+            "\nSuggestions to improve your query:\n"
+            "- Be more specific about what you're looking for.\n"
+            "- Use different keywords.\n"
+            "- Provide more context if possible.\n"
+        )
+        if context_hint:
+            message += f"\nNote: I have searched in {context_hint}."
+
+        return message
 
     def _max_attempts_message(
         self,
@@ -182,7 +222,23 @@ class ClarificationHelper:
            - Add: f"Searched in: {context_hint}"
         6. Return formatted message
         """
-        pass
+        message = (
+            f"After multiple search attempts, I couldn't find highly relevant "
+            f'information for: "{query}".\n\n'
+            "The best results I found may not fully answer your question.\n\n"
+            "Suggestions to improve your query:\n"
+            "- Try rephrasing your question.\n"
+            "- Break it into smaller, more specific questions.\n"
+            "- Check if the information exists in the uploaded documents.\n"
+        )
+        if eval_result.missing_aspects:
+            message += (
+                f"\nKeywords not found: {', '.join(eval_result.missing_aspects[:5])}\n"
+            )
+        if context_hint:
+            message += f"\nI have searched in: {context_hint}."
+
+        return message
 
 
 # =============================================================================
@@ -240,9 +296,100 @@ if __name__ == "__main__":
        print("ALL TESTS COMPLETE!")
        print("=" * 70)
     """
+    from src.models.evaluation import EvaluationResult, QualityLevel, RecommendationAction
+
     print("=" * 70)
     print("CLARIFICATION HELPER TEST")
     print("=" * 70)
-    print("\nTODO: Implement ClarificationHelper class first")
-    print("Then run: python -m src.services.clarification_helper")
+
+    helper = ClarificationHelper(openai_client=None)
+    print("[OK] ClarificationHelper created")
+
+    # Test 1: No results message
+    print("\n" + "-" * 70)
+    print("Test 1: No Results Message")
+    print("-" * 70)
+    message = helper._no_results_message(
+        "What is quantum physics?",
+        context_hint="HR documents"
+    )
+    print(message)
+
+    # Test 2: Ambiguous query message
+    print("\n" + "-" * 70)
+    print("Test 2: Ambiguous Query Message")
+    print("-" * 70)
+    mock_eval = EvaluationResult(
+        quality=QualityLevel.POOR,
+        confidence=0.2,
+        coverage=0.1,
+        recommendation=RecommendationAction.CLARIFY,
+        reasoning="Poor quality",
+        issues=["Low average relevance score: 0.20", "Poor keyword match: 0.10"],
+        missing_aspects=["apply", "application", "process", "submit"],
+        relevance_scores=[0.1, 0.2],
+        metrics={},
+    )
+    message = helper._ambiguous_query_message(
+        "How do I apply?",
+        mock_eval,
+        context_hint="company policies"
+    )
+    print(message)
+
+    # Test 3: Max attempts message
+    print("\n" + "-" * 70)
+    print("Test 3: Max Attempts Message")
+    print("-" * 70)
+    message = helper._max_attempts_message(
+        "Tell me about xyz",
+        mock_eval,
+        context_hint="company documents"
+    )
+    print(message)
+
+    # Test 4: generate_clarification routing
+    print("\n" + "-" * 70)
+    print("Test 4: generate_clarification Routing")
+    print("-" * 70)
+
+    # Test max_attempts_reached=True → _max_attempts_message
+    msg1 = helper.generate_clarification(
+        query="test query",
+        eval_result=mock_eval,
+        max_attempts_reached=True,
+    )
+    print(f"  max_attempts_reached=True: {'_max_attempts_message' if 'multiple search attempts' in msg1 else 'WRONG'}")
+
+    # Test empty issues → _no_results_message
+    empty_eval = EvaluationResult(
+        quality=QualityLevel.POOR,
+        confidence=0.1,
+        coverage=0.0,
+        recommendation=RecommendationAction.CLARIFY,
+        reasoning="No contexts",
+        issues=[],
+        missing_aspects=[],
+        relevance_scores=[],
+        metrics={},
+    )
+    msg2 = helper.generate_clarification(
+        query="test query",
+        eval_result=empty_eval,
+        max_attempts_reached=False,
+    )
+    print(f"  empty issues: {'_no_results_message' if 'couldn' in msg2 else 'WRONG'}")
+
+    # Test with issues present → _ambiguous_query_message
+    msg3 = helper.generate_clarification(
+        query="test query",
+        eval_result=mock_eval,
+        max_attempts_reached=False,
+    )
+    print(f"  issues present: {'_ambiguous_query_message' if 'low-quality results' in msg3 else 'WRONG'}")
+
+    print("  [OK] Routing logic verified")
+
+    print("\n" + "=" * 70)
+    print("ALL TESTS COMPLETE!")
     print("=" * 70)
