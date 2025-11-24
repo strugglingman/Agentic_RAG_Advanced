@@ -21,6 +21,7 @@ from src.services.retrieval_evaluator import RetrievalEvaluator
 from src.models.evaluation import ReflectionConfig, EvaluationCriteria
 from src.services.query_refiner import QueryRefiner
 from src.services.clarification_helper import ClarificationHelper
+from src.services.web_search import WebSearchService
 
 # ============================================================================
 # TOOL 1: SEARCH DOCUMENTS
@@ -124,8 +125,9 @@ def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
         # Store raw contexts in context dict for agent to access later
         context["_retrieved_contexts"] = ctx
 
-        # Initialize clarification message (set by self-reflection if quality is poor)
+        # Initialize messages (set by self-reflection based on quality)
         clarification_msg = None
+        external_msg = None
 
         if Config.USE_SELF_REFLECTION:
             config = ReflectionConfig.from_settings(Config)
@@ -173,9 +175,25 @@ def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
                 )
                 print(f"[CLARIFICATION] Direct clarify (confidence < 0.5)")
 
+            # =================================================================
+            # Handle EXTERNAL Recommendation (Week 3 - Day 6)
+            # =================================================================
+            # Signal agent to use web_search tool (don't execute automatically)
+            if eval_result.should_search_external:
+                print(f"[SELF-REFLECTION] EXTERNAL recommended - suggesting web search")
+                external_msg = (
+                    f"[EXTERNAL SEARCH SUGGESTED]\n"
+                    f"The query \"{query}\" appears to require external information "
+                    f"not found in the uploaded documents.\n\n"
+                    f"Reason: {eval_result.reasoning}\n\n"
+                    f"Recommendation: Use the web_search tool to find current or external information.\n\n"
+                    f"---\n\n"
+                )
+
+
             # Refinement loop with local counter (only if not already CLARIFY)
             refinement_count = 0
-            if Config.REFLECTION_AUTO_REFINE and not eval_result.should_clarify:
+            if Config.REFLECTION_AUTO_REFINE and eval_result.should_refine:
                 max_attempts = Config.REFLECTION_MAX_REFINEMENT_ATTEMPTS
                 openai_model = context.get("model", Config.OPENAI_MODEL)
                 temperature = context.get("temperature", Config.OPENAI_TEMPERATURE)
@@ -186,7 +204,7 @@ def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
                 # Track refinement history for this tool call (for logging)
                 refinement_history = []
 
-                while eval_result.should_refine and refinement_count < max_attempts:
+                while refinement_count < max_attempts:
 
                     refinement_count += 1
                     print(
@@ -259,9 +277,23 @@ def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
 
                 # Log final status
                 if refinement_count > 0:
-                    if refinement_count >= max_attempts and eval_result.should_refine:
+                    if refinement_count >= max_attempts:
                         print(
                             f"[QUERY_REFINER] Max refinement attempts ({max_attempts}) reached"
+                        )
+
+                        # =================================================================
+                        # Progressive Fallback: max attempts reached → clarification
+                        # =================================================================
+                        clarifier = ClarificationHelper(openai_client=client)
+                        clarification_msg = clarifier.generate_clarification(
+                            query=query,  # Original query (not refined)
+                            eval_result=eval_result,
+                            max_attempts_reached=True,
+                            context_hint="uploaded documents",
+                        )
+                        print(
+                            f"[CLARIFICATION] Max attempts reached, returning clarification"
                         )
                     else:
                         print(
@@ -270,22 +302,6 @@ def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
 
                     # Store history in context for debugging (optional)
                     context["_refinement_history"] = refinement_history
-
-            # =================================================================
-            # Progressive Fallback: max attempts reached → clarification
-            # =================================================================
-            if Config.REFLECTION_AUTO_REFINE and not eval_result.should_clarify:
-                if refinement_count >= max_attempts and eval_result.should_refine:
-                    clarifier = ClarificationHelper(openai_client=client)
-                    clarification_msg = clarifier.generate_clarification(
-                        query=query,  # Original query (not refined)
-                        eval_result=eval_result,
-                        max_attempts_reached=True,
-                        context_hint="uploaded documents",
-                    )
-                    print(
-                        f"[CLARIFICATION] Max attempts reached, returning clarification"
-                    )
 
         # Continue with normal flow: format and return contexts
         for c in ctx:
@@ -322,6 +338,10 @@ def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
             f"from the contexts you referenced (look at the 'Page:' information in each context header). "
             f"Format: 'Sources: filename1.pdf (pages 15, 23), filename2.pdf (page 7)'"
         )
+
+        # Prepend external search suggestion if recommended
+        if external_msg:
+            result = external_msg + result
 
         # Prepend clarification message if quality was poor
         if clarification_msg:
@@ -451,11 +471,76 @@ def _safe_eval(expr: str) -> float:
 
 
 # ============================================================================
+# TOOL 3: WEB SEARCH
+# ============================================================================
+WEB_SEARCH_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "web_search",
+        "description": (
+            "Search the web for up-to-date information when not found in internal documents. "
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": (
+                        "The search query. Be specific and use keywords from the user's question. "
+                        "For example: 'Q1 2024 revenue', 'employee vacation policy', 'sales targets'"
+                    ),
+                },
+                "max_results": {
+                    "type": "integer",
+                    "description": (
+                        "Number of web search results to return. "
+                        "Use 3-5 for quick lookups, 8-10 for comprehensive answers. Default is 5."
+                    ),
+                    "default": 5,
+                },
+            },
+            "required": ["query"],
+        },
+    },
+}
+
+def execute_web_search(args: Dict[str, Any], context: Dict[str, Any]) -> str:
+    """
+    Execute the web_search tool.
+
+    Args:
+        args: Arguments from LLM containing:
+            - query (str): Search query
+            - top_k (int, optional): Number of results to return
+    """
+    query = args.get("query", "")
+    max_results = args.get("max_results", 5) or Config.WEB_SEARCH_MAX_RESULTS
+    try:
+        web_search_service = WebSearchService(
+            provider=Config.WEB_SEARCH_PROVIDER,
+            max_results=max_results,
+            tavily_api_key=Config.TAVILY_API_KEY,
+        )
+        web_search_results = web_search_service.search(
+            query=query,
+            max_results=max_results
+        )
+        if web_search_results:
+            return web_search_service.format_for_agent(web_search_results, query)
+        else:
+            print("[WEB_SEARCH] No results found, falling back to document contexts")
+            return "No relevant web results found."
+    except Exception as e:
+        return f"Error during web search: {str(e)}"
+
+
+# ============================================================================
 # TOOL REGISTRY
 # ============================================================================
 
 TOOL_REGISTRY = {
     "search_documents": execute_search_documents,
+    "web_search": execute_web_search,
     "calculator": execute_calculator,
 }
 """
@@ -471,6 +556,7 @@ When LLM calls a tool, we lookup the function here and execute it.
 ALL_TOOLS = [
     SEARCH_DOCUMENTS_SCHEMA,
     CALCULATOR_SCHEMA,
+    WEB_SEARCH_SCHEMA,
 ]
 """
 List of all tool schemas to send to OpenAI API.

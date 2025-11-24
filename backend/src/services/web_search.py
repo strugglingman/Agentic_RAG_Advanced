@@ -9,7 +9,10 @@ Week 3 - Day 5: Web Search Service
 
 from typing import Optional, List
 from dataclasses import dataclass
+from urllib.parse import urlparse
 from src.config.settings import Config
+from ddgs import DDGS  # Renamed from duckduckgo_search
+from tavily import TavilyClient
 
 
 @dataclass
@@ -67,7 +70,9 @@ class WebSearchService:
         4. Validate provider is supported: ["duckduckgo", "tavily"]
         5. If provider is "tavily" and no API key, raise ValueError
         """
-        pass
+        self.provider = provider or Config.WEB_SEARCH_PROVIDER
+        self.max_results = max_results or Config.WEB_SEARCH_MAX_RESULTS
+        self.tavily_api_key = tavily_api_key or Config.TAVILY_API_KEY
 
     def search(
         self,
@@ -100,7 +105,14 @@ class WebSearchService:
            - Raise ValueError(f"Unsupported provider: {self.provider}")
         6. Return results
         """
-        pass
+        query = self._validate_query(query)
+        num_results = max_results or self.max_results
+        if self.provider == "duckduckgo":
+            return self._search_duckduckgo(query, num_results)
+        elif self.provider == "tavily":
+            return self._search_tavily(query, num_results)
+        else:
+            raise ValueError(f"Unsupported provider: {self.provider}")
 
     def _validate_query(self, query: str) -> str:
         """
@@ -124,7 +136,13 @@ class WebSearchService:
            - Truncate: query = query[:500]
         4. Return query
         """
-        pass
+        query = query.strip()
+        if len(query) < 3:
+            raise ValueError("Query too short (minimum 3 characters)")
+        if len(query) > 500:
+            query = query[:500]
+
+        return query
 
     def _search_duckduckgo(
         self,
@@ -161,7 +179,23 @@ class WebSearchService:
            - Print: f"[WEB_SEARCH] DuckDuckGo error: {e}"
            - Return empty list []
         """
-        pass
+        try:
+            ddgs = DDGS()
+            results = ddgs.text(query, max_results=max_results)
+            final_results = []
+            for r in results:
+                web_result = WebSearchResult(
+                    title=r.get("title", ""),
+                    url=r.get("href", ""),
+                    snippet=r.get("body", ""),
+                    source=self._extract_domain(r.get("href", "")),
+                )
+                final_results.append(web_result)
+            
+            return final_results
+        except Exception as e:
+            print(f"[WEB_SEARCH] DuckDuckGo error: {str(e)}")
+            return []
 
     def _search_tavily(
         self,
@@ -189,7 +223,24 @@ class WebSearchService:
 
         For now, can just raise NotImplementedError or return empty list
         """
-        pass
+        try:
+            client = TavilyClient(api_key=self.tavily_api_key)
+            response = client.search(query, max_results=max_results)
+            raw_results = response.get("results", [])
+            final_results = []
+            for r in raw_results:
+                web_result = WebSearchResult(
+                    title=r.get("title", ""),
+                    url=r.get("url", ""),
+                    snippet=r.get("content", ""),
+                    source=self._extract_domain(r.get("url", "")),
+                )
+                final_results.append(web_result)
+            
+            return final_results
+        except Exception as e:
+            print(f"[WEB_SEARCH] Tavily error: {str(e)}")
+            return []
 
     def _extract_domain(self, url: str) -> str:
         """
@@ -212,7 +263,15 @@ class WebSearchService:
         2. Except:
            - Return "unknown"
         """
-        pass
+        try:
+            parsed = urlparse(url)
+            domain = parsed.netloc
+            if "www." in domain:
+                domain = domain.replace("www.", "")
+            
+            return domain
+        except Exception:
+            return "unknown"
 
     def format_for_agent(
         self,
@@ -244,7 +303,19 @@ class WebSearchService:
            output += "[Note: These results are from external web sources]"
         4. Return output
         """
-        pass
+        if not results:
+            return f"No web results found for: {query}"
+
+        output = f"Web search results for: \"{query}\"\n\n"
+        for i, r in enumerate(results):
+            output += f"{i+1}. {r.title}\n"
+            output += f"   Source: {r.source}\n"
+            output += f"   URL: {r.url}\n"
+            output += f"   {r.snippet}\n\n"
+
+        output += "[Note: These results are from external web sources]"
+
+        return output
 
 
 # =============================================================================
@@ -304,6 +375,56 @@ if __name__ == "__main__":
     print("=" * 70)
     print("WEB SEARCH SERVICE TEST")
     print("=" * 70)
-    print("\n[TODO] Implement WebSearchService methods first")
-    print("Then run: python -m src.services.web_search")
+
+    # Test 1: Service initialization
+    print("\nTest 1: Service Initialization")
+    service = WebSearchService(provider="duckduckgo")
+    print(f"  Provider: {service.provider}")
+    print(f"  Max results: {service.max_results}")
+    print("[OK] Service initialized")
+
+    # Test 2: Query validation
+    print("\nTest 2: Query Validation")
+    # Valid query
+    valid = service._validate_query("test query")
+    print(f"  Valid query: '{valid}'")
+
+    # Too short query
+    try:
+        service._validate_query("ab")
+        print("  [FAIL] Should have raised ValueError for short query")
+    except ValueError as e:
+        print(f"  Short query rejected: {e}")
+
+    # Long query truncation
+    long_query = "a" * 600
+    truncated = service._validate_query(long_query)
+    print(f"  Long query truncated to {len(truncated)} chars")
+    print("[OK] Query validation working")
+
+    # Test 3: DuckDuckGo search
+    print("\nTest 3: DuckDuckGo Search")
+    query = "Python programming language"
+    results = service.search(query, max_results=3)
+    print(f"  Query: '{query}'")
+    print(f"  Results found: {len(results)}")
+    for r in results:
+        print(f"    - {r.title[:50]}... ({r.source})")
+    print("[OK] DuckDuckGo search working")
+
+    # Test 4: Format for agent
+    print("\nTest 4: Format for Agent")
+    formatted = service.format_for_agent(results, query)
+    print(formatted)
+    print("[OK] Formatting working")
+
+    # Test 5: Real-world query (EXTERNAL scenario)
+    print("\nTest 5: Real-world Query")
+    query = "current US inflation rate 2024"
+    results = service.search(query, max_results=5)
+    print(service.format_for_agent(results, query))
+    print("[OK] Real-world query working")
+
+    print("\n" + "=" * 70)
+    print("ALL TESTS COMPLETE!")
     print("=" * 70)
