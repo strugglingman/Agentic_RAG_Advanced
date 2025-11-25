@@ -191,7 +191,7 @@ class WebSearchService:
                     source=self._extract_domain(r.get("href", "")),
                 )
                 final_results.append(web_result)
-            
+
             return final_results
         except Exception as e:
             print(f"[WEB_SEARCH] DuckDuckGo error: {str(e)}")
@@ -236,7 +236,7 @@ class WebSearchService:
                     source=self._extract_domain(r.get("url", "")),
                 )
                 final_results.append(web_result)
-            
+
             return final_results
         except Exception as e:
             print(f"[WEB_SEARCH] Tavily error: {str(e)}")
@@ -268,7 +268,7 @@ class WebSearchService:
             domain = parsed.netloc
             if "www." in domain:
                 domain = domain.replace("www.", "")
-            
+
             return domain
         except Exception:
             return "unknown"
@@ -306,7 +306,7 @@ class WebSearchService:
         if not results:
             return f"No web results found for: {query}"
 
-        output = f"Web search results for: \"{query}\"\n\n"
+        output = f'Web search results for: "{query}"\n\n'
         for i, r in enumerate(results):
             output += f"{i+1}. {r.title}\n"
             output += f"   Source: {r.source}\n"
