@@ -16,6 +16,7 @@ from typing import Dict, Any, List, Optional, Tuple
 from openai import OpenAI
 from src.services.agent_tools import ALL_TOOLS, execute_tool_call
 from src.config.settings import Config
+from langsmith import traceable
 
 
 class Agent:
@@ -93,6 +94,7 @@ class Agent:
 
         return "Error: Maximum iterations reached without final answer.", []
 
+    @traceable
     def run_stream(
         self,
         query: str,
@@ -117,18 +119,20 @@ class Agent:
 
         for _ in range(self.max_iterations):
             res = self._call_llm(messages)
-            print("000000000000000000000")
-            print(messages)
-            print("111111111111111111111")
-            print(res.choices[0].message)
+            print('0000000000000000000')
+            print(res.choices[0].message.tool_calls)
             if self._has_tool_calls(res):
                 assistant_message = res.choices[0].message
                 tool_results = self._execute_tools(res, context)
                 messages = self._append_tool_results(
                     messages, assistant_message, tool_results
                 )
+                print('11111111111111111111')
+                print(tool_results[:200])
             elif res.choices[0].message.content:
                 # Stream the final answer
+                print('222222222222222222222')
+                print(res.choices[0].message.content)
                 final_res = self._call_llm_stream(messages)
                 for chunk in final_res:
                     delta = chunk.choices[0].delta.content

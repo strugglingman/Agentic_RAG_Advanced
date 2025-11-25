@@ -169,6 +169,17 @@ class Config:
     # Tavily API key (optional, only needed if using Tavily provider)
     TAVILY_API_KEY: str = os.getenv("TAVILY_API_KEY", "")
 
+    # LangSmith Settings
+    LANGCHAIN_TRACING_V2 = os.getenv("LANGCHAIN_TRACING_V2", "false").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    LANGCHAIN_API_KEY = os.getenv("LANGCHAIN_API_KEY", "")
+    LANGCHAIN_PROJECT = os.getenv("LANGCHAIN_PROJECT", "agentic-rag-chatbot")
+    LANGCHAIN_ENDPOINT = os.getenv("LANGCHAIN_ENDPOINT", "https://eu.api.smith.langchain.com") 
+
 
 class DevelopmentConfig(Config):
     """Development configuration"""

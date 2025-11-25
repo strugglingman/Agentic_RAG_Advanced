@@ -14,6 +14,7 @@ import re
 import json
 from typing import Dict, Any, List, Optional, Tuple
 from openai import OpenAI
+from langsmith import traceable
 
 from src.models.evaluation import (
     EvaluationCriteria,
@@ -65,6 +66,8 @@ class RetrievalEvaluator:
             if self.client is None:
                 raise ValueError("OpenAI client required for BALANCED/THOROUGH modes")
 
+
+    @traceable
     def evaluate(self, criteria: EvaluationCriteria) -> EvaluationResult:
         """
         Evaluate retrieval quality.

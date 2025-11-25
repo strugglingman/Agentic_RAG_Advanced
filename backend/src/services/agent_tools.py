@@ -22,6 +22,7 @@ from src.models.evaluation import ReflectionConfig, EvaluationCriteria
 from src.services.query_refiner import QueryRefiner
 from src.services.clarification_helper import ClarificationHelper
 from src.services.web_search import WebSearchService
+from langsmith import traceable
 
 # ============================================================================
 # TOOL 1: SEARCH DOCUMENTS
@@ -62,6 +63,7 @@ SEARCH_DOCUMENTS_SCHEMA = {
 }
 
 
+@traceable
 def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]) -> str:
     """
     Execute the search_documents tool.
@@ -384,6 +386,7 @@ CALCULATOR_SCHEMA = {
 }
 
 
+@traceable
 def execute_calculator(args: Dict[str, Any], context: Dict[str, Any]) -> str:
     """
     Execute the calculator tool.
@@ -504,6 +507,8 @@ WEB_SEARCH_SCHEMA = {
     },
 }
 
+
+@traceable
 def execute_web_search(args: Dict[str, Any], context: Dict[str, Any]) -> str:
     """
     Execute the web_search tool.
@@ -586,6 +591,7 @@ def get_tool_executor(tool_name: str):
     return TOOL_REGISTRY.get(tool_name)
 
 
+@traceable
 def execute_tool_call(
     tool_name: str, tool_args: Dict[str, Any], context: Dict[str, Any]
 ) -> str:
