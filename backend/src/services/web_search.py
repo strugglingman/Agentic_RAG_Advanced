@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 from src.config.settings import Config
 from ddgs import DDGS  # Renamed from duckduckgo_search
 from tavily import TavilyClient
+from langsmith import traceable
 
 
 @dataclass
@@ -74,6 +75,8 @@ class WebSearchService:
         self.max_results = max_results or Config.WEB_SEARCH_MAX_RESULTS
         self.tavily_api_key = tavily_api_key or Config.TAVILY_API_KEY
 
+
+    @traceable
     def search(
         self,
         query: str,

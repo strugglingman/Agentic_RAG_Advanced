@@ -11,6 +11,7 @@ from typing import Optional, List, Dict, Any
 from openai import OpenAI
 from src.models.evaluation import EvaluationResult, RecommendationAction
 from src.config.settings import Config
+from langsmith import traceable
 
 
 class QueryRefiner:
@@ -49,6 +50,7 @@ class QueryRefiner:
         self.model = model
         self.temperature = temperature
 
+    @traceable
     def refine_query(
         self,
         original_query: str,

@@ -7,10 +7,10 @@ information after refinement attempts.
 Week 2 - Day 4: Clarification & Progressive Fallback
 """
 
-from typing import Optional, List
+from typing import Optional
 from openai import OpenAI
 from src.models.evaluation import EvaluationResult
-from src.config.settings import Config
+from langsmith import traceable
 
 
 class ClarificationHelper:
@@ -53,6 +53,8 @@ class ClarificationHelper:
         self.model = model
         self.temperature = temperature
 
+
+    @traceable
     def generate_clarification(
         self,
         query: str,

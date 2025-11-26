@@ -27,7 +27,6 @@ def canonical_path(base: Path, *sub_paths: str) -> Path:
 def validate_filename(f, allowed_extensions: list, mime_types: list) -> str:
     """Validate uploaded file"""
     filename = secure_filename(f.filename)
-
     # Check file extension
     if not allowed_file(filename, allowed_extensions):
         return ""
