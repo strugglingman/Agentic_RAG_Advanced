@@ -169,6 +169,13 @@ class Config:
     # Tavily API key (optional, only needed if using Tavily provider)
     TAVILY_API_KEY: str = os.getenv("TAVILY_API_KEY", "")
 
+    # Redis settings
+    REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379")
+    REDIS_CACHE_TTL: int = int(os.getenv("REDIS_CACHE_TTL", "3600"))
+
+    # Postgresql Database settings
+    DATABASE_URL: str = os.getenv("DATABASE_URL", "")
+
 
 class DevelopmentConfig(Config):
     """Development configuration"""

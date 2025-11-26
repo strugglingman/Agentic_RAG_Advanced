@@ -1,0 +1,67 @@
+generator client {
+  provider = "prisma-client-py"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String         @id @default(cuid())
+  email         String         @unique
+  passwordHash  String
+  name          String?
+  dept          String?
+  role          String         @default("staff")
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  conversations Conversation[]
+  queryLogs     QueryLog[]
+}
+
+model Conversation {
+  id         String    @id @default(uuid())
+  user_email String
+  title      String?
+  created_at DateTime  @default(now())
+  updated_at DateTime  @updatedAt
+  user       User      @relation(fields: [user_email], references: [email], onDelete: Cascade)
+  messages   Message[]
+
+  @@index([user_email])
+  @@index([updated_at])
+}
+
+model Message {
+  id              String       @id @default(uuid())
+  conversation_id String
+  role            String
+  content         String
+  tokens_used     Int?
+  latency_ms      Int?
+  created_at      DateTime     @default(now())
+  conversation    Conversation @relation(fields: [conversation_id], references: [id], onDelete: Cascade)
+
+  @@index([conversation_id])
+  @@index([created_at])
+}
+
+model QueryLog {
+  id                 String   @id @default(uuid())
+  user_email         String
+  conversation_id    String?
+  query              String
+  response_time_ms   Int
+  tokens_used        Int
+  retrieval_quality  Float?
+  recommendation     String?
+  refinement_count   Int      @default(0)
+  contexts_retrieved Int      @default(0)
+  created_at         DateTime @default(now())
+  user               User     @relation(fields: [user_email], references: [email], onDelete: Cascade)
+
+  @@index([user_email])
+  @@index([created_at])
+  @@index([recommendation])
+}

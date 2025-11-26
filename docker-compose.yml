@@ -1,5 +1,13 @@
 version: '3.9'
 services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+
   backend:
     build: ./backend
     env_file: ./backend/.env
@@ -7,6 +15,8 @@ services:
     volumes:
       - ./backend/uploads:/app/uploads
       - ./backend/chroma_db:/app/chroma_db
+    depends_on:
+      - redis
 
   frontend:
     build: ./frontend
@@ -23,3 +33,6 @@ services:
       - backend
     extra_hosts:
       - "host.docker.internal:host-gateway"
+
+volumes:
+  redis_data:

@@ -11,12 +11,11 @@ Each tool has two parts:
 - execute_xxx: The Python function that actually executes the tool
 """
 
-import json
 import re
-from typing import Dict, Any, List
+from typing import Dict, Any
 from src.services.retrieval import retrieve, build_where
 from src.config.settings import Config
-from src.utils.safety import looks_like_injection, scrub_context
+from src.utils.safety import scrub_context
 from src.services.retrieval_evaluator import RetrievalEvaluator
 from src.models.evaluation import ReflectionConfig, EvaluationCriteria
 from src.services.query_refiner import QueryRefiner
@@ -183,13 +182,12 @@ def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
                 print(f"[SELF-REFLECTION] EXTERNAL recommended - suggesting web search")
                 external_msg = (
                     f"[EXTERNAL SEARCH SUGGESTED]\n"
-                    f"The query \"{query}\" appears to require external information "
+                    f'The query "{query}" appears to require external information '
                     f"not found in the uploaded documents.\n\n"
                     f"Reason: {eval_result.reasoning}\n\n"
                     f"Recommendation: Use the web_search tool to find current or external information.\n\n"
                     f"---\n\n"
                 )
-
 
             # Refinement loop with local counter (only if not already CLARIFY)
             refinement_count = 0
@@ -504,6 +502,7 @@ WEB_SEARCH_SCHEMA = {
     },
 }
 
+
 def execute_web_search(args: Dict[str, Any], context: Dict[str, Any]) -> str:
     """
     Execute the web_search tool.
@@ -522,8 +521,7 @@ def execute_web_search(args: Dict[str, Any], context: Dict[str, Any]) -> str:
             tavily_api_key=Config.TAVILY_API_KEY,
         )
         web_search_results = web_search_service.search(
-            query=query,
-            max_results=max_results
+            query=query, max_results=max_results
         )
         if web_search_results:
             return web_search_service.format_for_agent(web_search_results, query)
