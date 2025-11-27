@@ -80,7 +80,7 @@ class ConversationService:
 
         HINT: Look at your schema.prisma for field names
         """
-        self.connect()
+        await self.connect()
         conversation = await self.prisma_client.conversation.create(
             data={
                 "user_email": user_email,
@@ -125,7 +125,7 @@ class ConversationService:
         - Older messages (15+) are automatically removed
         - All operations are O(1)
         """
-        self.connect()
+        await self.connect()
         message = await self.prisma_client.message.create(
             data={
                 "conversation_id": conversation_id,
@@ -198,7 +198,7 @@ class ConversationService:
             print(f"Warning: Failed to read from Redis cache: {str(e)}")
 
         # Load from DB if not found in cache
-        self.connect()
+        await self.connect()
         query = {
             "where": {"conversation_id": conversation_id},
             "order": {"created_at": "desc"},
@@ -244,7 +244,7 @@ class ConversationService:
             await self.redis.delete(cache_key)
 
             # Remove from PostgreSQL
-            self.connect()
+            await self.connect()
             await self.prisma_client.conversation.delete(where={"id": conversation_id})
 
             return True
@@ -266,7 +266,7 @@ class ConversationService:
         """
         return f"conversation:{conversation_id}:messages"
 
-    def connect(self):
+    async def connect(self):
         """
         Ensure Prisma client is connected to database.
 
@@ -286,7 +286,7 @@ class ConversationService:
         if not self.prisma_client:
             self.prisma_client = Prisma()
 
-        self.prisma_client.connect()
+        await self.prisma_client.connect()
 
 
 # ==================== TESTING GUIDE ====================

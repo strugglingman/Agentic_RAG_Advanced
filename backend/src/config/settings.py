@@ -46,7 +46,6 @@ class Config:
 
     # Chat settings
     CHAT_MAX_TOKENS = int(os.getenv("CHAT_MAX_TOKENS", "200"))
-    MAX_HISTORY = int(os.getenv("MAX_HISTORY", "6"))
 
     # OpenAI
     OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")

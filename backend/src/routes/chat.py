@@ -1,6 +1,5 @@
 """Chat routes"""
 
-from collections import defaultdict, deque
 import json
 from flask import Blueprint, request, jsonify, Response, g
 from openai import OpenAI
@@ -11,23 +10,23 @@ from src.config.settings import Config
 from src.utils.safety import looks_like_injection, scrub_context
 from src.utils.stream_utils import stream_text_smart
 from src.services.agent_service import Agent
+from src.services.conversation_service import ConversationService
 
 chat_bp = Blueprint("chat", __name__)
 
 # OpenAI client
 openai_client = OpenAI(api_key=Config.OPENAI_KEY)
+# Redis + PostgreSQL
+conversation_client = ConversationService()
 
-# Session storage
-SESSIONS = defaultdict(lambda: deque(maxlen=2 * Config.MAX_HISTORY))
 
-
-def get_session_history(sid: str, n: int = 20):
-    """Get sanitized session history"""
-    if sid not in SESSIONS:
+async def get_latest_history(conversation_id: str, limit: int = 15) -> list:
+    if not conversation_id:
         return []
 
+    history = await conversation_client.get_conversation_history(conversation_id, limit)
     sanitized_history = []
-    for h in list(SESSIONS[sid])[-n:]:
+    for h in history:
         sanitized_msg = {
             "role": h["role"],
             "content": sanitize_text(h["content"], max_length=5000),
@@ -39,7 +38,7 @@ def get_session_history(sid: str, n: int = 20):
 
 @chat_bp.post("/chat")
 @require_identity
-def chat(collection):
+async def chat(collection):
     """Chat endpoint with RAG retrieval."""
     dept_id = g.identity.get("dept_id", "")
     user_id = g.identity.get("user_id", "")
@@ -49,10 +48,9 @@ def chat(collection):
 
     payload = request.get_json(force=True)
     msgs = payload.get("messages", [])
-
-    sid = g.identity.get("sid", "")
-    if sid not in SESSIONS:
-        SESSIONS[sid] = deque(maxlen=2 * Config.MAX_HISTORY)
+    conversation_id = payload.get("conversation_id", "")
+    if not conversation_id:
+        conversation_id = await conversation_client.create_conversation(user_id, "New Chat")
 
     latest_user_msg = None
     if msgs and isinstance(msgs[-1], dict) and msgs[-1].get("role") == "user":
@@ -93,14 +91,17 @@ def chat(collection):
         if not ctx:
             # Append latest user message to session history even if no answer found
             if latest_user_msg:
-                SESSIONS[sid].append(
-                    {
-                        "role": latest_user_msg.get("role"),
-                        "content": latest_user_msg.get("content"),
-                    }
+                await conversation_client.save_message(
+                    conversation_id,
+                    latest_user_msg.get("role", "user"),
+                    latest_user_msg.get("content", "")
                 )
             no_answer = "Based on the provided documents, I don't have enough information to answer your question."
-            SESSIONS[sid].append({"role": "assistant", "content": no_answer})
+            await conversation_client.save_message(
+                conversation_id,
+                "assistant",
+                no_answer
+            )
             return Response(stream_text_smart(no_answer), mimetype="text/plain")
 
         # Filter tags
@@ -127,7 +128,7 @@ def chat(collection):
             c["chunk"] = scrub_context(c.get("chunk", ""))
 
         system, user = build_prompt(query, ctx, use_ctx=True)
-        history = get_session_history(sid, Config.MAX_HISTORY)
+        history = await get_latest_history(conversation_id, Config.REDIS_CACHE_LIMIT)
         messages = (
             [{"role": "system", "content": system}]
             + history
@@ -140,6 +141,7 @@ def chat(collection):
         ]
 
         def generate():
+            import asyncio
             answer = []
             try:
                 resp = openai_client.chat.completions.create(
@@ -161,17 +163,19 @@ def chat(collection):
             finally:
                 # Update session history with latest query and assistant answer
                 if latest_user_msg:
-                    SESSIONS[sid].append(
-                        {
-                            "role": latest_user_msg.get("role"),
-                            "content": latest_user_msg.get("content"),
-                        }
-                    )
+                    asyncio.run(conversation_client.save_message(
+                        conversation_id,
+                        latest_user_msg.get("role", "user"),
+                        latest_user_msg.get("content", "")
+                    ))
                 raw_answer = "".join(answer)
 
                 if answer:
-                    SESSIONS[sid].append({"role": "assistant", "content": raw_answer})
-
+                    asyncio.run(conversation_client.save_message(
+                        conversation_id,
+                        "assistant",
+                        raw_answer
+                    ))
                 yield f"\n__CONTEXT__:{json.dumps(ctx)}"
 
         return Response(generate(), mimetype="text/plain")
@@ -181,7 +185,7 @@ def chat(collection):
 
 @chat_bp.post("/chat/agent")
 @require_identity
-def chat_agent(collection):
+async def chat_agent(collection):
     """Agentic chat endpoint with tool calling and streaming."""
     # EXACT same validation as /chat
     dept_id = g.identity.get("dept_id", "")
@@ -192,10 +196,9 @@ def chat_agent(collection):
 
     payload = request.get_json(force=True)
     msgs = payload.get("messages", [])
-
-    sid = g.identity.get("sid", "")
-    if sid not in SESSIONS:
-        SESSIONS[sid] = deque(maxlen=2 * Config.MAX_HISTORY)
+    conversation_id = payload.get("conversation_id", "")
+    if not conversation_id:
+        conversation_id = await conversation_client.create_conversation(user_id, "New Chat")
 
     latest_user_msg = None
     if msgs and isinstance(msgs[-1], dict) and msgs[-1].get("role") == "user":
@@ -229,8 +232,8 @@ def chat_agent(collection):
             "temperature": Config.OPENAI_TEMPERATURE,
         }
 
-        # Get session history (EXACT same as /chat)
-        history = get_session_history(sid, Config.MAX_HISTORY)
+        # Get conversation history from Redis + PostgreSQL
+        history = await get_latest_history(conversation_id, Config.REDIS_CACHE_LIMIT)
 
         # Create agent
         agent = Agent(
@@ -241,6 +244,7 @@ def chat_agent(collection):
         )
 
         def generate():
+            import asyncio
             answer_parts = []
             try:
                 # Run agent with streaming
@@ -258,21 +262,24 @@ def chat_agent(collection):
                 print(f"Agent error: {e}")
                 yield f"\n[upstream_error] {type(e).__name__}: {e}"
             finally:
-                # Update session history (EXACT same as /chat)
+                # Save messages to conversation history
                 if latest_user_msg:
-                    SESSIONS[sid].append(
-                        {
-                            "role": latest_user_msg.get("role"),
-                            "content": latest_user_msg.get("content"),
-                        }
-                    )
+                    asyncio.run(conversation_client.save_message(
+                        conversation_id,
+                        latest_user_msg.get("role", "user"),
+                        latest_user_msg.get("content", "")
+                    ))
 
                 raw_answer = "".join(
                     [p for p in answer_parts if not p.startswith("\n__CONTEXT__:")]
                 )
 
                 if raw_answer:
-                    SESSIONS[sid].append({"role": "assistant", "content": raw_answer})
+                    asyncio.run(conversation_client.save_message(
+                        conversation_id,
+                        "assistant",
+                        raw_answer
+                    ))
 
         return Response(generate(), mimetype="text/plain")
 
