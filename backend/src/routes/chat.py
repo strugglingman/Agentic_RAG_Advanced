@@ -42,6 +42,7 @@ async def chat(collection):
     """Chat endpoint with RAG retrieval."""
     dept_id = g.identity.get("dept_id", "")
     user_id = g.identity.get("user_id", "")
+    print("0" * 20)
 
     if not dept_id or not user_id:
         return jsonify({"error": "No organization ID or user ID provided"}), 400
@@ -50,7 +51,9 @@ async def chat(collection):
     msgs = payload.get("messages", [])
     conversation_id = payload.get("conversation_id", "")
     if not conversation_id:
-        conversation_id = await conversation_client.create_conversation(user_id, "New Chat")
+        conversation_id = await conversation_client.create_conversation(
+            user_id, "New Chat"
+        )
 
     latest_user_msg = None
     if msgs and isinstance(msgs[-1], dict) and msgs[-1].get("role") == "user":
@@ -94,13 +97,11 @@ async def chat(collection):
                 await conversation_client.save_message(
                     conversation_id,
                     latest_user_msg.get("role", "user"),
-                    latest_user_msg.get("content", "")
+                    latest_user_msg.get("content", ""),
                 )
             no_answer = "Based on the provided documents, I don't have enough information to answer your question."
             await conversation_client.save_message(
-                conversation_id,
-                "assistant",
-                no_answer
+                conversation_id, "assistant", no_answer
             )
             return Response(stream_text_smart(no_answer), mimetype="text/plain")
 
@@ -142,6 +143,7 @@ async def chat(collection):
 
         def generate():
             import asyncio
+
             answer = []
             try:
                 resp = openai_client.chat.completions.create(
@@ -163,19 +165,21 @@ async def chat(collection):
             finally:
                 # Update session history with latest query and assistant answer
                 if latest_user_msg:
-                    asyncio.run(conversation_client.save_message(
-                        conversation_id,
-                        latest_user_msg.get("role", "user"),
-                        latest_user_msg.get("content", "")
-                    ))
+                    asyncio.run(
+                        conversation_client.save_message(
+                            conversation_id,
+                            latest_user_msg.get("role", "user"),
+                            latest_user_msg.get("content", ""),
+                        )
+                    )
                 raw_answer = "".join(answer)
 
                 if answer:
-                    asyncio.run(conversation_client.save_message(
-                        conversation_id,
-                        "assistant",
-                        raw_answer
-                    ))
+                    asyncio.run(
+                        conversation_client.save_message(
+                            conversation_id, "assistant", raw_answer
+                        )
+                    )
                 yield f"\n__CONTEXT__:{json.dumps(ctx)}"
 
         return Response(generate(), mimetype="text/plain")
@@ -198,7 +202,9 @@ async def chat_agent(collection):
     msgs = payload.get("messages", [])
     conversation_id = payload.get("conversation_id", "")
     if not conversation_id:
-        conversation_id = await conversation_client.create_conversation(user_id, "New Chat")
+        conversation_id = await conversation_client.create_conversation(
+            user_id, "New Chat"
+        )
 
     latest_user_msg = None
     if msgs and isinstance(msgs[-1], dict) and msgs[-1].get("role") == "user":
@@ -245,6 +251,7 @@ async def chat_agent(collection):
 
         def generate():
             import asyncio
+
             answer_parts = []
             try:
                 # Run agent with streaming
@@ -264,22 +271,24 @@ async def chat_agent(collection):
             finally:
                 # Save messages to conversation history
                 if latest_user_msg:
-                    asyncio.run(conversation_client.save_message(
-                        conversation_id,
-                        latest_user_msg.get("role", "user"),
-                        latest_user_msg.get("content", "")
-                    ))
+                    asyncio.run(
+                        conversation_client.save_message(
+                            conversation_id,
+                            latest_user_msg.get("role", "user"),
+                            latest_user_msg.get("content", ""),
+                        )
+                    )
 
                 raw_answer = "".join(
                     [p for p in answer_parts if not p.startswith("\n__CONTEXT__:")]
                 )
 
                 if raw_answer:
-                    asyncio.run(conversation_client.save_message(
-                        conversation_id,
-                        "assistant",
-                        raw_answer
-                    ))
+                    asyncio.run(
+                        conversation_client.save_message(
+                            conversation_id, "assistant", raw_answer
+                        )
+                    )
 
         return Response(generate(), mimetype="text/plain")
 

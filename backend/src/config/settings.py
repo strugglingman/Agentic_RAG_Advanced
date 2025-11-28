@@ -188,6 +188,9 @@ class Config:
 
     # Postgresql Database settings
     DATABASE_URL: str = os.getenv("DATABASE_URL", "")
+    CONVERSATION_MESSAGE_LIMIT: int = int(
+        os.getenv("CONVERSATION_MESSAGE_LIMIT", "200")
+    )
 
 
 class DevelopmentConfig(Config):

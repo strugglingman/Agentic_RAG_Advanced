@@ -38,8 +38,8 @@ import json
 from datetime import datetime, timezone
 from typing import List, Dict, Optional
 from prisma import Prisma
-from src.config.redis_client import get_redis
 from src.config.settings import Config
+import redis.asyncio as redis
 
 
 class ConversationService:
@@ -51,15 +51,13 @@ class ConversationService:
 
     def __init__(self):
         """
-        Initialize service with Prisma and Redis clients.
+        Initialize service. Both Prisma and Redis clients created lazily on first connect.
 
-        TODO: Implement this
-        STEPS:
-        1. Create Prisma client instance: self.prisma_client = Prisma()
-        2. Get Redis client: self.redis = get_redis().redis
+        Clients are NOT created here to avoid event loop issues with Flask.
+        They will be created in connect() when first needed.
         """
-        self.prisma_client = Prisma()
-        self.redis = get_redis().redis
+        self.prisma_client = None  # Created lazily in connect()
+        self.redis = None  # Created lazily in connect()
 
     # ==================== Core CRUD Operations ====================
 
@@ -85,7 +83,7 @@ class ConversationService:
             data={
                 "user_email": user_email,
                 "title": title or "New Conversation",
-                "created_at": datetime.now(timezone.utc),
+                "created_at": datetime.now(),
             }
         )
         return conversation.id
@@ -133,7 +131,7 @@ class ConversationService:
                 "content": content,
                 "tokens_used": tokens_used,
                 "latency_ms": latency_ms,
-                "created_at": datetime.now(timezone.utc),
+                "created_at": datetime.now(),
             }
         )
 
@@ -218,6 +216,19 @@ class ConversationService:
 
         return [m.model_dump() for m in messages]
 
+    async def load_conversation_history_db(
+        self, conversation_id: str, limit: int = Config.CONVERSATION_MESSAGE_LIMIT
+    ) -> List[Dict]:
+        await self.connect()
+        query = {
+            "where": {"conversation_id": conversation_id},
+            "order": {"created_at": "desc"},
+            "take": limit,
+        }
+        messages = await self.prisma_client.message.find_many(**query)
+
+        return [m.model_dump() for m in messages]
+
     async def delete_conversation(self, conversation_id: str) -> bool:
         """
         Delete conversation from both Redis and PostgreSQL.
@@ -268,25 +279,31 @@ class ConversationService:
 
     async def connect(self):
         """
-        Ensure Prisma client is connected to database.
+        Ensure Prisma and Redis clients are connected.
 
-        TODO: Implement this
-        STEPS:
-        1. Check if already connected:
-           if self.prisma_client and self.prisma_client.is_connected():
-               return
-        2. If no client, create one: self.prisma_client = Prisma()
-        3. Connect: self.prisma_client.connect()
-
-        NOTE: This is a synchronous operation (no await)
+        Always creates fresh connections to avoid event loop and state issues.
+        Both Prisma and Redis connections are lightweight and designed to be created per-request.
         """
-        if self.prisma_client and self.prisma_client.is_connected():
-            return
+        # Disconnect old Prisma client if exists
+        if self.prisma_client:
+            try:
+                await self.prisma_client.disconnect()
+            except:
+                pass
 
-        if not self.prisma_client:
-            self.prisma_client = Prisma()
+        # Close old Redis connection if exists
+        if self.redis:
+            try:
+                await self.redis.close()
+            except:
+                pass
 
+        # Always create fresh clients for each request
+        self.prisma_client = Prisma()
         await self.prisma_client.connect()
+
+        # Create fresh Redis connection
+        self.redis = await redis.from_url(Config.REDIS_URL, decode_responses=True)
 
 
 # ==================== TESTING GUIDE ====================

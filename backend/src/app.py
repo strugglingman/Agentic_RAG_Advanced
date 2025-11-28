@@ -18,6 +18,7 @@ from src.routes.upload import upload_bp
 from src.routes.ingest import ingest_bp
 from src.routes.files import files_bp
 from src.routes.org import org_bp
+from src.routes.conversations import conversations_bp
 
 
 def get_limiter_key():
@@ -97,19 +98,29 @@ def create_app(config_name="development"):
 
     # Dependency injection wrapper for routes that need collection
     def inject_collection(f):
-        """Decorator to inject collection into route handlers."""
+        """Decorator to inject collection into route handlers (supports async)."""
         from functools import wraps
+        import asyncio
 
         @wraps(f)
-        def wrapper(*args, **kwargs):
+        async def async_wrapper(*args, **kwargs):
+            return await f(collection, *args, **kwargs)
+
+        @wraps(f)
+        def sync_wrapper(*args, **kwargs):
             return f(collection, *args, **kwargs)
 
-        return wrapper
+        # Return appropriate wrapper based on function type
+        if asyncio.iscoroutinefunction(f):
+            return async_wrapper
+        else:
+            return sync_wrapper
 
     # Register blueprints
     app.register_blueprint(upload_bp)
     app.register_blueprint(chat_bp)
     app.register_blueprint(ingest_bp)
+    app.register_blueprint(conversations_bp)
     app.register_blueprint(files_bp)
     app.register_blueprint(org_bp)
 
@@ -139,7 +150,9 @@ def create_app(config_name="development"):
 
     # Apply rate limiting to chat endpoints
     limiter.limit("30 per minute; 1000 per day")(app.view_functions[chat_endpoint])
-    limiter.limit("30 per minute; 1000 per day")(app.view_functions[chat_agent_endpoint])
+    limiter.limit("30 per minute; 1000 per day")(
+        app.view_functions[chat_agent_endpoint]
+    )
 
     # Health check routes
     @app.get("/")

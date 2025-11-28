@@ -16,6 +16,7 @@ from typing import Dict, Any, List, Optional, Tuple
 from openai import OpenAI
 from src.services.agent_tools import ALL_TOOLS, execute_tool_call
 from src.config.settings import Config
+from src.utils.stream_utils import stream_text_smart
 from langsmith import traceable
 
 
@@ -119,7 +120,7 @@ class Agent:
 
         for _ in range(self.max_iterations):
             res = self._call_llm(messages)
-            print('0000000000000000000')
+            print("0000000000000000000")
             print(res.choices[0].message.tool_calls)
             if self._has_tool_calls(res):
                 assistant_message = res.choices[0].message
@@ -127,17 +128,21 @@ class Agent:
                 messages = self._append_tool_results(
                     messages, assistant_message, tool_results
                 )
-                print('11111111111111111111')
-                print(tool_results[:200])
+                print("11111111111111111111")
+                print(tool_results[0])
             elif res.choices[0].message.content:
-                # Stream the final answer
-                print('222222222222222222222')
-                print(res.choices[0].message.content)
-                final_res = self._call_llm_stream(messages)
-                for chunk in final_res:
-                    delta = chunk.choices[0].delta.content
-                    if delta:
-                        yield delta
+                # We have the final answer - stream it character by character
+                print("222222222222222222222")
+                final_answer = res.choices[0].message.content
+                print(final_answer)
+
+                # # Stream the answer in chunks to simulate streaming
+                # chunk_size = 10
+                # for i in range(0, len(final_answer), chunk_size):
+                #     chunk = final_answer[i : i + chunk_size]
+                #     yield chunk
+                for chunk in stream_text_smart(final_answer, delay_ms=10):
+                    yield chunk
 
                 # Yield contexts at the end
                 contexts = context.get("_retrieved_contexts", [])

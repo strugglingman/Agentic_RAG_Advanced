@@ -13,6 +13,7 @@ All endpoints require authentication and enforce user ownership verification.
 from flask import Blueprint, request, jsonify, g
 from src.middleware.auth import require_identity
 from src.services.conversation_service import ConversationService
+from src.config.settings import Config
 
 conversations_bp = Blueprint("conversations", __name__)
 
@@ -61,7 +62,40 @@ async def list_conversations():
         ]
     }
     """
-    pass
+    user_id = g.identity.get("user_id", "")
+    if not user_id:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    try:
+        await conversation_service.connect()
+        conversations = await conversation_service.prisma_client.conversation.find_many(
+            where={"user_email": user_id},
+            order={"updated_at": "desc"},
+            take=50,
+            include={
+                "messages": {
+                    "order_by": {"created_at": "desc"},
+                    "take": 1,
+                }
+            },
+        )
+        conversation_dicts = []
+        if conversations:
+            for conv in conversations:
+                conversation_dicts.append(
+                    {
+                        "id": conv.id,
+                        "title": conv.title,
+                        "updated_at": conv.updated_at.isoformat(),
+                        "preview": (
+                            conv.messages[0].content[:50] if conv.messages else ""
+                        ),
+                    }
+                )
+
+        return jsonify({"conversations": conversation_dicts})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @conversations_bp.post("/conversations")
@@ -118,9 +152,9 @@ async def get_conversation(conversation_id: str):
            return jsonify({"error": "Unauthorized"}), 403
 
     4. Get messages:
-       messages = await conversation_service.get_conversation_history(
+       messages = await conversation_service.load_conversation_history_db(
            conversation_id,
-           limit=100  # Or unlimited
+           limit=Config.CONVERSATION_MESSAGE_LIMIT
        )
 
     5. Return: jsonify({
@@ -152,7 +186,49 @@ async def get_conversation(conversation_id: str):
         ]
     }
     """
-    pass
+    user_id = g.identity.get("user_id", "")
+    if not user_id:
+        return jsonify({"error": "Unauthorized"}), 401
+    try:
+        await conversation_service.connect()
+        conversation = (
+            await conversation_service.prisma_client.conversation.find_unique(
+                where={"id": conversation_id}
+            )
+        )
+        if not conversation:
+            return jsonify({"error": "Conversation not found"}), 404
+        if conversation.user_email != user_id:
+            return jsonify({"error": "Unauthorized"}), 403
+
+        messages = await conversation_service.load_conversation_history_db(
+            conversation_id, limit=Config.CONVERSATION_MESSAGE_LIMIT
+        )
+        message_dicts = []
+        for msg in messages:
+            message_dicts.append(
+                {
+                    "id": msg.get("id", ""),
+                    "role": msg.get("role", ""),
+                    "content": msg.get("content", ""),
+                    "created_at": (
+                        msg.get("created_at", "").isoformat()
+                        if msg.get("created_at")
+                        else ""
+                    ),
+                }
+            )
+        return jsonify(
+            {
+                "id": conversation.id,
+                "title": conversation.title,
+                "created_at": conversation.created_at.isoformat(),
+                "updated_at": conversation.updated_at.isoformat(),
+                "messages": message_dicts,
+            }
+        )
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @conversations_bp.delete("/conversations/<conversation_id>")
