@@ -191,6 +191,7 @@ class Config:
     CONVERSATION_MESSAGE_LIMIT: int = int(
         os.getenv("CONVERSATION_MESSAGE_LIMIT", "200")
     )
+    CONVERSATION_USER_LIMIT: int = int(os.getenv("CONVERSATION_USER_LIMIT", "50"))
 
 
 class DevelopmentConfig(Config):

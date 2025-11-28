@@ -24,7 +24,7 @@ async def get_latest_history(conversation_id: str, limit: int = 15) -> list:
     if not conversation_id:
         return []
 
-    history = await conversation_client.get_conversation_history(conversation_id, limit)
+    history = await conversation_client.get_message_history(conversation_id, limit)
     sanitized_history = []
     for h in history:
         sanitized_msg = {

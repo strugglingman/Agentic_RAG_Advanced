@@ -67,31 +67,22 @@ async def list_conversations():
         return jsonify({"error": "Unauthorized"}), 401
 
     try:
-        await conversation_service.connect()
-        conversations = await conversation_service.prisma_client.conversation.find_many(
-            where={"user_email": user_id},
-            order={"updated_at": "desc"},
-            take=50,
-            include={
-                "messages": {
-                    "order_by": {"created_at": "desc"},
-                    "take": 1,
-                }
-            },
-        )
+        conversations_list = await conversation_service.get_user_conversations_list(user_id, limit=Config.CONVERSATION_USER_LIMIT)
+        if not conversations_list:
+            return jsonify({"conversations": []})
+
         conversation_dicts = []
-        if conversations:
-            for conv in conversations:
-                conversation_dicts.append(
-                    {
-                        "id": conv.id,
-                        "title": conv.title,
-                        "updated_at": conv.updated_at.isoformat(),
-                        "preview": (
-                            conv.messages[0].content[:50] if conv.messages else ""
-                        ),
-                    }
-                )
+        for conv in conversations_list:
+            conversation_dicts.append(
+                {
+                    "id": conv.get("id", ""),
+                    "title": conv.get("title", ""),
+                    "updated_at": conv.get("updated_at", "").isoformat() if conv.get("updated_at") else "",
+                    "preview": (
+                        conv.get("messages", [])[0].get("content", "")[:50] if conv.get("messages") else ""
+                    ),
+                }
+            )
 
         return jsonify({"conversations": conversation_dicts})
     except Exception as e:
@@ -201,7 +192,7 @@ async def get_conversation(conversation_id: str):
         if conversation.user_email != user_id:
             return jsonify({"error": "Unauthorized"}), 403
 
-        messages = await conversation_service.load_conversation_history_db(
+        messages = await conversation_service.load_message_history_db(
             conversation_id, limit=Config.CONVERSATION_MESSAGE_LIMIT
         )
         message_dicts = []
@@ -266,7 +257,19 @@ async def delete_conversation(conversation_id: str):
         "success": true
     }
     """
-    pass
+    user_id = g.identity.get("user_id", "")
+    if not user_id:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    try:
+        success = await conversation_service.delete_conversation(conversation_id, user_id)
+        if not success:
+            return jsonify({"error": "Unauthorized or conversation not found"}), 403
+
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 
 
 @conversations_bp.patch("/conversations/<conversation_id>")

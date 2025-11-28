@@ -148,7 +148,7 @@ class ConversationService:
 
         return message.model_dump()
 
-    async def get_conversation_history(
+    async def get_message_history(
         self, conversation_id: str, limit: int = 15
     ) -> List[Dict]:
         """
@@ -216,7 +216,7 @@ class ConversationService:
 
         return [m.model_dump() for m in messages]
 
-    async def load_conversation_history_db(
+    async def load_message_history_db(
         self, conversation_id: str, limit: int = Config.CONVERSATION_MESSAGE_LIMIT
     ) -> List[Dict]:
         await self.connect()
@@ -228,8 +228,31 @@ class ConversationService:
         messages = await self.prisma_client.message.find_many(**query)
 
         return [m.model_dump() for m in messages]
+    
+    async def get_user_conversations_list(self, user_id: str, limit: int = 50) -> List[Dict]:
+        """
+        Get list of conversations for a user from PostgreSQL.
+        """
+        try:
+            await self.connect()
+            conversations_list = await self.prisma_client.conversation.find_many(
+                where={"user_email": user_id},
+                order={"updated_at": "desc"},
+                take=limit,
+                include={
+                    "messages": {
+                        "order_by": {"created_at": "desc"},
+                        "take": 1,
+                    }
+                },
+            )
 
-    async def delete_conversation(self, conversation_id: str) -> bool:
+            return [conv.model_dump() for conv in conversations_list]
+        except Exception as e:
+            print(f"Error fetching conversations list: {str(e)}")
+            return []
+
+    async def delete_conversation(self, conversation_id: str, user_id: str) -> bool:
         """
         Delete conversation from both Redis and PostgreSQL.
 
@@ -250,12 +273,20 @@ class ConversationService:
         NOTE: PostgreSQL cascade will auto-delete all messages
         """
         try:
+            # Check if conversation belongs to user
+            await self.connect()
+            conversation = await self.prisma_client.conversation.find_unique(
+                where={"id": conversation_id}
+            )
+            if not conversation or conversation.user_email != user_id:
+                print("Error: Unauthorized or conversation not found")
+                return False
+
             # Remove from Redis
             cache_key = self._get_cache_key(conversation_id)
             await self.redis.delete(cache_key)
 
             # Remove from PostgreSQL
-            await self.connect()
             await self.prisma_client.conversation.delete(where={"id": conversation_id})
 
             return True

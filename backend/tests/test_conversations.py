@@ -89,6 +89,17 @@ def test_conversations():
     else:
         print("   No conversations found!")
 
+    # Step 5: Delete the latest conversation if exists
+    if conversations:
+        print(f"\n5. Deleting the latest conversation...")
+        conv_id = conversations[0]["id"]
+        response = requests.delete(f"{BASE_URL}/conversations/{conv_id}", headers=headers)
+        print(f"   Status: {response.status_code}")
+        if response.status_code == 200:
+            print("   Conversation deleted successfully.")
+        else:
+            print(f"   Error deleting conversation: {response.text}")
+
     print("\n" + "=" * 60)
     print("TEST COMPLETE")
     print("=" * 60)
