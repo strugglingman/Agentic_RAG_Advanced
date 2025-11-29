@@ -31,11 +31,10 @@ def load_identity(secret: str, issuer: str, audience: str):
 
     email = claims.get("email", "")
     dept = claims.get("dept", "")
-    sid = claims.get("sid", "")
-    if not email or not dept or not sid:
+    if not email or not dept:
         return
 
-    g.identity = {"user_id": email, "dept_id": dept, "sid": sid}
+    g.identity = {"user_id": email, "dept_id": dept}
 
 
 def require_identity(fn):
@@ -49,8 +48,7 @@ def require_identity(fn):
 
         user_id = identity.get("user_id", "")
         dept_id = identity.get("dept_id", "")
-        sid = identity.get("sid", "")
-        if not user_id or not dept_id or not sid:
+        if not user_id or not dept_id:
             return jsonify({"error": "Unauthorized"}), 401
 
         return await fn(*args, **kwargs)
@@ -63,8 +61,7 @@ def require_identity(fn):
 
         user_id = identity.get("user_id", "")
         dept_id = identity.get("dept_id", "")
-        sid = identity.get("sid", "")
-        if not user_id or not dept_id or not sid:
+        if not user_id or not dept_id:
             return jsonify({"error": "Unauthorized"}), 401
 
         return fn(*args, **kwargs)

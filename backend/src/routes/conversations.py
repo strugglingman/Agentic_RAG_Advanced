@@ -67,7 +67,9 @@ async def list_conversations():
         return jsonify({"error": "Unauthorized"}), 401
 
     try:
-        conversations_list = await conversation_service.get_user_conversations_list(user_id, limit=Config.CONVERSATION_USER_LIMIT)
+        conversations_list = await conversation_service.get_user_conversations_list(
+            user_id, limit=Config.CONVERSATION_USER_LIMIT
+        )
         if not conversations_list:
             return jsonify({"conversations": []})
 
@@ -77,9 +79,15 @@ async def list_conversations():
                 {
                     "id": conv.get("id", ""),
                     "title": conv.get("title", ""),
-                    "updated_at": conv.get("updated_at", "").isoformat() if conv.get("updated_at") else "",
+                    "updated_at": (
+                        conv.get("updated_at", "").isoformat()
+                        if conv.get("updated_at")
+                        else ""
+                    ),
                     "preview": (
-                        conv.get("messages", [])[0].get("content", "")[:50] if conv.get("messages") else ""
+                        conv.get("messages", [])[0].get("content", "")[:50]
+                        if conv.get("messages")
+                        else ""
                     ),
                 }
             )
@@ -262,14 +270,15 @@ async def delete_conversation(conversation_id: str):
         return jsonify({"error": "Unauthorized"}), 401
 
     try:
-        success = await conversation_service.delete_conversation(conversation_id, user_id)
+        success = await conversation_service.delete_conversation(
+            conversation_id, user_id
+        )
         if not success:
             return jsonify({"error": "Unauthorized or conversation not found"}), 403
 
         return jsonify({"success": True})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
 
 
 @conversations_bp.patch("/conversations/<conversation_id>")
