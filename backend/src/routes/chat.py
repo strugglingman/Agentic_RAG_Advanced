@@ -200,11 +200,6 @@ async def chat_agent(collection):
 
     payload = request.get_json(force=True)
     msgs = payload.get("messages", [])
-    conversation_id = payload.get("conversation_id", "")
-    if not conversation_id:
-        conversation_id = await conversation_client.create_conversation(
-            user_id, "New Chat"
-        )
 
     latest_user_msg = None
     if msgs and isinstance(msgs[-1], dict) and msgs[-1].get("role") == "user":
@@ -223,6 +218,12 @@ async def chat_agent(collection):
         return jsonify({"error": f"Input rejected: {injection_error}"}), 400
 
     query = latest_user_msg.get("content").strip()
+
+    conversation_id = payload.get("conversation_id", "")
+    if not conversation_id:
+        conversation_id = await conversation_client.create_conversation(
+            user_id, query[:20] + "..."
+        )
 
     try:
         # Build context for agent (all system parameters)

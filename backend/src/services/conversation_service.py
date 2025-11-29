@@ -222,7 +222,7 @@ class ConversationService:
         await self.connect()
         query = {
             "where": {"conversation_id": conversation_id},
-            "order": {"created_at": "desc"},
+            "order": {"created_at": "asc"},
             "take": limit,
         }
         messages = await self.prisma_client.message.find_many(**query)
