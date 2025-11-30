@@ -32,7 +32,7 @@ const languages = [
 
 export default function ChatPage() {
   const { selectedExts, selectedTags, customTags } = useFilters();
-  const { messages, setMessages, contexts, setContexts, setConversations, selectedConversation, setSelectedConversation } = useChat();
+  const { messages, setMessages, contexts, setContexts, setConversations, selectedConversation, setSelectedConversation, isLoadingConversation } = useChat();
   const [showContexts, setShowContexts] = useState(false);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
@@ -290,8 +290,16 @@ export default function ChatPage() {
         {/* Conversation */}
         <main ref={scrollRef} className="flex-1 overflow-y-auto overscroll-contain [scrollbar-gutter:stable_both-edges]">
           <div className="space-y-4 px-4 py-4 md:px-6">
-            {messages.length === 0 ? (
-              <div className="mt-16 text-center text-sm text-neutral-500">
+            {isLoadingConversation ? (
+              <div className="mt-16 flex flex-col items-center justify-center gap-4">
+                <svg className="animate-spin h-8 w-8 text-blue-600 dark:text-blue-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                <div className="text-sm text-neutral-500 dark:text-neutral-400">Loading conversation...</div>
+              </div>
+            ) : messages.length === 0 ? (
+              <div className="mt-16 text-center text-sm text-neutral-500 dark:text-neutral-400">
                 Ask a question to get started. Your answers will stream in here.
               </div>
             ) : (
@@ -301,7 +309,7 @@ export default function ChatPage() {
                   <div
                     className={cls(
                       'mt-1 text-[15px] px-2 h-7 w-auto rounded-md grid place-items-center text-xs font-semibold whitespace-nowrap',
-                      m.role === 'user' ? 'bg-neutral-900 text-white' : 'bg-neutral-200 text-neutral-700'
+                      m.role === 'user' ? 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900' : 'bg-neutral-200 text-neutral-700 dark:bg-neutral-700 dark:text-neutral-100'
                   )}
                   >
                     {m.role === 'user' ? 'You' : 'Assistant'}
@@ -310,11 +318,11 @@ export default function ChatPage() {
                   <div
                     className={cls(
                       'max-w-[80%] rounded-2xl px-4 py-3 text-sm leading-relaxed',
-                      m.role === 'user' ? 'bg-neutral-900 text-white' : 'bg-white border shadow-sm'
+                      m.role === 'user' ? 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900' : 'bg-white border shadow-sm dark:bg-neutral-800 dark:border-neutral-700 dark:text-neutral-100'
                     )}
                   >
                     <div className={cls('mt-1 text-[16px]', 'whitespace-pre-wrap')}>{m.content}</div>
-                    <div className={cls('mt-1 text-[12px]', m.role === 'user' ? 'text-neutral-300' : 'text-neutral-500')}>
+                    <div className={cls('mt-1 text-[12px]', m.role === 'user' ? 'text-neutral-300 dark:text-neutral-600' : 'text-neutral-500 dark:text-neutral-400')}>
                       {tstr(m)}
                     </div>
                   </div>

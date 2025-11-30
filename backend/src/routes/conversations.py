@@ -283,7 +283,7 @@ async def delete_conversation(conversation_id: str):
 
 @conversations_bp.patch("/conversations/<conversation_id>")
 @require_identity
-async def update_conversation(conversation_id: str):
+async def update_conversation_title(conversation_id: str):
     """
     Update conversation metadata (e.g., title).
 
@@ -315,7 +315,27 @@ async def update_conversation(conversation_id: str):
         "updated_at": "2025-01-27T12:45:00Z"
     }
     """
-    pass
+    user_id = g.identity.get("user_id", "")
+    if not user_id:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    payload = request.get_json(force=True)
+    new_title = payload.get("title", "").strip()
+    if not new_title:
+        return jsonify({"error": "Title is required"}), 400
+
+    try:
+        updated_conversation = await conversation_service.update_conversation_title(conversation_id, user_id, new_title)
+        if not updated_conversation:
+            return jsonify({"error": "Unauthorized or conversation not found"}), 403
+
+        return jsonify({
+            "id": updated_conversation.get("id", ""),
+            "title": updated_conversation.get("title", ""),
+            "updated_at": updated_conversation.get("updated_at", "").isoformat() if updated_conversation.get("updated_at") else ""
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 # ==================== INTEGRATION NOTES ====================

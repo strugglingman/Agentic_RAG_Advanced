@@ -18,6 +18,8 @@ type ChatCtx = {
   setConversations: React.Dispatch<React.SetStateAction<Array<Conversation>>>;
   selectedConversation: Conversation | null;
   setSelectedConversation: React.Dispatch<React.SetStateAction<Conversation | null>>;
+  isLoadingConversation: boolean;
+  setIsLoadingConversation: React.Dispatch<React.SetStateAction<boolean>>;
 };
 
 const Ctx = createContext<ChatCtx | null>(null);
@@ -58,7 +60,8 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   });
 
   const [conversations, setConversations] = useState<Array<Conversation>>([]);
-    const [selectedConversation, setSelectedConversation] = useState<Conversation | null>(null);
+  const [selectedConversation, setSelectedConversation] = useState<Conversation | null>(null);
+  const [isLoadingConversation, setIsLoadingConversation] = useState(false);
 
   // Fetch conversations on mount
   useEffect(() => {
@@ -96,7 +99,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   }, [contexts]);
 
   return (
-    <Ctx.Provider value={{ messages, setMessages, contexts, setContexts, conversations, setConversations, selectedConversation, setSelectedConversation }}>
+    <Ctx.Provider value={{ messages, setMessages, contexts, setContexts, conversations, setConversations, selectedConversation, setSelectedConversation, isLoadingConversation, setIsLoadingConversation }}>
       {children}
     </Ctx.Provider>
   );

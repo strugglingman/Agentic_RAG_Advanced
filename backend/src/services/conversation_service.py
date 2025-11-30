@@ -228,7 +228,7 @@ class ConversationService:
         messages = await self.prisma_client.message.find_many(**query)
 
         return [m.model_dump() for m in messages]
-    
+
     async def get_user_conversations_list(self, user_id: str, limit: int = 50) -> List[Dict]:
         """
         Get list of conversations for a user from PostgreSQL.
@@ -251,6 +251,26 @@ class ConversationService:
         except Exception as e:
             print(f"Error fetching conversations list: {str(e)}")
             return []
+
+    async def update_conversation_title(self, conversation_id: str, user_id: str, new_title: str) -> Optional[Dict]:
+        try:
+            await self.connect()
+            conversation = await self.prisma_client.conversation.find_unique(
+                where={"id": conversation_id}
+            )
+            if not conversation or conversation.user_email != user_id:
+                print("Error: Unauthorized or conversation not found")
+                return None
+
+            updated_conversation = await self.prisma_client.conversation.update(
+                where={"id": conversation_id},
+                data={"title": new_title, "updated_at": datetime.now()}
+            )
+
+            return updated_conversation.model_dump()
+        except Exception as e:
+            print(f"Error updating conversation title: {str(e)}")
+            return None
 
     async def delete_conversation(self, conversation_id: str, user_id: str) -> bool:
         """
