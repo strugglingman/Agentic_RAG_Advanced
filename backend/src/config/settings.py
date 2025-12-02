@@ -168,7 +168,7 @@ class Config:
     # Tavily API key (optional, only needed if using Tavily provider)
     TAVILY_API_KEY: str = os.getenv("TAVILY_API_KEY", "")
 
-    # LangSmith Settings
+    # Langchain, LangGraph Settings for Advanced Agents
     LANGCHAIN_TRACING_V2 = os.getenv("LANGCHAIN_TRACING_V2", "false").lower() in {
         "1",
         "true",
@@ -180,6 +180,17 @@ class Config:
     LANGCHAIN_ENDPOINT = os.getenv(
         "LANGCHAIN_ENDPOINT", "https://eu.api.smith.langchain.com"
     )
+    USE_LANGGRAPH = True
+    LANGGRAPH_MAX_ITERATIONS = 10
+    LANGGRAPH_TIMEOUT = 120  # seconds
+
+    # Query Routing
+    COMPLEXITY_THRESHOLD = float(os.getenv("COMPLEXITY_THRESHOLD", "0.6"))
+    ENABLE_QUERY_ROUTING = os.getenv("ENABLE_QUERY_ROUTING", "true").lower() in {
+        "1",
+        "true",
+        "yes",
+    }
 
     # Redis settings
     REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379")
