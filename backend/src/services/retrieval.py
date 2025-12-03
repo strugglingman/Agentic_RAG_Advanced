@@ -451,7 +451,9 @@ def build_where(payload, dept_id, user_id):
     if not user_id:
         raise ValueError("No user ID provided in headers")
 
-    filters = payload.get("filters", [])
+    filters = []
+    if payload and "filters" in payload and isinstance(payload["filters"], list):
+        filters = payload.get("filters", [])
     exts = next(
         (
             f.get("exts")

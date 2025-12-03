@@ -428,7 +428,31 @@ print(result["final_answer"])
 """
 ```
 
-### Day 5: Create Node Skeletons
+### Day 5: Create Node Skeletons & Understand Context Passing
+
+**CRITICAL CONCEPT: Runtime Context Passing**
+
+Before implementing nodes, understand how to pass runtime dependencies (collection, dept_id, user_id, openai_client) to nodes:
+
+**Option 1: Add to AgentState (RECOMMENDED)**
+```python
+# In langgraph_state.py, add to AgentState:
+class AgentState(TypedDict):
+    # ... existing fields ...
+
+    # Runtime Context (passed during initialization, not modified)
+    collection: Any  # ChromaDB collection
+    dept_id: str  # Department ID for filtering
+    user_id: str  # User ID for filtering
+    openai_client: Any  # OpenAI client instance
+```
+
+**Option 2: Use Configurable (Alternative)**
+Pass via config parameter in graph.invoke(), access in nodes via get_config()
+
+**We'll use Option 1 for simplicity.**
+
+---
 
 **File:** `backend/src/services/langgraph_nodes.py`
 
@@ -437,6 +461,12 @@ print(result["final_answer"])
 LangGraph agent node implementations.
 
 Each node is a pure function: state → updated state
+
+IMPORTANT: Nodes access runtime context from state:
+- state.get("collection") - ChromaDB collection
+- state.get("dept_id") - Department ID
+- state.get("user_id") - User ID
+- state.get("openai_client") - OpenAI client
 """
 
 from typing import Dict, Any
@@ -1255,20 +1285,21 @@ Keep plans concise (max 5 steps).
 def retrieve_node(state: AgentState) -> Dict[str, Any]:
     """
     Retrieve documents using existing retrieval service.
+
+    Accesses runtime context from state:
+    - collection: ChromaDB collection
+    - dept_id: Department ID for filtering
+    - user_id: User ID for filtering
     """
     from src.services.retrieval import retrieve_hybrid
     from src.config.settings import Config
 
     query = state.get("refined_query") or state["query"]
 
-    # Get context from state (passed from router)
-    # In practice, you'll need to pass this through state initialization
-    # For now, placeholder
-
-    # TODO: Get these from state initialization
-    collection = None  # state.get("collection")
-    dept_id = None  # state.get("dept_id")
-    user_id = None  # state.get("user_id")
+    # Get runtime context from state (passed during initialization)
+    collection = state.get("collection")
+    dept_id = state.get("dept_id")
+    user_id = state.get("user_id")
 
     if not collection:
         return {

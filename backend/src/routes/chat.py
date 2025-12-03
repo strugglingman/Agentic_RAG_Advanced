@@ -147,7 +147,7 @@ async def chat(collection):
             answer = []
             try:
                 resp = openai_client.chat.completions.create(
-                    model="gpt-4o-mini",
+                    model=Config.OPENAI_MODEL,
                     messages=messages,
                     temperature=0.1,
                     max_tokens=Config.CHAT_MAX_TOKENS,
