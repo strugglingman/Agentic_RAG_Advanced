@@ -278,6 +278,7 @@ class Agent:
                 "Guidelines:\n"
                 "- For questions about company documents, policies, or internal data: Use the search_documents tool\n"
                 "- For mathematical calculations or numerical operations: Use the calculator tool\n"
+                "- For web-related questions requiring current information: Use the search_web tool\n"
                 "- For simple factual questions that don't require internal documents: Answer directly\n"
                 "- You may use multiple tools if needed to fully answer the question\n"
                 "\n"

@@ -11,6 +11,7 @@ from openai import OpenAI
 from src.services.langgraph_state import AgentState
 from src.services.retrieval import retrieve, build_where
 from src.services.retrieval_evaluator import RetrievalEvaluator
+from src.models.evaluation import EvaluationCriteria, ReflectionMode, ReflectionConfig
 from src.config.settings import Config
 
 
@@ -50,7 +51,11 @@ def plan_node(state: AgentState) -> Dict[str, Any]:
     Try to keep the number of steps minimal and concise (max 5 steps).
     """
     try:
-        client = OpenAI(api_key=Config.OPENAI_KEY)
+        client = state.get("openai_client", None)
+        if not client:
+            print("No OpenAI client found in state.")
+            raise ValueError("OpenAI client is required for planning node.")
+
         response = client.chat.completions.create(
             model=Config.OPENAI_MODEL,
             messages=[{"role": "user", "content": planning_prompt}],
@@ -145,6 +150,7 @@ def retrieve_node(state: AgentState) -> Dict[str, Any]:
 
         return {
             "retrieved_docs": ctx,
+            # Log for conceptual consistency since this retrieval is not from a tool call like web search and calculator
             "tools_used": state.get("tools_used", []) + ["search_documents"],
             "messages": state.get("messages", [])
             + [AIMessage(content=f"Retrieved {len(ctx)} documents.")],
@@ -171,8 +177,131 @@ def reflect_node(state: AgentState) -> Dict[str, Any]:
     Returns:
         Updated state with quality assessment
     """
-    # TODO: Implement reflection
-    pass
+    try:
+        query = state.get("query", "")
+        retrieved_docs = state.get("retrieved_docs", [])
+
+        # Create evaluation criteria
+        evaluator_criteria = EvaluationCriteria(
+            query=query,
+            contexts=retrieved_docs,  # ✅ Correct parameter name
+            mode=ReflectionMode.BALANCED,
+        )
+
+        reflection_config = ReflectionConfig.from_settings(Config)
+        openai_client = state.get("openai_client", None)
+
+        if not openai_client:
+            print("[REFLECT_NODE] No OpenAI client found in state.")
+            raise ValueError("OpenAI client is required for reflection node.")
+
+        evaluator = RetrievalEvaluator(
+            config=reflection_config,
+            openai_client=openai_client,
+        )
+        evaluation_result = evaluator.evaluate(evaluator_criteria)
+
+        return {
+            "retrieval_quality": evaluation_result.confidence,  # ✅ Float (0-1)
+            "retrieval_recommendation": evaluation_result.recommendation.value,  # ✅ String
+            "messages": state.get("messages", []) + [
+                AIMessage(
+                    content=f"Retrieval quality: {evaluation_result.quality.value} (confidence: {evaluation_result.confidence:.2f}). Recommendation: {evaluation_result.recommendation.value}."
+                )
+            ]
+        }
+    except Exception as e:
+        print(f"[REFLECT_NODE] Error during reflection: {e}")
+        # Fallback to default values
+        return {
+            "retrieval_quality": 0.5,
+            "retrieval_recommendation": "ANSWER",
+            "messages": state.get("messages", []) + [
+                AIMessage(content=f"Reflection failed: {str(e)}. Proceeding with default assessment.")
+            ]
+        }
+
+# ==================== TOOL EXECUTOR NODE ====================
+
+
+def tool_executor_node(state: AgentState) -> Dict[str, Any]:
+    """
+    Execute non-retrieval tools (calculator, web_search).
+
+    This node handles tool execution that doesn't involve document retrieval.
+    Examples: calculations, web searches, etc.
+
+    Args:
+        state: Current agent state
+
+    Returns:
+        Updated state with tool results
+    """
+    from src.services.agent_tools import execute_tool_call
+
+    plan = state.get("plan", [])
+    current_step = state.get("current_step", 0)
+
+    if not plan or current_step >= len(plan):
+        return {
+            "error": "No plan or invalid step for tool execution",
+            "messages": state.get("messages", [])
+            + [AIMessage(content="Tool execution failed: no valid plan step.")]
+        }
+
+    step = plan[current_step].lower()
+
+    # Determine which tool to execute based on plan step
+    tool_name = None
+    tool_args = {}
+
+    # Check for calculator
+    if "calculate" in step or "compute" in step or "math" in step:
+        tool_name = "calculator"
+        # Extract expression from step (simple heuristic)
+        # Example: "Calculate 15% of 200" → expression="15% of 200"
+        query = state.get("query", "")
+        tool_args = {"expression": query}
+
+    # Check for web search
+    elif "web" in step or "internet" in step or "online" in step:
+        tool_name = "web_search"
+        query = state.get("query", "")
+        tool_args = {"query": query}
+
+    if not tool_name:
+        return {
+            "error": f"Could not determine tool for step: {step}",
+            "messages": state.get("messages", [])
+            + [AIMessage(content=f"Could not determine tool for: {step}")]
+        }
+
+    # Build context for tool execution
+    context = {
+        "collection": state.get("collection"),
+        "dept_id": state.get("dept_id"),
+        "user_id": state.get("user_id"),
+        "openai_client": state.get("openai_client"),
+        "request_data": state.get("request_data", {}),
+    }
+
+    try:
+        # Execute the tool
+        result = execute_tool_call(tool_name, tool_args, context)
+
+        return {
+            "tool_results": {**state.get("tool_results", {}), tool_name: result},
+            "tools_used": state.get("tools_used", []) + [tool_name],
+            "messages": state.get("messages", [])
+            + [AIMessage(content=f"Tool '{tool_name}' executed: {result[:200]}...")]
+        }
+    except Exception as e:
+        print(f"[TOOL_EXECUTOR_NODE] Error executing {tool_name}: {e}")
+        return {
+            "error": f"Tool execution failed: {str(e)}",
+            "messages": state.get("messages", [])
+            + [AIMessage(content=f"Tool execution failed: {str(e)}")]
+        }
 
 
 # ==================== REFINEMENT NODE ====================

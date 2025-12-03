@@ -15,19 +15,34 @@ def route_after_planning(state: AgentState) -> str:
         state: Current agent state
 
     Returns:
-        Next node name: "retrieve", "generate", or "error"
+        Next node name: "retrieve", "tool_executor", "generate", or "error"
     """
     plan = state.get("plan", [])
 
     if not plan:
         return "error"
 
-    # Check if first step requires retrieval
+    # Check first step to decide which node
     first_step = plan[0].lower()
-    if "retrieve" in first_step or "search" in first_step or "find" in first_step:
+
+    # Document retrieval keywords
+    if "retrieve" in first_step or "search" in first_step or "find" in first_step or "document" in first_step:
         return "retrieve"
-    else:
+
+    # Calculator/computation keywords
+    if "calculate" in first_step or "compute" in first_step or "math" in first_step or "sum" in first_step:
+        return "tool_executor"  # TODO: Create tool_executor node
+
+    # Web search keywords
+    if "web" in first_step or "internet" in first_step or "online" in first_step or "google" in first_step:
+        return "tool_executor"  # TODO: Create tool_executor node
+
+    # Default to generate if no tool needed
+    if "answer" in first_step or "generate" in first_step or "respond" in first_step:
         return "generate"
+
+    # Fallback: if unclear, try retrieval first (safer default)
+    return "retrieve"
 
 
 def route_after_reflection(state: AgentState) -> str:
