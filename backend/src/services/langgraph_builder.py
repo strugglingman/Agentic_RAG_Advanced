@@ -15,8 +15,10 @@ from src.services.langgraph_nodes import (
     generate_node,
     verify_node,
     error_handler_node,
+    tool_calculator_node,
+    tool_web_search_node,
 )
-from .langgraph_routing import (
+from src.services.langgraph_routing import (
     route_after_reflection,
     route_after_planning,
     should_continue,
@@ -37,27 +39,75 @@ def build_langgraph_agent():
     # ==================== ADD NODES ====================
     # Each node is a function that takes state and returns updated state
 
-    # TODO: Add nodes
+    graph.add_node("plan", plan_node)
+    graph.add_node("retrieve", retrieve_node)
+    graph.add_node("reflect", reflect_node)
+    graph.add_node("refine", refine_node)
+    graph.add_node("generate", generate_node)
+    graph.add_node("verify", verify_node)
+    graph.add_node("tool_calculator", tool_calculator_node)
+    graph.add_node("tool_web_search", tool_web_search_node)
+    graph.add_node("error", error_handler_node)
 
     # ==================== SET ENTRY POINT ====================
 
-    # TODO: Set entry point
+    graph.set_entry_point("plan")
 
     # ==================== ADD EDGES ====================
 
-    # TODO: Add conditional edges after planning
+    # After planning, route to appropriate node based on first step
+    graph.add_conditional_edges(
+        "plan",
+        route_after_planning,
+        {
+            "retrieve": "retrieve",
+            "tool_calculator": "tool_calculator",
+            "tool_web_search": "tool_web_search",
+            "generate": "generate",
+            "error": "error",
+        },
+    )
 
-    # TODO: Add edge from retrieve to reflect
+    # After retrieve, always reflect on quality
+    graph.add_edge("retrieve", "reflect")
 
-    # TODO: Add conditional edges after reflection
+    # After reflection, route based on evaluation
+    graph.add_conditional_edges(
+        "reflect",
+        route_after_reflection,
+        {
+            "generate": "generate",
+            "refine": "refine",
+            "tool_web_search": "tool_web_search",
+            "error": "error",
+        },
+    )
 
-    # TODO: Add edge from refine to retrieve
+    # After refine, go back to retrieve with refined query
+    graph.add_edge("refine", "retrieve")
 
-    # TODO: Add edge from generate to verify
+    # After generate, verify citations
+    graph.add_edge("generate", "verify")
 
-    # TODO: Add conditional edges after verification
+    # After tool execution, generate answer with tool results
+    graph.add_edge("tool_calculator", "generate")
+    graph.add_edge("tool_web_search", "generate")
 
-    # TODO: Add edge from error to END
+    # After verification, check if more plan steps remain
+    # This is the key change for Plan-Execute pattern:
+    # - If more steps: continue to next step (route back through planning)
+    # - If no more steps: end (final_answer is set)
+    graph.add_conditional_edges(
+        "verify",
+        should_continue,
+        {
+            "continue": "plan",  # More steps remain, go back to planning
+            "end": END,  # All steps complete, final_answer is set
+        },
+    )
+
+    # Error always ends
+    graph.add_edge("error", END)
 
     # ==================== COMPILE GRAPH ====================
 

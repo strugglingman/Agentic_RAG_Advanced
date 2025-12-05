@@ -29,8 +29,8 @@ class QueryRefiner:
     def __init__(
         self,
         openai_client: OpenAI,
-        model: str = "gpt-4o-mini",
-        temperature: float = 0.1,
+        model: str = Config.OPENAI_MODEL,
+        temperature: float = Config.OPENAI_TEMPERATURE,
     ):
         """
         Initialize the query refiner.

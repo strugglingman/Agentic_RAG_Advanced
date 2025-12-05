@@ -5,6 +5,8 @@ These functions decide which node to execute next based on state.
 """
 
 from src.services.langgraph_state import AgentState
+from src.models.evaluation import EvaluationResult, RecommendationAction
+from src.config.settings import Config
 
 
 def route_after_planning(state: AgentState) -> str:
@@ -15,30 +17,35 @@ def route_after_planning(state: AgentState) -> str:
         state: Current agent state
 
     Returns:
-        Next node name: "retrieve", "tool_executor", "generate", or "error"
+        Next node name: "retrieve", "tool_calculator", "tool_web_search", "generate", or "error"
     """
     plan = state.get("plan", [])
+    current_step = state.get("current_step", 0)
 
     if not plan:
         return "error"
 
-    # Check first step to decide which node
-    first_step = plan[0].lower()
+    # Check bounds
+    if current_step >= len(plan):
+        return "error"
+
+    # Check current step to decide which node
+    step = plan[current_step].lower()
 
     # Document retrieval keywords
-    if "retrieve" in first_step or "search" in first_step or "find" in first_step or "document" in first_step:
+    if "retrieve" in step or "search" in step or "find" in step or "document" in step:
         return "retrieve"
 
     # Calculator/computation keywords
-    if "calculate" in first_step or "compute" in first_step or "math" in first_step or "sum" in first_step:
-        return "tool_executor"  # TODO: Create tool_executor node
+    if "calculate" in step or "compute" in step or "math" in step or "sum" in step:
+        return "tool_calculator"
 
     # Web search keywords
-    if "web" in first_step or "internet" in first_step or "online" in first_step or "google" in first_step:
-        return "tool_executor"  # TODO: Create tool_executor node
+    if "web" in step or "internet" in step or "online" in step or "google" in step:
+        return "tool_web_search"
 
     # Default to generate if no tool needed
-    if "answer" in first_step or "generate" in first_step or "respond" in first_step:
+    if "answer" in step or "generate" in step or "respond" in step:
         return "generate"
 
     # Fallback: if unclear, try retrieval first (safer default)
@@ -53,26 +60,41 @@ def route_after_reflection(state: AgentState) -> str:
         state: Current agent state
 
     Returns:
-        Next node name: "generate", "refine", "retrieve", or "error"
+        Next node name: "generate", "refine", "tool_web_search", or "error"
     """
-    recommendation = state.get("retrieval_recommendation", "ANSWER")
+    # Safety check: prevent infinite loops
+    iteration_count = state.get("iteration_count", 0)
+    if iteration_count >= Config.LANGGRAPH_MAX_ITERATIONS:
+        return "error"
+
+    evaluation_result: EvaluationResult = state.get("evaluation_result", None)
+    if not evaluation_result:
+        return "error"
+
+    recommendation = evaluation_result.recommendation
     refinement_count = state.get("refinement_count", 0)
 
-    # Max 3 refinements to prevent infinite loops
-    if refinement_count >= 3:
+    # Max refinement attempts to prevent infinite loops
+    if (
+        refinement_count >= Config.REFLECTION_MAX_REFINEMENT_ATTEMPTS
+        and recommendation == RecommendationAction.REFINE
+    ):
         if state.get("retrieved_docs"):
             return "generate"  # Use what we have
         else:
             return "error"  # No results after 3 tries
 
-    if recommendation == "ANSWER":
+    if recommendation == RecommendationAction.ANSWER:
         return "generate"
-    elif recommendation == "REFINE":
+    elif recommendation == RecommendationAction.REFINE:
         return "refine"
-    elif recommendation == "EXTERNAL":
-        # TODO: Future enhancement - trigger web search tool
+    elif recommendation == RecommendationAction.EXTERNAL:
+        return "tool_web_search"
+    elif recommendation == RecommendationAction.CLARIFY:
+        # User needs to clarify the query - generate with clarification message
         return "generate"
     else:
+        # Fallback for any unexpected recommendation
         return "generate"
 
 
@@ -90,8 +112,13 @@ def should_continue(state: AgentState) -> str:
     current_step = state.get("current_step", 0)
     iteration_count = state.get("iteration_count", 0)
 
-    # Safety: max 10 iterations to prevent infinite loops
-    if iteration_count >= 10:
+    # Safety: max iterations to prevent infinite loops
+    if iteration_count >= Config.LANGGRAPH_MAX_ITERATIONS:
+        return "end"
+
+    # If final_answer is set, end immediately (either CLARIFY or actual answer)
+    # CLARIFY needs user input, so don't continue with remaining plan steps
+    if state.get("final_answer"):
         return "end"
 
     # Check if all plan steps completed

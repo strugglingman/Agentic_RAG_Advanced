@@ -4,9 +4,10 @@ LangGraph agent state definition.
 This defines all possible states the agent can be in during execution.
 """
 
+from operator import add
 from typing import TypedDict, List, Optional, Annotated, Sequence, Any
 from langchain_core.messages import BaseMessage, HumanMessage
-from operator import add
+from src.models.evaluation import EvaluationResult
 
 
 class AgentState(TypedDict):
@@ -28,8 +29,7 @@ class AgentState(TypedDict):
 
     # Retrieval
     retrieved_docs: List[dict]  # Documents from ChromaDB
-    retrieval_quality: Optional[float]  # Self-reflection score
-    retrieval_recommendation: Optional[str]  # ANSWER, REFINE, EXTERNAL, CLARIFY
+    evaluation_result: Optional[EvaluationResult]  # Details from RetrievalEvaluator
 
     # Query Refinement
     original_query: str  # Store original for reference
@@ -91,8 +91,7 @@ def create_initial_state(
         current_step=0,
         # Retrieval
         retrieved_docs=[],
-        retrieval_quality=None,
-        retrieval_recommendation=None,
+        evaluation_result=None,
         # Query Refinement
         original_query=query,
         refined_query=None,
