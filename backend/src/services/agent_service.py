@@ -20,7 +20,7 @@ from src.utils.stream_utils import stream_text_smart
 from langsmith import traceable
 
 
-class Agent:
+class AgentService:
     """
     ReAct agent that uses tools to answer questions.
 

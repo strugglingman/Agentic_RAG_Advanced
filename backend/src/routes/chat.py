@@ -9,7 +9,7 @@ from src.services.retrieval import retrieve, build_where, build_prompt
 from src.config.settings import Config
 from src.utils.safety import looks_like_injection, scrub_context
 from src.utils.stream_utils import stream_text_smart
-from src.services.agent_service import Agent
+from src.services.agent_service import AgentService
 from src.services.conversation_service import ConversationService
 
 chat_bp = Blueprint("chat", __name__)
@@ -243,7 +243,7 @@ async def chat_agent(collection):
         history = await get_latest_history(conversation_id, Config.REDIS_CACHE_LIMIT)
 
         # Create agent
-        agent = Agent(
+        agent = AgentService(
             openai_client,
             max_iterations=int(Config.AGENT_MAX_ITERATIONS),
             model=Config.OPENAI_MODEL,
