@@ -32,17 +32,23 @@ def route_after_planning(state: AgentState) -> str:
     # Check current step to decide which node
     step = plan[current_step].lower()
 
-    # Document retrieval keywords
-    if "retrieve" in step or "search" in step or "find" in step or "document" in step:
-        return "retrieve"
+    # IMPORTANT: Check specific tools BEFORE generic keywords to avoid false matches
+
+    # Web search keywords (check BEFORE generic "search")
+    if "web_search" in step or "web search" in step or "internet" in step or "online" in step or "google" in step:
+        return "tool_web_search"
 
     # Calculator/computation keywords
-    if "calculate" in step or "compute" in step or "math" in step or "sum" in step:
+    if "calculate" in step or "calculator" in step or "compute" in step or "math" in step or "sum" in step:
         return "tool_calculator"
 
-    # Web search keywords
-    if "web" in step or "internet" in step or "online" in step or "google" in step:
-        return "tool_web_search"
+    # Document retrieval keywords (after checking web_search to avoid "search" collision)
+    if "retrieve" in step or "search_document" in step or "search document" in step or "find" in step or "document" in step:
+        return "retrieve"
+
+    # Generic "search" fallback to retrieve (for backward compatibility)
+    if "search" in step:
+        return "retrieve"
 
     # Default to generate if no tool needed
     if "answer" in step or "generate" in step or "respond" in step:

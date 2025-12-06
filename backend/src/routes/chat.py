@@ -3,13 +3,12 @@
 import json
 from flask import Blueprint, request, jsonify, Response, g
 from openai import OpenAI
+from src.services.query_supervisor import QuerySupervisor
 from src.middleware.auth import require_identity
-from src.utils.sanitizer import sanitize_text
 from src.services.retrieval import retrieve, build_where, build_prompt
 from src.config.settings import Config
 from src.utils.safety import looks_like_injection, scrub_context
 from src.utils.stream_utils import stream_text_smart
-from src.services.agent_service import AgentService
 from src.services.conversation_service import ConversationService
 
 chat_bp = Blueprint("chat", __name__)
@@ -18,22 +17,6 @@ chat_bp = Blueprint("chat", __name__)
 openai_client = OpenAI(api_key=Config.OPENAI_KEY)
 # Redis + PostgreSQL
 conversation_client = ConversationService()
-
-
-async def get_latest_history(conversation_id: str, limit: int = 15) -> list:
-    if not conversation_id:
-        return []
-
-    history = await conversation_client.get_message_history(conversation_id, limit)
-    sanitized_history = []
-    for h in history:
-        sanitized_msg = {
-            "role": h["role"],
-            "content": sanitize_text(h["content"], max_length=5000),
-        }
-        sanitized_history.append(sanitized_msg)
-
-    return sanitized_history
 
 
 @chat_bp.post("/chat")
@@ -129,7 +112,7 @@ async def chat(collection):
             c["chunk"] = scrub_context(c.get("chunk", ""))
 
         system, user = build_prompt(query, ctx, use_ctx=True)
-        history = await get_latest_history(conversation_id, Config.REDIS_CACHE_LIMIT)
+        history = await conversation_client.get_sanitized_latest_history(conversation_id, Config.REDIS_CACHE_LIMIT)
         messages = (
             [{"role": "system", "content": system}]
             + history
@@ -182,7 +165,7 @@ async def chat(collection):
                     )
                 yield f"\n__CONTEXT__:{json.dumps(ctx)}"
 
-        return Response(generate(), mimetype="text/plain")
+        return Response(generate(), mimetype="text/plain; charset=utf-8")
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -194,6 +177,8 @@ async def chat_agent(collection):
     # EXACT same validation as /chat
     dept_id = g.identity.get("dept_id", "")
     user_id = g.identity.get("user_id", "")
+
+    print("comdddddddddddddddddddddddddddd")
 
     if not dept_id or not user_id:
         return jsonify({"error": "No organization ID or user ID provided"}), 400
@@ -231,6 +216,7 @@ async def chat_agent(collection):
             "collection": collection,
             "dept_id": dept_id,
             "user_id": user_id,
+            "conversation_id": conversation_id,
             "request_data": payload,  # For build_where and filters, but can not pass request directly, active request context changed.
             "use_hybrid": Config.USE_HYBRID,
             "use_reranker": Config.USE_RERANKER,
@@ -239,16 +225,15 @@ async def chat_agent(collection):
             "temperature": Config.OPENAI_TEMPERATURE,
         }
 
-        # Get conversation history from Redis + PostgreSQL
-        history = await get_latest_history(conversation_id, Config.REDIS_CACHE_LIMIT)
-
         # Create agent
-        agent = AgentService(
-            openai_client,
-            max_iterations=int(Config.AGENT_MAX_ITERATIONS),
-            model=Config.OPENAI_MODEL,
-            temperature=Config.OPENAI_TEMPERATURE,
-        )
+        # agent = AgentService(
+        #     openai_client,
+        #     max_iterations=int(Config.AGENT_MAX_ITERATIONS),
+        #     model=Config.OPENAI_MODEL,
+        #     temperature=Config.OPENAI_TEMPERATURE,
+        # )
+
+        supervisor = QuerySupervisor(openai_client=openai_client)
 
         def generate():
             import asyncio
@@ -256,19 +241,27 @@ async def chat_agent(collection):
             answer_parts = []
             try:
                 # Run agent with streaming
-                for chunk in agent.run_stream(query, agent_context, history):
-                    # Check if this is the context metadata
-                    if chunk.startswith("\n__CONTEXT__:"):
-                        # This is the final context chunk
-                        yield chunk
+                # results = asyncio.run(agent.run_stream(query, agent_context))
+                print('999999999999999999999999, before supervisor.process_query')
+                final_answer, contexts = asyncio.run(supervisor.process_query(query, agent_context))
+
+                # Stream the answer chunks with UTF-8 encoding
+                for chunk in stream_text_smart(final_answer):
+                    # Ensure chunk is properly encoded
+                    if isinstance(chunk, str):
+                        yield chunk.encode('utf-8', errors='ignore').decode('utf-8')
                     else:
-                        # Regular text chunk
                         yield chunk
-                        answer_parts.append(chunk)
+                    answer_parts.append(chunk)
+
+                # After streaming answer, send context (sanitize for encoding)
+                context_chunk = f"\n__CONTEXT__:{json.dumps(contexts, ensure_ascii=False)}"
+                yield context_chunk.encode('utf-8', errors='ignore').decode('utf-8')
 
             except Exception as e:
-                print(f"Agent error: {e}")
-                yield f"\n[upstream_error] {type(e).__name__}: {e}"
+                error_msg = f"\n[upstream_error] {type(e).__name__}: {str(e)}"
+                print(error_msg, flush=True)
+                yield error_msg.encode('utf-8', errors='ignore').decode('utf-8')
             finally:
                 # Save messages to conversation history
                 if latest_user_msg:
@@ -291,7 +284,7 @@ async def chat_agent(collection):
                         )
                     )
 
-        return Response(generate(), mimetype="text/plain")
+        return Response(generate(), mimetype="text/plain; charset=utf-8")
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500

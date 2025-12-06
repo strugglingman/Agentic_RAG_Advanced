@@ -14,10 +14,13 @@ Usage:
 """
 
 from typing import Tuple, List, Dict, Any, Optional
+import json
 from langgraph.graph.state import CompiledStateGraph
 from src.config.settings import Config
+from src.services.langgraph_state import AgentState, create_initial_state
 from src.services.agent_service import AgentService
 from src.services.langgraph_builder import build_langgraph_agent
+from src.services.conversation_service import ConversationService
 from enum import Enum
 
 
@@ -40,9 +43,7 @@ class QuerySupervisor:
 
     def __init__(
         self,
-        openai_client,
-        agent_service: AgentService = None,
-        langgraph_agent: CompiledStateGraph = None,
+        openai_client
     ):
         """
         Initialize the supervisor.
@@ -53,8 +54,9 @@ class QuerySupervisor:
             langgraph_agent: Optional LangGraph agent (lazy loaded if not provided)
         """
         self.openai_client = openai_client
-        self.agent_service = agent_service or AgentService(openai_client=openai_client)
-        self.langgraph_agent = langgraph_agent or build_langgraph_agent()
+        self.agent_service = AgentService(openai_client=openai_client)
+        self.langgraph_agent = build_langgraph_agent()
+        self.conversation_service = ConversationService()
 
     async def process_query(
         self, query: str, context: Dict[str, Any]
@@ -95,12 +97,14 @@ class QuerySupervisor:
             messages=[{"role": "user", "content": prompt}],
             max_tokens=150,
             temperature=0,
+            response_format={"type": "json_object"},
         )
         if not response.choices or len(response.choices) == 0:
             raise ValueError("LLM classification returned no choices")
 
         content = response.choices[0].message.content.strip()
-        classification = content.lower().get("classification", "simple")
+        classification_data = json.loads(content)
+        classification = classification_data.get("classification", "simple")
 
         return (
             ExecutionRoute.LANGGRAPH
@@ -176,11 +180,14 @@ class QuerySupervisor:
         Returns:
             Tuple of (answer, contexts)
         """
-        self.agent_service.run_stream(query, context)
-        # TODO: Initialize AgentService if needed
-        # TODO: Call agent_service.process_query()
-        # TODO: Return results
-        pass
+        conversation_id = context.get("conversation_id", "")
+        if not conversation_id:
+            raise ValueError("conversation_id is required in context for AgentService execution")
+
+        messages_history = await self.conversation_service.get_sanitized_latest_history(conversation_id, Config.REDIS_CACHE_LIMIT)
+        final_answer, retrieved_contexts = self.agent_service.run(query, context, messages_history=messages_history)
+
+        return final_answer, retrieved_contexts
 
     async def _execute_langgraph(
         self, query: str, context: Dict[str, Any]
@@ -195,11 +202,9 @@ class QuerySupervisor:
         Returns:
             Tuple of (answer, contexts)
         """
-        # TODO: Build initial state from context
-        # TODO: Invoke langgraph agent
-        # TODO: Extract final_answer and contexts from final state
-        # TODO: Return results
-        pass
+        agent_state = self._build_langgraph_initial_state(query, context)
+        final_state = self.langgraph_agent.invoke(agent_state)
+        return self._extract_langgraph_results(final_state)
 
     def _build_langgraph_initial_state(
         self, query: str, context: Dict[str, Any]
@@ -214,10 +219,17 @@ class QuerySupervisor:
         Returns:
             Initial state dictionary matching AgentState schema
         """
-        # TODO: Map context to AgentState fields
-        # TODO: Initialize empty lists/dicts for accumulating fields
-        # TODO: Set counters to 0
-        pass
+        agent_state = create_initial_state(
+            query=query,
+            conversation_id=context.get("conversation_id", ""),
+            collection=context.get("collection", None),
+            dept_id=context.get("dept_id", ""),
+            user_id=context.get("user_id", ""),
+            request_data=context.get("request_data", {}),
+            openai_client=self.openai_client,
+        )
+
+        return {**agent_state}
 
     def _extract_langgraph_results(
         self, final_state: Dict[str, Any]
@@ -231,10 +243,21 @@ class QuerySupervisor:
         Returns:
             Tuple of (answer, contexts)
         """
-        # TODO: Get final_answer from state
-        # TODO: Combine retrieved_docs and tool_results into contexts
-        # TODO: Format contexts to match expected output format
-        pass
+        final_answer = final_state.get("final_answer") or "No answer generated."
+
+        # Get retrieved docs (list)
+        retrieved_docs = final_state.get("retrieved_docs", [])
+
+        # Get tool results (dict) and convert to list
+        tool_results_dict = final_state.get("tool_results", {})
+        tool_results_list = []
+        for results in tool_results_dict.values():
+            tool_results_list.extend(results)
+
+        # Combine all contexts
+        all_contexts = retrieved_docs + tool_results_list
+
+        return final_answer, all_contexts
 
 
 # ==================== FACTORY FUNCTION ====================
@@ -250,5 +273,4 @@ def create_supervisor(openai_client) -> QuerySupervisor:
     Returns:
         Configured QuerySupervisor instance
     """
-    # TODO: Create and return supervisor with dependencies
-    pass
+    return QuerySupervisor(openai_client=openai_client)

@@ -37,6 +37,7 @@ await self.redis.expire("conversation:123:messages", 3600)
 import json
 from datetime import datetime, timezone
 from typing import List, Dict, Optional
+from src.utils.sanitizer import sanitize_text
 from prisma import Prisma
 from src.config.settings import Config
 import redis.asyncio as redis
@@ -147,6 +148,18 @@ class ConversationService:
             print(f"Warning: Failed to update Redis cache: {str(e)}")
 
         return message.model_dump()
+
+    async def get_sanitized_latest_history(self, conversation_id, limit: int = CACHE_LIMIT) -> List[Dict]:
+        history = await self.get_message_history(conversation_id, limit)
+        sanitized_history = []
+        for h in history:
+            sanitized_msg = {
+                "role": h["role"],
+                "content": sanitize_text(h["content"], max_length=5000),
+            }
+            sanitized_history.append(sanitized_msg)
+
+        return sanitized_history
 
     async def get_message_history(
         self, conversation_id: str, limit: int = 15

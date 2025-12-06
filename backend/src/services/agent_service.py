@@ -15,6 +15,7 @@ import json
 from typing import Dict, Any, List, Optional, Tuple
 from openai import OpenAI
 from src.services.agent_tools import ALL_TOOLS, execute_tool_call
+from src.services.conversation_service import ConversationService
 from src.config.settings import Config
 from src.utils.stream_utils import stream_text_smart
 from langsmith import traceable
@@ -96,11 +97,10 @@ class AgentService:
         return "Error: Maximum iterations reached without final answer.", []
 
     @traceable
-    def run_stream(
+    async def run_stream(
         self,
         query: str,
-        context: Dict[str, Any],
-        messages_history: Optional[List[Dict[str, str]]] = None,
+        context: Dict[str, Any]
     ):
         """
         Run the agent with streaming support (generator).
@@ -108,7 +108,6 @@ class AgentService:
         Args:
             query: User's question
             context: System context (collection, dept_id, user_id, etc.)
-            messages_history: Previous conversation messages
 
         Yields:
             Text chunks and final contexts
@@ -116,6 +115,9 @@ class AgentService:
         # Initialize context tracking
         context["_retrieved_contexts"] = []
 
+        conversation_id = context.get("conversation_id", "")
+        conversation_client = ConversationService()
+        messages_history = await conversation_client.get_sanitized_latest_history(conversation_id, Config.REDIS_CACHE_LIMIT)
         messages = self._build_initial_messages(query, messages_history)
 
         for _ in range(self.max_iterations):
@@ -136,11 +138,6 @@ class AgentService:
                 final_answer = res.choices[0].message.content
                 print(final_answer)
 
-                # # Stream the answer in chunks to simulate streaming
-                # chunk_size = 10
-                # for i in range(0, len(final_answer), chunk_size):
-                #     chunk = final_answer[i : i + chunk_size]
-                #     yield chunk
                 for chunk in stream_text_smart(final_answer, delay_ms=10):
                     yield chunk
 
@@ -172,24 +169,7 @@ class AgentService:
         )
         return response
 
-    def _call_llm_stream(self, messages: List[Dict[str, str]]) -> Any:
-        """
-        Call OpenAI API with streaming (for final answer).
-
-        Args:
-            messages: Conversation history
-
-        Returns:
-            OpenAI streaming response
-        """
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            temperature=self.temperature,
-            stream=True,
-        )
-        return response
-
+    @traceable
     def _has_tool_calls(self, response: Any) -> bool:
         """
         Check if LLM response contains tool calls.

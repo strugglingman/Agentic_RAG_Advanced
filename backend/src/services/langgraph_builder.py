@@ -5,7 +5,6 @@ This file constructs the state machine for the agentic RAG system.
 """
 
 from langgraph.graph import StateGraph, END
-from langgraph.checkpoint.memory import MemorySaver
 from src.services.langgraph_state import AgentState
 from src.services.langgraph_nodes import (
     plan_node,
@@ -111,14 +110,9 @@ def build_langgraph_agent():
 
     # ==================== COMPILE GRAPH ====================
 
-    # Add checkpointing for memory and resumability
-    checkpointer = MemorySaver()
-
-    compiled_graph = graph.compile(
-        checkpointer=checkpointer,
-        interrupt_before=[],  # Can add nodes to interrupt before (for human-in-loop)
-        interrupt_after=[],  # Can add nodes to interrupt after
-    )
+    # Note: Checkpointing disabled because runtime objects (collection, openai_client)
+    # are not serializable. For conversation history, use ConversationService instead.
+    compiled_graph = graph.compile()
 
     return compiled_graph
 
