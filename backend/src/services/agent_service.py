@@ -81,6 +81,10 @@ class AgentService:
         messages = self._build_initial_messages(query, messages_history)
         for _ in range(self.max_iterations):
             res = self._call_llm(messages)
+            print(
+                "In AgentService.run, LLM tool_calls:",
+                res.choices[0].message.tool_calls,
+            )
             if self._has_tool_calls(res):
                 assistant_message = res.choices[0].message
                 tool_results = self._execute_tools(res, context)
@@ -97,11 +101,7 @@ class AgentService:
         return "Error: Maximum iterations reached without final answer.", []
 
     @traceable
-    async def run_stream(
-        self,
-        query: str,
-        context: Dict[str, Any]
-    ):
+    async def run_stream(self, query: str, context: Dict[str, Any]):
         """
         Run the agent with streaming support (generator).
 
@@ -115,28 +115,20 @@ class AgentService:
         # Initialize context tracking
         context["_retrieved_contexts"] = []
 
-        conversation_id = context.get("conversation_id", "")
-        conversation_client = ConversationService()
-        messages_history = await conversation_client.get_sanitized_latest_history(conversation_id, Config.REDIS_CACHE_LIMIT)
+        messages_history = context.get("conversation_history", [])
         messages = self._build_initial_messages(query, messages_history)
 
         for _ in range(self.max_iterations):
             res = self._call_llm(messages)
-            print("0000000000000000000")
-            print(res.choices[0].message.tool_calls)
             if self._has_tool_calls(res):
                 assistant_message = res.choices[0].message
                 tool_results = self._execute_tools(res, context)
                 messages = self._append_tool_results(
                     messages, assistant_message, tool_results
                 )
-                print("11111111111111111111")
-                print(tool_results[0])
             elif res.choices[0].message.content:
                 # We have the final answer - stream it character by character
-                print("222222222222222222222")
                 final_answer = res.choices[0].message.content
-                print(final_answer)
 
                 for chunk in stream_text_smart(final_answer, delay_ms=10):
                     yield chunk

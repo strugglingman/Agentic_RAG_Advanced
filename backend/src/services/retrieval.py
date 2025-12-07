@@ -398,6 +398,7 @@ def retrieve(
                     if rerank_scores is not None and len(rerank_scores) > 0
                     else 0
                 )
+
                 if max_rerank_score < Config.MIN_RERANK:
                     return (
                         [],

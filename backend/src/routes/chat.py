@@ -112,7 +112,9 @@ async def chat(collection):
             c["chunk"] = scrub_context(c.get("chunk", ""))
 
         system, user = build_prompt(query, ctx, use_ctx=True)
-        history = await conversation_client.get_sanitized_latest_history(conversation_id, Config.REDIS_CACHE_LIMIT)
+        history = await conversation_client.get_sanitized_latest_history(
+            conversation_id, Config.REDIS_CACHE_LIMIT
+        )
         messages = (
             [{"role": "system", "content": system}]
             + history
@@ -178,8 +180,6 @@ async def chat_agent(collection):
     dept_id = g.identity.get("dept_id", "")
     user_id = g.identity.get("user_id", "")
 
-    print("comdddddddddddddddddddddddddddd")
-
     if not dept_id or not user_id:
         return jsonify({"error": "No organization ID or user ID provided"}), 400
 
@@ -211,12 +211,17 @@ async def chat_agent(collection):
         )
 
     try:
+        # Pre-load conversation history (needed for both agent_service and langgraph)
+        conversation_history = await conversation_client.get_sanitized_latest_history(
+            conversation_id, Config.REDIS_CACHE_LIMIT
+        )
+
         # Build context for agent (all system parameters)
         agent_context = {
             "collection": collection,
             "dept_id": dept_id,
             "user_id": user_id,
-            "conversation_id": conversation_id,
+            "conversation_history": conversation_history,  # Pre-loaded history
             "request_data": payload,  # For build_where and filters, but can not pass request directly, active request context changed.
             "use_hybrid": Config.USE_HYBRID,
             "use_reranker": Config.USE_RERANKER,
@@ -242,26 +247,29 @@ async def chat_agent(collection):
             try:
                 # Run agent with streaming
                 # results = asyncio.run(agent.run_stream(query, agent_context))
-                print('999999999999999999999999, before supervisor.process_query')
-                final_answer, contexts = asyncio.run(supervisor.process_query(query, agent_context))
+                final_answer, contexts = asyncio.run(
+                    supervisor.process_query(query, agent_context)
+                )
 
                 # Stream the answer chunks with UTF-8 encoding
                 for chunk in stream_text_smart(final_answer):
                     # Ensure chunk is properly encoded
                     if isinstance(chunk, str):
-                        yield chunk.encode('utf-8', errors='ignore').decode('utf-8')
+                        yield chunk.encode("utf-8", errors="ignore").decode("utf-8")
                     else:
                         yield chunk
                     answer_parts.append(chunk)
 
                 # After streaming answer, send context (sanitize for encoding)
-                context_chunk = f"\n__CONTEXT__:{json.dumps(contexts, ensure_ascii=False)}"
-                yield context_chunk.encode('utf-8', errors='ignore').decode('utf-8')
+                context_chunk = (
+                    f"\n__CONTEXT__:{json.dumps(contexts, ensure_ascii=False)}"
+                )
+                yield context_chunk.encode("utf-8", errors="ignore").decode("utf-8")
 
             except Exception as e:
                 error_msg = f"\n[upstream_error] {type(e).__name__}: {str(e)}"
                 print(error_msg, flush=True)
-                yield error_msg.encode('utf-8', errors='ignore').decode('utf-8')
+                yield error_msg.encode("utf-8", errors="ignore").decode("utf-8")
             finally:
                 # Save messages to conversation history
                 if latest_user_msg:

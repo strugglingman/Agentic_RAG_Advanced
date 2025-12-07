@@ -20,7 +20,6 @@ from src.config.settings import Config
 from src.services.langgraph_state import AgentState, create_initial_state
 from src.services.agent_service import AgentService
 from src.services.langgraph_builder import build_langgraph_agent
-from src.services.conversation_service import ConversationService
 from enum import Enum
 
 
@@ -41,10 +40,7 @@ class QuerySupervisor:
         langgraph_agent: Plan-Execute agent for complex queries
     """
 
-    def __init__(
-        self,
-        openai_client
-    ):
+    def __init__(self, openai_client):
         """
         Initialize the supervisor.
 
@@ -56,7 +52,6 @@ class QuerySupervisor:
         self.openai_client = openai_client
         self.agent_service = AgentService(openai_client=openai_client)
         self.langgraph_agent = build_langgraph_agent()
-        self.conversation_service = ConversationService()
 
     async def process_query(
         self, query: str, context: Dict[str, Any]
@@ -104,11 +99,13 @@ class QuerySupervisor:
 
         content = response.choices[0].message.content.strip()
         classification_data = json.loads(content)
+        print("----------- Query Classification, Decide what way to route ----------")
+        print(classification_data)
         classification = classification_data.get("classification", "simple")
 
         return (
             ExecutionRoute.LANGGRAPH
-            if classification == "complex"
+            if classification == "complex" and Config.USE_LANGGRAPH
             else ExecutionRoute.AGENT_SERVICE
         )
 
@@ -175,17 +172,16 @@ class QuerySupervisor:
 
         Args:
             query: User's question
-            context: Execution context
+            context: Execution context (must include pre-loaded conversation_history)
 
         Returns:
             Tuple of (answer, contexts)
         """
-        conversation_id = context.get("conversation_id", "")
-        if not conversation_id:
-            raise ValueError("conversation_id is required in context for AgentService execution")
-
-        messages_history = await self.conversation_service.get_sanitized_latest_history(conversation_id, Config.REDIS_CACHE_LIMIT)
-        final_answer, retrieved_contexts = self.agent_service.run(query, context, messages_history=messages_history)
+        # Use pre-loaded history from context (loaded in chat.py, avoids async issues)
+        messages_history = context.get("conversation_history", [])
+        final_answer, retrieved_contexts = self.agent_service.run(
+            query, context, messages_history=messages_history
+        )
 
         return final_answer, retrieved_contexts
 
@@ -221,12 +217,12 @@ class QuerySupervisor:
         """
         agent_state = create_initial_state(
             query=query,
-            conversation_id=context.get("conversation_id", ""),
             collection=context.get("collection", None),
             dept_id=context.get("dept_id", ""),
             user_id=context.get("user_id", ""),
             request_data=context.get("request_data", {}),
             openai_client=self.openai_client,
+            conversation_history=context.get("conversation_history", []),
         )
 
         return {**agent_state}

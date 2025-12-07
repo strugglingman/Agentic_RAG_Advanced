@@ -149,7 +149,9 @@ class ConversationService:
 
         return message.model_dump()
 
-    async def get_sanitized_latest_history(self, conversation_id, limit: int = CACHE_LIMIT) -> List[Dict]:
+    async def get_sanitized_latest_history(
+        self, conversation_id, limit: int = CACHE_LIMIT
+    ) -> List[Dict]:
         history = await self.get_message_history(conversation_id, limit)
         sanitized_history = []
         for h in history:
@@ -199,6 +201,9 @@ class ConversationService:
         - DB query must be "desc" to match cache order
         - When populating cache, use RPUSH because messages already reversed
         """
+        # Ensure connected first
+        await self.connect()
+
         # Try Redis cache first
         try:
             cache_key = self._get_cache_key(conversation_id)
@@ -209,7 +214,6 @@ class ConversationService:
             print(f"Warning: Failed to read from Redis cache: {str(e)}")
 
         # Load from DB if not found in cache
-        await self.connect()
         query = {
             "where": {"conversation_id": conversation_id},
             "order": {"created_at": "desc"},
@@ -242,7 +246,9 @@ class ConversationService:
 
         return [m.model_dump() for m in messages]
 
-    async def get_user_conversations_list(self, user_id: str, limit: int = 50) -> List[Dict]:
+    async def get_user_conversations_list(
+        self, user_id: str, limit: int = 50
+    ) -> List[Dict]:
         """
         Get list of conversations for a user from PostgreSQL.
         """
@@ -265,7 +271,9 @@ class ConversationService:
             print(f"Error fetching conversations list: {str(e)}")
             return []
 
-    async def update_conversation_title(self, conversation_id: str, user_id: str, new_title: str) -> Optional[Dict]:
+    async def update_conversation_title(
+        self, conversation_id: str, user_id: str, new_title: str
+    ) -> Optional[Dict]:
         try:
             await self.connect()
             conversation = await self.prisma_client.conversation.find_unique(
@@ -277,7 +285,7 @@ class ConversationService:
 
             updated_conversation = await self.prisma_client.conversation.update(
                 where={"id": conversation_id},
-                data={"title": new_title, "updated_at": datetime.now()}
+                data={"title": new_title, "updated_at": datetime.now()},
             )
 
             return updated_conversation.model_dump()

@@ -23,7 +23,6 @@ from src.services.query_refiner import QueryRefiner
 from src.utils.safety import enforce_citations
 from src.utils.sanitizer import sanitize_text
 from src.config.settings import Config
-from src.services.conversation_service import ConversationService
 
 
 # ==================== PLANNING NODE ====================
@@ -62,29 +61,35 @@ def plan_node(state: AgentState) -> Dict[str, Any]:
 
     query = state.get("query", "")
     planning_prompt = f"""
-    You are a planning assistant. Create a step-by-step plan to answer the following query:
-        Query: {query}
+You are a planning assistant. Create a minimal plan to answer this query using available tools.
 
-    Available Tools:
-    1. search_documents: Search internal company documents and knowledge base. Use for questions about company data, policies, reports, or uploaded documents.
-    2. calculator: Perform mathematical calculations and numerical operations. Use for arithmetic, percentages, or any numerical computation.
-    3. web_search: Search the web for current, up-to-date information. Use when internal documents don't have the answer or when external/recent information is needed.
+Query: {query}
 
-    Instructions:
-    - Create steps that use these tools appropriately
-    - Each step should be clear and actionable
-    - Combine tools if needed (e.g., retrieve data, then calculate)
+Available Tools (use ONLY these exact tool names):
+- retrieve: Search internal documents and knowledge base
+- calculator: Perform mathematical calculations
+- web_search: Search the web for external/current information
 
-    Provide the plan as a numbered list of steps, Return ONLY a list of steps in JSON format as follows:
-    {
-        "steps": [
-            "Step 1: description",
-            "Step 2: description",
-            ...
-        ]
-    }
-    Try to keep the number of steps minimal and concise (max 5 steps).
-    """
+IMPORTANT RULES:
+1. ONLY create steps that call a tool - no "review", "summarize", "format" steps
+2. Use exact tool names: "retrieve", "calculator", "web_search"
+3. Each step MUST start with one of the tool names
+4. Keep plan minimal - 1-3 steps maximum
+5. The system will automatically generate the final answer after all tool calls
+
+Examples of GOOD plans:
+- Query: "What is our Q3 revenue?" → {{"steps": ["retrieve: search for Q3 revenue data"]}}
+- Query: "Calculate 15% of our budget" → {{"steps": ["retrieve: get budget data", "calculator: calculate 15% of budget"]}}
+- Query: "Latest AI trends" → {{"steps": ["web_search: search for latest AI trends"]}}
+- Query: "Compare our revenue to industry" → {{"steps": ["retrieve: get company revenue", "web_search: find industry revenue benchmarks"]}}
+
+Examples of BAD plans (DO NOT DO THIS):
+- {{"steps": ["retrieve: get data", "review the results", "summarize findings"]}} ← "review" and "summarize" are NOT tools
+- {{"steps": ["web_search: find info", "format the response"]}} ← "format" is NOT a tool
+
+Return ONLY JSON:
+{{"steps": ["tool_name: action description", ...]}}
+"""
     try:
         client = state.get("openai_client", None)
         if not client:
@@ -102,8 +107,9 @@ def plan_node(state: AgentState) -> Dict[str, Any]:
         if response.choices and response.choices[0].message:
             plan_data = json.loads(response.choices[0].message.content)
 
-        print("444444444444444444444444")
+        print("000000000000000000000000000000000")
         print("Plan node response:", plan_data)
+        print(f"current step: {state.get('current_step', 0)}")
         plans = []
         if plan_data:
             plans = plan_data.get(
@@ -147,13 +153,28 @@ def retrieve_node(state: AgentState) -> Dict[str, Any]:
     """
     plan = state.get("plan", [])
     current_step = state.get("current_step", 0)
-    if not plan or current_step >= len(plan):
+    print("111111111111111111111111")
+    print("In retrieve node")
+    print(f"current step: {current_step}")
+    is_detour = state.get("evaluation_result") is not None
+    if not plan:
+        print("In retrieve node but no plan.")
         return {
             "retrieved_docs": [],
-            "current_step": current_step + 1,
+            "current_step": current_step + 1 if not is_detour else current_step,
             "iteration_count": state.get("iteration_count", 0) + 1,
             "messages": state.get("messages", [])
             + [AIMessage(content="No plan or over max steps in plan.")],
+        }
+    if current_step >= len(plan):
+        print("In retrieve node but over max steps in plan.")
+        print(f"current step: {current_step}, plan length: {len(plan)}")
+        return {
+            "retrieved_docs": state.get("retrieved_docs", []),
+            "current_step": current_step + 1 if not is_detour else current_step,
+            "iteration_count": state.get("iteration_count", 0) + 1,
+            "messages": state.get("messages", [])
+            + [AIMessage(content="Over maximum steps in plan.")],
         }
     action = plan[current_step].lower()
     if (
@@ -163,8 +184,8 @@ def retrieve_node(state: AgentState) -> Dict[str, Any]:
         and "find" not in action
     ):
         return {
-            "retrieved_docs": [],
-            "current_step": current_step + 1,
+            "retrieved_docs": state.get("retrieved_docs", []),
+            "current_step": current_step + 1 if not is_detour else current_step,
             "iteration_count": state.get("iteration_count", 0) + 1,
             "messages": state.get("messages", [])
             + [AIMessage(content="Current step is not to retrieve documents.")],
@@ -176,8 +197,8 @@ def retrieve_node(state: AgentState) -> Dict[str, Any]:
     if not collection:
         print("No collection found in state.")
         return {
-            "retrieved_docs": [],
-            "current_step": current_step + 1,
+            "retrieved_docs": state.get("retrieved_docs", []),
+            "current_step": current_step + 1 if not is_detour else current_step,
             "iteration_count": state.get("iteration_count", 0) + 1,
             "messages": state.get("messages", [])
             + [AIMessage(content="No document collection available for retrieval.")],
@@ -186,17 +207,18 @@ def retrieve_node(state: AgentState) -> Dict[str, Any]:
         print("Department ID or User ID missing in state.")
         return {
             "retrieved_docs": [],
-            "current_step": current_step + 1,
+            "current_step": current_step + 1 if not is_detour else current_step,
             "iteration_count": state.get("iteration_count", 0) + 1,
             "messages": state.get("messages", [])
             + [AIMessage(content="Missing department or user context for retrieval.")],
         }
 
     try:
+        query = state.get("refined_query") or state.get("query")
         request_data = state.get("request_data", None)
         where = build_where(request_data, dept_id, user_id)
-        ctx, _ = retrieve(
-            query=state.get("refined_query") or state.get("query"),
+        ctx, err = retrieve(
+            query=query,
             collection=state.get("collection"),
             dept_id=state.get("dept_id"),
             user_id=state.get("user_id"),
@@ -205,30 +227,36 @@ def retrieve_node(state: AgentState) -> Dict[str, Any]:
             use_hybrid=Config.USE_HYBRID,
             use_reranker=Config.USE_RERANKER,
         )
+        print("********************************************************")
+        print(query)
+        print("Retrieved contexts:", ctx)
+        print("Retrieval error:", err)
         if not ctx:
             print("No documents retrieved.")
             return {
                 "retrieved_docs": [],
-                "current_step": current_step + 1,
+                "current_step": current_step + 1 if not is_detour else current_step,
                 "iteration_count": state.get("iteration_count", 0) + 1,
                 "messages": state.get("messages", [])
                 + [AIMessage(content="No relevant documents found.")],
             }
 
+        print(f"Retrieved {len(ctx)} documents.")
+
         return {
             "retrieved_docs": ctx,
             # Log for conceptual consistency since this retrieval is not from a tool call like web search and calculator
             "tools_used": state.get("tools_used", []) + ["search_documents"],
-            "current_step": current_step + 1,
+            "current_step": current_step + 1 if not is_detour else current_step,
             "iteration_count": state.get("iteration_count", 0) + 1,
             "messages": state.get("messages", [])
             + [AIMessage(content=f"Retrieved {len(ctx)} documents.")],
         }
     except Exception as e:
-        print(f"Retrieval node error: {e}")
+        print(f"Retrieval node error: {str(e)}")
         return {
             "retrieved_docs": [],
-            "current_step": state.get("current_step", 0) + 1,
+            "current_step": current_step + 1 if not is_detour else current_step,
             "iteration_count": state.get("iteration_count", 0) + 1,
             "messages": state.get("messages", [])
             + [AIMessage(content="Error during document retrieval.")],
@@ -249,6 +277,8 @@ def reflect_node(state: AgentState) -> Dict[str, Any]:
         Updated state with quality assessment
     """
     try:
+        print("In reflect node")
+        print(f"current step: {state.get('current_step', 0)}")
         query = state.get("query", "")
         retrieved_docs = state.get("retrieved_docs", [])
 
@@ -271,6 +301,8 @@ def reflect_node(state: AgentState) -> Dict[str, Any]:
             openai_client=openai_client,
         )
         evaluation_result = evaluator.evaluate(evaluator_criteria)
+
+        print(f"Evaluation result: {evaluation_result}")
 
         return {
             "evaluation_result": evaluation_result,  # Store full evaluation result
@@ -324,6 +356,8 @@ def tool_calculator_node(state: AgentState) -> Dict[str, Any]:
         Updated state with tool results
     """
     try:
+        print("22222222222222222222222222")
+        print("In tool_calculator_node")
         plan = state.get("plan", [])
         current_step = state.get("current_step", 0)
         query = state.get("query", "")
@@ -373,6 +407,7 @@ def tool_calculator_node(state: AgentState) -> Dict[str, Any]:
 
         # Check if LLM called a tool
         if not response.choices[0].message.tool_calls:
+            print("[TOOL_CALCULATOR] No tool call detected in LLM response.")
             return {
                 "tools_used": state.get("tools_used", []),
                 "tool_results": state.get("tool_results", {}),
@@ -412,6 +447,8 @@ def tool_calculator_node(state: AgentState) -> Dict[str, Any]:
                 "query": query,
             }
         )
+
+        print(f"Tool {tool_name} executed with result: {result[:200]}...")
 
         return {
             "tools_used": state.get("tools_used", []) + [tool_name],
@@ -462,6 +499,9 @@ def tool_web_search_node(state: AgentState) -> Dict[str, Any]:
         Updated state with tool results
     """
     try:
+        print("33333333333333333333333333")
+        print("In tool_web_search_node")
+        print(f"current step: {state.get('current_step', 0)}")
         plan = state.get("plan", [])
         current_step = state.get("current_step", 0)
         query = state.get("query", "")
@@ -545,6 +585,7 @@ def tool_web_search_node(state: AgentState) -> Dict[str, Any]:
             }
         )
 
+        print(f"Tool {tool_name} executed with result: {result[:200]}...")
         return {
             "tools_used": state.get("tools_used", []) + [tool_name],
             "tool_results": tool_results,
@@ -589,6 +630,8 @@ def refine_node(state: AgentState) -> Dict[str, Any]:
     Returns:
         Updated state with refined query
     """
+    print("In refine_node")
+    print(f"current step: {state.get('current_step', 0)}")
     current_query = state.get("refined_query") or state.get("query", "")
 
     try:
@@ -613,6 +656,10 @@ def refine_node(state: AgentState) -> Dict[str, Any]:
         )
 
         current_refinement_count = state.get("refinement_count", 0)
+        print(
+            f"------------------------------------Refinement count: {current_refinement_count}"
+        )
+        print(f"------------------------------------Refined query: {refined_query}")
         return {
             "refined_query": refined_query,
             "refinement_count": current_refinement_count + 1,
@@ -644,6 +691,8 @@ def generate_node(state: AgentState) -> Dict[str, Any]:
         Updated state with generated answer
     """
     try:
+        print("In generate_node")
+        print(f"current step: {state.get('current_step', 0)}")
         openai_client = state.get("openai_client", None)
         if not openai_client:
             print("No OpenAI client found in state.")
@@ -785,34 +834,18 @@ from the contexts you referenced. Format: 'Sources: filename.pdf (pages 15, 23),
         # Build messages list: system + conversation_history + current query with contexts
         openai_messages = [{"role": "system", "content": system_prompt}]
 
-        # Load previous conversation history from database if conversation_id exists
-        conversation_id = state.get("conversation_id", None)
-        if conversation_id:
-            try:
-                # Load conversation history (similar to chat.py)
-                conversation_service = ConversationService()
-                import asyncio
-
-                history = asyncio.run(
-                    conversation_service.get_message_history(
-                        conversation_id, Config.REDIS_CACHE_LIMIT
-                    )
-                )
-
-                # Add sanitized history to messages
-                for h in history:
-                    sanitized_msg = {
-                        "role": h["role"],
-                        "content": sanitize_text(h["content"], max_length=5000),
-                    }
-                    openai_messages.append(sanitized_msg)
-
-                print(
-                    f"[GENERATE] Loaded {len(history)} messages from conversation history"
-                )
-            except Exception as e:
-                print(f"[GENERATE] Failed to load conversation history: {e}")
-                # Continue without history
+        # Use pre-loaded conversation history from state (loaded in chat.py, avoids async issues)
+        conversation_history = state.get("conversation_history", [])
+        if conversation_history:
+            for h in conversation_history:
+                sanitized_msg = {
+                    "role": h.get("role", "user"),
+                    "content": sanitize_text(h.get("content", ""), max_length=5000),
+                }
+                openai_messages.append(sanitized_msg)
+            print(
+                f"[GENERATE] Using {len(conversation_history)} messages from pre-loaded conversation history"
+            )
 
         # Add current query with contexts
         openai_messages.append({"role": "user", "content": user_message_with_context})
@@ -826,6 +859,8 @@ from the contexts you referenced. Format: 'Sources: filename.pdf (pages 15, 23),
         if response.choices and response.choices[0].message:
             draft_answer = response.choices[0].message.content
 
+        print("Generated draft answer successfully.")
+        print(f"Draft answer: {draft_answer[:200]}...")
         return {
             "draft_answer": draft_answer,
             "iteration_count": state.get("iteration_count", 0) + 1,
@@ -865,6 +900,9 @@ def verify_node(state: AgentState) -> Dict[str, Any]:
         Updated state with verified answer
     """
     draft_answer = state.get("draft_answer", "")
+    print("--------------------In VERIFY NODE")
+    print(f"current step: {state.get('current_step', 0)}")
+    print(f"draft answer: {draft_answer[:200]}...")
     plan = state.get("plan", [])
     current_step = state.get("current_step", 0)
 
@@ -941,8 +979,12 @@ def verify_node(state: AgentState) -> Dict[str, Any]:
 
         # If more plan steps remain, don't set final_answer yet
         # The intermediate result is stored in draft_answer and contexts accumulate in state
+        print("[VERIFY] Answer citations verified successfully.")
+        print(f"Has more steps: {has_more_steps}")
+        print(f"Clean answer: {clean_answer[:200]}...")
+        final_answer = clean_answer if not has_more_steps else None
         return {
-            "final_answer": clean_answer if not has_more_steps else None,
+            "final_answer": final_answer,
             "evaluation_result": None,  # Clear evaluation_result for next cycle
             "iteration_count": state.get("iteration_count", 0) + 1,
             "messages": state.get("messages", [])
@@ -971,7 +1013,12 @@ def error_handler_node(state: AgentState) -> Dict[str, Any]:
     Returns:
         Updated state with error message
     """
+    print("------------------In ERROR HANDLER NODE-----------------------")
     error_message = state.get("error", "An unknown error occurred.")
+    print(f"Error message: {error_message}")
+    msgs = state.get("messages", [])
+    print(msgs[0:20])
+    # print(state.get("messages", []))
     return {
         "final_answer": f"Error: {error_message}",
         "iteration_count": state.get("iteration_count", 0) + 1,

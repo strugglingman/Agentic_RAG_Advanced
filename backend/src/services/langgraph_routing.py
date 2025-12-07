@@ -22,39 +22,63 @@ def route_after_planning(state: AgentState) -> str:
     plan = state.get("plan", [])
     current_step = state.get("current_step", 0)
 
+    print(f"[ROUTE_AFTER_PLANNING] plan={plan}, current_step={current_step}")
+
     if not plan:
+        print("[ROUTE_AFTER_PLANNING] No plan, returning error")
         return "error"
 
     # Check bounds
     if current_step >= len(plan):
+        print(
+            f"[ROUTE_AFTER_PLANNING] current_step {current_step} >= len(plan) {len(plan)}, returning error"
+        )
         return "error"
 
     # Check current step to decide which node
     step = plan[current_step].lower()
+    print(f"[ROUTE_AFTER_PLANNING] step={step}")
 
     # IMPORTANT: Check specific tools BEFORE generic keywords to avoid false matches
 
     # Web search keywords (check BEFORE generic "search")
-    if "web_search" in step or "web search" in step or "internet" in step or "online" in step or "google" in step:
+    if (
+        "web_search" in step
+        or "web search" in step
+        or "internet" in step
+        or "online" in step
+        or "google" in step
+    ):
+        print("[ROUTE_AFTER_PLANNING] Matched web_search, returning tool_web_search")
         return "tool_web_search"
 
     # Calculator/computation keywords
-    if "calculate" in step or "calculator" in step or "compute" in step or "math" in step or "sum" in step:
+    if "calculate" in step or "calculator" in step or "compute" in step:
+        print("[ROUTE_AFTER_PLANNING] Matched calculator, returning tool_calculator")
         return "tool_calculator"
 
     # Document retrieval keywords (after checking web_search to avoid "search" collision)
-    if "retrieve" in step or "search_document" in step or "search document" in step or "find" in step or "document" in step:
+    if (
+        "retrieve" in step
+        or "search_document" in step
+        or "search document" in step
+        or "find in document" in step
+    ):
+        print("[ROUTE_AFTER_PLANNING] Matched retrieve, returning retrieve")
         return "retrieve"
 
     # Generic "search" fallback to retrieve (for backward compatibility)
     if "search" in step:
+        print("[ROUTE_AFTER_PLANNING] Matched generic search, returning retrieve")
         return "retrieve"
 
     # Default to generate if no tool needed
     if "answer" in step or "generate" in step or "respond" in step:
+        print("[ROUTE_AFTER_PLANNING] Matched generate, returning generate")
         return "generate"
 
     # Fallback: if unclear, try retrieval first (safer default)
+    print("[ROUTE_AFTER_PLANNING] No match, fallback to retrieve")
     return "retrieve"
 
 

@@ -180,8 +180,13 @@ class Config:
     LANGCHAIN_ENDPOINT = os.getenv(
         "LANGCHAIN_ENDPOINT", "https://eu.api.smith.langchain.com"
     )
-    USE_LANGGRAPH = True
-    LANGGRAPH_MAX_ITERATIONS = 10
+    USE_LANGGRAPH = os.getenv("USE_LANGGRAPH", "true").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    LANGGRAPH_MAX_ITERATIONS = 20
     LANGGRAPH_TIMEOUT = 120  # seconds
 
     # Query Routing

@@ -56,6 +56,7 @@ class AgentState(TypedDict):
     user_id: Optional[str]  # User ID for filtering
     request_data: Optional[dict]  # Original request payload
     openai_client: Optional[Any]  # OpenAI client instance
+    conversation_history: Optional[List[dict]]  # Pre-loaded conversation history
 
 
 def create_initial_state(
@@ -66,6 +67,7 @@ def create_initial_state(
     user_id: Optional[str] = None,
     request_data: Optional[dict] = None,
     openai_client: Optional[Any] = None,
+    conversation_history: Optional[List[dict]] = None,
 ) -> AgentState:
     """
     Factory function to create initial state.
@@ -77,6 +79,7 @@ def create_initial_state(
         dept_id: Department ID for filtering
         user_id: User ID for filtering
         openai_client: OpenAI client instance
+        conversation_history: Pre-loaded conversation history (avoids async issues in nodes)
 
     Returns:
         Initial agent state with runtime context
@@ -113,6 +116,7 @@ def create_initial_state(
         user_id=user_id,
         request_data=request_data,
         openai_client=openai_client,
+        conversation_history=conversation_history or [],
     )
 
     return agent_state
