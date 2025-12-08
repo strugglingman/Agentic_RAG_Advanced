@@ -38,6 +38,12 @@ class Config:
     AVG_SEM_SIM = float(os.getenv("AVG_SEM_SIM", "0.2"))
     MIN_RERANK = float(os.getenv("MIN_RERANK", "0.5"))
     AVG_RERANK = float(os.getenv("AVG_RERANK", "0.3"))
+    ENFORCE_CITATIONS = os.getenv("ENFORCE_CITATIONS", "false").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
     # Document processing
     SENT_TARGET = int(os.getenv("SENT_TARGET", "400"))
@@ -45,7 +51,7 @@ class Config:
     TEXT_MAX = int(os.getenv("TEXT_MAX", "400000"))
 
     # Chat settings
-    CHAT_MAX_TOKENS = int(os.getenv("CHAT_MAX_TOKENS", "200"))
+    CHAT_MAX_TOKENS = int(os.getenv("CHAT_MAX_TOKENS", "2000"))
 
     # OpenAI
     OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
@@ -180,7 +186,7 @@ class Config:
     LANGCHAIN_ENDPOINT = os.getenv(
         "LANGCHAIN_ENDPOINT", "https://eu.api.smith.langchain.com"
     )
-    USE_LANGGRAPH = os.getenv("USE_LANGGRAPH", "true").lower() in {
+    USE_LANGGRAPH = os.getenv("USE_LANGGRAPH", "false").lower() in {
         "1",
         "true",
         "yes",

@@ -40,6 +40,10 @@ class AgentState(TypedDict):
     tools_used: List[str]  # Track which tools were called
     tool_results: dict  # Store tool outputs
 
+    # Per-Step Context Isolation (Option C implementation)
+    step_contexts: dict  # Contexts indexed by step number {step: {type, docs/result, plan_step}}
+    step_answers: List[dict]  # Verified answers per step [{step, question, answer, context_count}]
+
     # Generation
     draft_answer: Optional[str]  # Answer before verification
     final_answer: Optional[str]  # Verified answer with citations
@@ -102,6 +106,9 @@ def create_initial_state(
         # Tool Execution
         tools_used=[],
         tool_results={},
+        # Per-Step Context Isolation
+        step_contexts={},
+        step_answers=[],
         # Generation
         draft_answer=None,
         final_answer=None,

@@ -241,17 +241,37 @@ class QuerySupervisor:
         """
         final_answer = final_state.get("final_answer") or "No answer generated."
 
-        # Get retrieved docs (list)
-        retrieved_docs = final_state.get("retrieved_docs", [])
+        # Extract contexts from step_contexts (per-step isolation)
+        # This ensures we return the actual contexts used in the answer
+        step_contexts = final_state.get("step_contexts", {})
+        all_contexts = []
+        
+        for step_num in sorted(step_contexts.keys()):
+            step_ctx = step_contexts[step_num]
+            ctx_type = step_ctx.get("type", "")
+            
+            if ctx_type == "retrieval":
+                # Add retrieved documents from this step
+                docs = step_ctx.get("docs", [])
+                all_contexts.extend(docs)
+            elif ctx_type == "tool":
+                # Add tool result as a context entry
+                tool_context = {
+                    "tool_name": step_ctx.get("tool_name", "unknown"),
+                    "result": step_ctx.get("result", ""),
+                    "args": step_ctx.get("args", {}),
+                    "step": step_num,
+                }
+                all_contexts.append(tool_context)
 
-        # Get tool results (dict) and convert to list
-        tool_results_dict = final_state.get("tool_results", {})
-        tool_results_list = []
-        for results in tool_results_dict.values():
-            tool_results_list.extend(results)
-
-        # Combine all contexts
-        all_contexts = retrieved_docs + tool_results_list
+        # Fallback: if step_contexts is empty, use legacy approach
+        if not all_contexts:
+            retrieved_docs = final_state.get("retrieved_docs", [])
+            tool_results_dict = final_state.get("tool_results", {})
+            tool_results_list = []
+            for results in tool_results_dict.values():
+                tool_results_list.extend(results)
+            all_contexts = retrieved_docs + tool_results_list
 
         return final_answer, all_contexts
 

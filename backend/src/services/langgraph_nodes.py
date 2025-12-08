@@ -228,8 +228,6 @@ def retrieve_node(state: AgentState) -> Dict[str, Any]:
             use_reranker=Config.USE_RERANKER,
         )
         print("********************************************************")
-        print(query)
-        print("Retrieved contexts:", ctx)
         print("Retrieval error:", err)
         if not ctx:
             print("No documents retrieved.")
@@ -243,9 +241,17 @@ def retrieve_node(state: AgentState) -> Dict[str, Any]:
 
         print(f"Retrieved {len(ctx)} documents.")
 
+        # Store retrieved docs PER STEP to avoid mixing contexts from different questions
+        step_contexts = state.get("step_contexts", {})
+        step_contexts[current_step] = {
+            "type": "retrieval",
+            "docs": ctx,
+            "plan_step": plan[current_step] if current_step < len(plan) else "",
+        }
+
         return {
-            "retrieved_docs": ctx,
-            # Log for conceptual consistency since this retrieval is not from a tool call like web search and calculator
+            "retrieved_docs": ctx,  # Keep for backward compatibility with reflection
+            "step_contexts": step_contexts,
             "tools_used": state.get("tools_used", []) + ["search_documents"],
             "current_step": current_step + 1 if not is_detour else current_step,
             "iteration_count": state.get("iteration_count", 0) + 1,
@@ -450,9 +456,20 @@ def tool_calculator_node(state: AgentState) -> Dict[str, Any]:
 
         print(f"Tool {tool_name} executed with result: {result[:200]}...")
 
+        # Store tool result PER STEP to avoid mixing contexts
+        step_contexts = state.get("step_contexts", {})
+        step_contexts[current_step] = {
+            "type": "tool",
+            "tool_name": tool_name,
+            "result": result,
+            "args": tool_args,
+            "plan_step": plan[current_step] if plan and current_step < len(plan) else "",
+        }
+
         return {
             "tools_used": state.get("tools_used", []) + [tool_name],
             "tool_results": tool_results,
+            "step_contexts": step_contexts,
             "current_step": current_step + 1 if is_planned_call else current_step,
             "iteration_count": state.get("iteration_count", 0) + 1,
             "messages": state.get("messages", [])
@@ -521,12 +538,25 @@ def tool_web_search_node(state: AgentState) -> Dict[str, Any]:
         # Build prompt for LLM tool calling
         # For planned calls: use plan[current_step]
         # For detour calls: use generic prompt
+        print("$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$")
+        print("Plan:", plan)
+        print(f"Current step: {current_step}")
         if plan and current_step < len(plan):
             action_step = plan[current_step]
-            prompt = f"Based on the user's query and the current plan step, call the web_search tool.\n\nUser Query: {query}\n\nCurrent Step: {action_step}"
+            # Extract the action from the step (format: "tool_name: description")
+            # Focus ONLY on the current step to avoid LLM confusion with multi-part queries
+            prompt = f"""You need to call the web_search tool for this specific task.
+
+Task: {action_step}
+
+IMPORTANT: Extract the search query ONLY from the task description above. Do NOT use unrelated parts from other tasks.
+
+Call the web_search tool with the appropriate query."""
         else:
             # Detour or no plan - generic prompt
             prompt = f"Based on the user's query, search the web for relevant information.\n\nUser Query: {query}"
+        
+        print("Prompt for web search tool calling:", prompt)
 
         response = client.chat.completions.create(
             model=Config.OPENAI_MODEL,
@@ -585,10 +615,22 @@ def tool_web_search_node(state: AgentState) -> Dict[str, Any]:
             }
         )
 
-        print(f"Tool {tool_name} executed with result: {result[:200]}...")
+        print(f"Tool {tool_name} executed with result: {result}...")
+        
+        # Store tool result PER STEP to avoid mixing contexts
+        step_contexts = state.get("step_contexts", {})
+        step_contexts[current_step] = {
+            "type": "tool",
+            "tool_name": tool_name,
+            "result": result,
+            "args": tool_args,
+            "plan_step": plan[current_step] if plan and current_step < len(plan) else "",
+        }
+
         return {
             "tools_used": state.get("tools_used", []) + [tool_name],
             "tool_results": tool_results,
+            "step_contexts": step_contexts,
             "current_step": current_step + 1 if is_planned_call else current_step,
             "iteration_count": state.get("iteration_count", 0) + 1,
             "messages": state.get("messages", [])
@@ -717,12 +759,16 @@ def generate_node(state: AgentState) -> Dict[str, Any]:
                 + [AIMessage(content=clarification_message)],
             }
 
-        # Check if we have any context to generate from
-        retrieved_docs = state.get("retrieved_docs", [])
-        tool_results = state.get("tool_results", {})
-
-        if not retrieved_docs and not tool_results:
-            # No context available - cannot generate
+        # Get ONLY current step's context (per-step isolation)
+        plan = state.get("plan", [])
+        current_step = state.get("current_step", 0)
+        step_contexts = state.get("step_contexts", {})
+        
+        # Get context for the running step (current_step was already incremented by the executor node)
+        target_step = current_step - 1
+        
+        if target_step not in step_contexts:
+            print(f"[GENERATE] No context found for step {target_step}")
             return {
                 "draft_answer": "",
                 "iteration_count": state.get("iteration_count", 0) + 1,
@@ -730,24 +776,31 @@ def generate_node(state: AgentState) -> Dict[str, Any]:
                 + [AIMessage(content="No context available to generate answer from.")],
             }
 
-        # Build numbered context from both sources with rich formatting
+        step_ctx = step_contexts[target_step]
+        plan_step_desc = step_ctx.get("plan_step", "")
+        
+        print(f"[GENERATE] Generating answer for step {target_step}: {plan_step_desc}")
+
+        # Build numbered context from ONLY this step's data
         contexts = []
         context_num = 1
 
-        # Add retrieved documents with detailed metadata
-        if retrieved_docs:
-            for doc in retrieved_docs:
+        print("*******************In generate node, show step_context:")
+        print("Step context:", step_ctx)
+
+        if step_ctx["type"] == "retrieval":
+            # Retrieved documents from this step only
+            docs = step_ctx.get("docs", [])
+            for doc in docs:
                 chunk = doc.get("chunk", str(doc))
                 source = doc.get("source", "unknown")
                 page = doc.get("page", 0)
 
-                # Build context header similar to agent_tools.py
                 header = f"Context {context_num} (Source: {source}"
                 if page > 0:
                     header += f", Page: {page}"
                 header += "):\n"
 
-                # Add optional scores if available
                 score_info = ""
                 if doc.get("hybrid") is not None:
                     score_info += f"Hybrid score: {doc['hybrid']:.2f}"
@@ -756,7 +809,6 @@ def generate_node(state: AgentState) -> Dict[str, Any]:
                         score_info += ", "
                     score_info += f"Rerank score: {doc['rerank']:.2f}"
 
-                # Combine all parts
                 context_entry = f"{header}{chunk}"
                 if score_info:
                     context_entry += f"\n{score_info}"
@@ -764,31 +816,19 @@ def generate_node(state: AgentState) -> Dict[str, Any]:
                 contexts.append(context_entry)
                 context_num += 1
 
-        # Add tool results with clear labeling
-        if tool_results:
-            for tool_key, results in tool_results.items():
-                for res in results:
-                    tool_name = (
-                        tool_key.split("_step_")[0]
-                        if "_step_" in tool_key
-                        else tool_key
-                    )
-                    step = res.get("step", "")
-                    query_used = res.get("query", "")
-                    result_text = res.get("result", "")
+        elif step_ctx["type"] == "tool":
+            # Tool result from this step only
+            tool_name = step_ctx.get("tool_name", "unknown")
+            result_text = step_ctx.get("result", "")
+            args = step_ctx.get("args", {})
 
-                    # Format tool result context
-                    header = f"Context {context_num} (Tool: {tool_name}"
-                    if step:
-                        header += f", Step: {step}"
-                    header += "):\n"
+            header = f"Context {context_num} (Tool: {tool_name}, Step: {target_step}):\n"
+            if args:
+                header += f"Arguments: {args}\n"
 
-                    if query_used:
-                        header += f"Query used: {query_used}\n"
-
-                    context_entry = f"{header}Result: {result_text}"
-                    contexts.append(context_entry)
-                    context_num += 1
+            context_entry = f"{header}Result: {result_text}"
+            contexts.append(context_entry)
+            context_num += 1
 
         if not contexts:
             print("No context available for answer generation.")
@@ -799,7 +839,7 @@ def generate_node(state: AgentState) -> Dict[str, Any]:
         final_context = "\n\n".join(contexts)
 
         # Build system prompt (similar to agent_service.py)
-        system_prompt = """You are a helpful assistant that answers questions using provided contexts and tool results.
+        system_prompt = """You are a helpful assistant that answers questions using provided contexts or tool results.
 
 STRICT RULES:
 1. Use ONLY information from the numbered contexts below - DO NOT use external knowledge
@@ -811,13 +851,17 @@ STRICT RULES:
 5. If the contexts don't contain sufficient information to answer, say: "I don't have enough information to answer that based on the available context."
 6. Be concise, accurate, and professional"""
 
-        # Use BOTH original and refined query for best LLM understanding
-        original_query = state.get("query", "")
+        # Use the SPECIFIC plan step as the question (not the full multi-part query)
+        # This ensures the LLM answers ONLY what this step is about
         refined_query = state.get("refined_query", None)
 
-        # Build question section - show both original and refined if refinement occurred
-        question_section = f"Question: {original_query}"
-        if refined_query and refined_query != original_query:
+        # Extract the task from plan step (format: "tool_name: description")
+        step_question = plan_step_desc
+        if ":" in plan_step_desc:
+            step_question = plan_step_desc.split(":", 1)[1].strip()
+
+        question_section = f"Question: {step_question}"
+        if refined_query and refined_query != step_question:
             question_section += f"\n(Refined as: {refined_query})"
 
         # Build user message with contexts (similar to build_prompt in retrieval.py)
@@ -827,9 +871,11 @@ Context:
 {final_context}
 
 Instructions: Answer the question concisely by synthesizing information from the contexts above.
-Include bracket citations [n] for every sentence that uses information.
-At the end of your answer, cite the sources you used. For each source file, list the specific page numbers
-from the contexts you referenced. Format: 'Sources: filename.pdf (pages 15, 23), filename2.pdf (page 7)'"""
+"""
+# Comment out too much citation prompt
+# Include bracket citations [n] for every sentence that uses information.
+# At the end of your answer, cite the sources you used. For each source file, list the specific page numbers
+# from the contexts you referenced. Format: 'Sources: filename.pdf (pages 15, 23), filename2.pdf (page 7)'
 
         # Build messages list: system + conversation_history + current query with contexts
         openai_messages = [{"role": "system", "content": system_prompt}]
@@ -850,9 +896,13 @@ from the contexts you referenced. Format: 'Sources: filename.pdf (pages 15, 23),
         # Add current query with contexts
         openai_messages.append({"role": "user", "content": user_message_with_context})
 
+        print("&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&")
+        print("Sending messages to OpenAI for answer generation...")
+        print(f"Messages: {openai_messages}")
         response = openai_client.chat.completions.create(
             model=Config.OPENAI_MODEL,
             messages=openai_messages,
+            max_tokens=Config.CHAT_MAX_TOKENS,
             temperature=Config.OPENAI_TEMPERATURE,
         )
         draft_answer = ""
@@ -970,22 +1020,62 @@ def verify_node(state: AgentState) -> Dict[str, Any]:
                 ],
             }
 
-        # Enforce citations - drops sentences without valid citations
-        clean_answer, all_supported = enforce_citations(draft_answer, valid_ids)
+        # Optional: Enforce citations - drops sentences without valid citations
+        clean_answer, all_supported = enforce_citations(draft_answer, valid_ids) if Config.ENFORCE_CITATIONS else (draft_answer, True)
 
         if not all_supported:
             print(f"[VERIFY] Dropped unsupported sentences from answer")
             print(f"[VERIFY] Valid context IDs: {valid_ids}")
 
-        # If more plan steps remain, don't set final_answer yet
-        # The intermediate result is stored in draft_answer and contexts accumulate in state
-        print("[VERIFY] Answer citations verified successfully.")
+        # Store answer for THIS STEP
+        target_step = current_step - 1  # Answer was for previous step
+        step_answers = state.get("step_answers", [])
+        step_contexts = state.get("step_contexts", {})
+        
+        step_ctx = step_contexts.get(target_step, {})
+        plan_step_desc = step_ctx.get("plan_step", f"Step {target_step}")
+        
+        step_answers.append({
+            "step": target_step,
+            "question": plan_step_desc,
+            "answer": clean_answer,
+            "context_count": len(valid_ids),
+        })
+        
+        print(f"[VERIFY] Stored answer for step {target_step}: {plan_step_desc}")
         print(f"Has more steps: {has_more_steps}")
-        print(f"Clean answer: {clean_answer[:200]}...")
-        final_answer = clean_answer if not has_more_steps else None
+        
+        # If all steps complete, concatenate all step answers
+        if not has_more_steps:
+            # Build final answer from all step answers
+            if len(step_answers) == 1:
+                # Single step - return answer directly
+                final_answer = step_answers[0]["answer"]
+            else:
+                # Multiple steps - format with sections
+                answer_parts = []
+                for step_ans in step_answers:
+                    # Extract task description (remove tool name prefix)
+                    task = step_ans["question"]
+                    if ":" in task:
+                        task = task.split(":", 1)[1].strip()
+                    
+                    answer_parts.append(f"**{task.capitalize()}**\n{step_ans['answer']}")
+                
+                final_answer = "\n\n".join(answer_parts)
+            
+            print(f"[VERIFY] Final answer composed from {len(step_answers)} step(s)")
+        else:
+            final_answer = None
+        
+        print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+        print("Output step answers and final answer (if complete).")
+        print(f"Step answers: {step_answers}")
+        print(f"Final answer: {final_answer}")
         return {
             "final_answer": final_answer,
-            "evaluation_result": None,  # Clear evaluation_result for next cycle
+            "step_answers": step_answers,
+            "evaluation_result": None,
             "iteration_count": state.get("iteration_count", 0) + 1,
             "messages": state.get("messages", [])
             + [AIMessage(content="Answer verified and citations checked.")],

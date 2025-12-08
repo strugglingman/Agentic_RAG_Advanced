@@ -127,7 +127,7 @@ export default function Sidebar() {
   return (
     <div className="p-3 space-y-6">
       <div className="px-2">
-        <h2 className="text-xl font-semibold tracking-tight">RAG Chatbot</h2>
+        <h2 className="text-xl font-semibold tracking-tight">Agentic RAG Chatbot</h2>
       </div>
       {/* Navigation */}
       <nav className="flex flex-col gap-2" aria-label="Sidebar">

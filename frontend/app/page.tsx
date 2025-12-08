@@ -33,7 +33,7 @@ export default function LoginPage() {
   return (
     <main className="min-h-screen grid place-items-center p-6">
       <form onSubmit={onSubmit} className="w-80 space-y-3">
-        <h1 className="text-xl font-semibold text-center">RAG Chatbot — Login</h1>
+        <h1 className="text-xl font-semibold text-center">Agentic RAG Chatbot — Login</h1>
         <input name="email" type="email" className="w-full border p-2 rounded" placeholder="you@org.com" required />
         <input name="password" type="password" className="w-full border p-2 rounded" placeholder="Password" required />
         <button disabled={loading} className="w-full bg-black text-white py-2 rounded">

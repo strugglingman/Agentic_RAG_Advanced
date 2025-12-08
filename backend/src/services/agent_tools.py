@@ -329,14 +329,15 @@ def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
         )
 
         # Return formatted contexts with instructions for the LLM
+        # Comment out too much citation prompt
         result = (
             f"Found {len(ctx)} relevant document(s):\n\n"
             f"{context_str}\n\n"
-            f"Instructions: Answer the question concisely by synthesizing information from the contexts above. "
-            f"Include bracket citations [n] for every sentence (e.g., [1], [2]). "
-            f"At the end of your answer, cite the sources you used. For each source file, list the specific page numbers "
-            f"from the contexts you referenced (look at the 'Page:' information in each context header). "
-            f"Format: 'Sources: filename1.pdf (pages 15, 23), filename2.pdf (page 7)'"
+            f"Instructions for DOCUMENT CONTEXTS ABOVE (Context 1-{len(ctx)}):\n"
+            f"- When answering from these numbered document contexts, place bracket citations [n] IMMEDIATELY AFTER each sentence\n"
+            f"- Example: 'The revenue was $50M [1]. Sales increased [2].'\n"
+            f"- If you also have web_search results in other tool responses, answer those naturally WITHOUT citations\n"
+            f"- At the end, cite document sources: 'Sources: filename1.pdf (pages 15, 23), filename2.pdf (page 7)'"
         )
 
         # Prepend external search suggestion if recommended
