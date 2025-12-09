@@ -75,7 +75,6 @@ class WebSearchService:
         self.max_results = max_results or Config.WEB_SEARCH_MAX_RESULTS
         self.tavily_api_key = tavily_api_key or Config.TAVILY_API_KEY
 
-
     @traceable
     def search(
         self,
@@ -309,7 +308,7 @@ class WebSearchService:
         if not results:
             return f"No web results found for: {query}"
 
-        #print(f"[WEB_SEARCH] {results} for agent and query: {query}")
+        # print(f"[WEB_SEARCH] {results} for agent and query: {query}")
         output = f'Web search results for: "{query}"\n\n'
         for i, r in enumerate(results):
             output += f"{i+1}. {r.title}\n"
@@ -318,8 +317,8 @@ class WebSearchService:
             output += f"   {r.snippet}\n\n"
 
         # Comment out too much citation prompt
-        output += "[Note: These results are from external web sources. You do not need to cite these results with bracket citations.]"
-        #print(f"[WEB_SEARCH] Formatted output for agent:\n{output}")
+        output += "[Note: Answer is from external web sources. You MUST NOT cite the answer with bracket citations.]"
+        # print(f"[WEB_SEARCH] Formatted output for agent:\n{output}")
 
         return output
 

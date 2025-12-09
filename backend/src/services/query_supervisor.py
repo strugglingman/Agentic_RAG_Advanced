@@ -13,14 +13,19 @@ Usage:
     answer, contexts = await supervisor.process_query(query, context)
 """
 
-from typing import Tuple, List, Dict, Any, Optional
-import json
-from langgraph.graph.state import CompiledStateGraph
-from src.config.settings import Config
-from src.services.langgraph_state import AgentState, create_initial_state
-from src.services.agent_service import AgentService
-from src.services.langgraph_builder import build_langgraph_agent
 from enum import Enum
+from typing import Tuple, List, Dict, Any
+import json
+from langgraph.checkpoint.postgres import PostgresSaver
+from psycopg_pool import ConnectionPool
+import psycopg
+from src.config.settings import Config
+from src.services.langgraph_state import (
+    create_initial_state,
+    create_runtime_context,
+)
+from src.services.agent_service import AgentService
+from src.services.langgraph_builder import build_langgraph_agent, set_checkpointer
 
 
 class ExecutionRoute(str, Enum):
@@ -46,12 +51,49 @@ class QuerySupervisor:
 
         Args:
             openai_client: OpenAI client instance
-            agent_service: Optional AgentService instance (lazy loaded if not provided)
-            langgraph_agent: Optional LangGraph agent (lazy loaded if not provided)
         """
         self.openai_client = openai_client
         self.agent_service = AgentService(openai_client=openai_client)
-        self.langgraph_agent = build_langgraph_agent()
+        # Note: LangGraph agent is built per-request with RuntimeContext
+
+        # Initialize PostgreSQL checkpointer (cached for all requests)
+        self._checkpointer = None
+        self._connection_pool = None  # Store connection pool for cleanup
+        if Config.CHECKPOINT_POSTGRES_DATABASE_URL and PostgresSaver and psycopg:
+            try:
+                # Setup tables first (needs autocommit for CREATE INDEX CONCURRENTLY)
+                with psycopg.connect(
+                    Config.CHECKPOINT_POSTGRES_DATABASE_URL, autocommit=True
+                ) as setup_conn:
+                    temp_saver = PostgresSaver(setup_conn)
+                    temp_saver.setup()
+
+                # Create connection pool with autocommit for checkpoint operations
+                # This ensures each checkpoint write is committed immediately
+                connection_kwargs = {
+                    "autocommit": True,
+                    "prepare_threshold": 0,  # Disable prepared statements for pgbouncer compatibility
+                }
+                self._connection_pool = ConnectionPool(
+                    conninfo=Config.CHECKPOINT_POSTGRES_DATABASE_URL,
+                    max_size=20,
+                    kwargs=connection_kwargs,
+                )
+                self._checkpointer = PostgresSaver(self._connection_pool)
+
+                print("✓ PostgreSQL checkpointer initialized with connection pool")
+            except Exception as e:
+                print(f"⚠ Could not initialize PostgreSQL checkpointer: {e}")
+                print("  Falling back to in-memory checkpointer")
+
+    def close(self):
+        """Close connection pool when shutting down."""
+        if self._connection_pool:
+            try:
+                self._connection_pool.close()
+                print("✓ PostgreSQL connection pool closed")
+            except Exception as e:
+                print(f"⚠ Error closing connection pool: {e}")
 
     async def process_query(
         self, query: str, context: Dict[str, Any]
@@ -193,38 +235,55 @@ class QuerySupervisor:
 
         Args:
             query: User's question
-            context: Execution context
+            context: Execution context (should include 'thread_id' for checkpointing)
 
         Returns:
             Tuple of (answer, contexts)
         """
-        agent_state = self._build_langgraph_initial_state(query, context)
-        final_state = self.langgraph_agent.invoke(agent_state)
+        # Create runtime context with non-serializable objects
+        runtime = create_runtime_context(
+            collection=context.get("collection"),
+            openai_client=self.openai_client,
+            dept_id=context.get("dept_id", ""),
+            user_id=context.get("user_id", ""),
+            request_data=context.get("request_data", {}),
+            conversation_history=context.get("conversation_history", []),
+        )
+
+        # Build graph with runtime context bound to nodes, using cached checkpointer
+        print(
+            f"[DEBUG] Using checkpointer: {type(self._checkpointer).__name__ if self._checkpointer else 'None (will use MemorySaver)'}"
+        )
+        langgraph_agent = build_langgraph_agent(
+            runtime, checkpointer=self._checkpointer
+        )
+
+        # Create serializable initial state (no runtime objects)
+        agent_state = self._build_langgraph_initial_state(query)
+
+        # Use conversation_id as thread_id for checkpointing (enables multi-turn conversations and state recovery)
+        thread_id = (
+            context.get("thread_id") or context.get("conversation_id") or "default"
+        )
+        print(f"[DEBUG] Using thread_id for checkpoint: {thread_id}")
+        config = {"configurable": {"thread_id": thread_id}}
+
+        final_state = langgraph_agent.invoke(agent_state, config=config)
+        print(f"[DEBUG] Graph execution completed, checking if checkpoint was saved...")
         return self._extract_langgraph_results(final_state)
 
-    def _build_langgraph_initial_state(
-        self, query: str, context: Dict[str, Any]
-    ) -> Dict[str, Any]:
+    def _build_langgraph_initial_state(self, query: str) -> Dict[str, Any]:
         """
         Build initial state for LangGraph execution.
 
         Args:
             query: User's question
-            context: Execution context
 
         Returns:
-            Initial state dictionary matching AgentState schema
+            Initial state dictionary matching AgentState schema (serializable)
         """
-        agent_state = create_initial_state(
-            query=query,
-            collection=context.get("collection", None),
-            dept_id=context.get("dept_id", ""),
-            user_id=context.get("user_id", ""),
-            request_data=context.get("request_data", {}),
-            openai_client=self.openai_client,
-            conversation_history=context.get("conversation_history", []),
-        )
-
+        # create_initial_state now only takes query - runtime objects are in RuntimeContext
+        agent_state = create_initial_state(query=query)
         return {**agent_state}
 
     def _extract_langgraph_results(
@@ -245,11 +304,11 @@ class QuerySupervisor:
         # This ensures we return the actual contexts used in the answer
         step_contexts = final_state.get("step_contexts", {})
         all_contexts = []
-        
+
         for step_num in sorted(step_contexts.keys()):
             step_ctx = step_contexts[step_num]
             ctx_type = step_ctx.get("type", "")
-            
+
             if ctx_type == "retrieval":
                 # Add retrieved documents from this step
                 docs = step_ctx.get("docs", [])

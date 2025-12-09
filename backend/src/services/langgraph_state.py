@@ -2,12 +2,30 @@
 LangGraph agent state definition.
 
 This defines all possible states the agent can be in during execution.
+State is split into:
+- AgentState: Serializable, modified by nodes, checkpointed
+- RuntimeContext: Non-serializable, read-only, passed separately
 """
 
 from operator import add
-from typing import TypedDict, List, Optional, Annotated, Sequence, Any
+from typing import TypedDict, List, Optional, Annotated, Sequence, Any, Tuple
 from langchain_core.messages import BaseMessage, HumanMessage
-from src.models.evaluation import EvaluationResult
+
+
+class RuntimeContext(TypedDict):
+    """
+    Runtime context for the LangGraph agent.
+
+    These are non-serializable objects passed to nodes but NOT checkpointed.
+    Nodes should treat these as read-only.
+    """
+
+    collection: Optional[Any]  # ChromaDB collection
+    openai_client: Optional[Any]  # OpenAI client instance
+    dept_id: Optional[str]  # Department ID for filtering
+    user_id: Optional[str]  # User ID for filtering
+    request_data: Optional[dict]  # Original request payload
+    conversation_history: Optional[List[dict]]  # Pre-loaded conversation history
 
 
 class AgentState(TypedDict):
@@ -16,12 +34,12 @@ class AgentState(TypedDict):
 
     This is the single source of truth for agent execution state.
     All nodes read from and write to this state.
+    All fields must be JSON-serializable for checkpointing.
     """
 
     # Core
     messages: Annotated[Sequence[BaseMessage], add]  # Conversation history
     query: str  # Original user query
-    conversation_id: Optional[str]  # For memory persistence
 
     # Planning
     plan: Optional[List[str]]  # Step-by-step execution plan
@@ -29,7 +47,7 @@ class AgentState(TypedDict):
 
     # Retrieval
     retrieved_docs: List[dict]  # Documents from ChromaDB
-    evaluation_result: Optional[EvaluationResult]  # Details from RetrievalEvaluator
+    evaluation_result: Optional[dict]  # Serialized EvaluationResult (was EvaluationResult object)
 
     # Query Refinement
     original_query: str  # Store original for reference
@@ -54,45 +72,53 @@ class AgentState(TypedDict):
     iteration_count: int  # Prevent infinite loops
     error: Optional[str]  # Track errors for graceful handling
 
-    # Runtime Context (passed during initialization, not modified by nodes)
-    collection: Optional[Any]  # ChromaDB collection
-    dept_id: Optional[str]  # Department ID for filtering
-    user_id: Optional[str]  # User ID for filtering
-    request_data: Optional[dict]  # Original request payload
-    openai_client: Optional[Any]  # OpenAI client instance
-    conversation_history: Optional[List[dict]]  # Pre-loaded conversation history
 
-
-def create_initial_state(
-    query: str,
-    conversation_id: Optional[str] = None,
+def create_runtime_context(
     collection: Optional[Any] = None,
+    openai_client: Optional[Any] = None,
     dept_id: Optional[str] = None,
     user_id: Optional[str] = None,
     request_data: Optional[dict] = None,
-    openai_client: Optional[Any] = None,
     conversation_history: Optional[List[dict]] = None,
-) -> AgentState:
+) -> RuntimeContext:
     """
-    Factory function to create initial state.
+    Factory function to create runtime context.
+
+    Args:
+        collection: ChromaDB collection for retrieval
+        openai_client: OpenAI client instance
+        dept_id: Department ID for filtering
+        user_id: User ID for filtering
+        request_data: Original request payload
+        conversation_history: Pre-loaded conversation history
+
+    Returns:
+        RuntimeContext with non-serializable objects
+    """
+    return RuntimeContext(
+        collection=collection,
+        openai_client=openai_client,
+        dept_id=dept_id,
+        user_id=user_id,
+        request_data=request_data,
+        conversation_history=conversation_history or [],
+    )
+
+
+def create_initial_state(query: str) -> AgentState:
+    """
+    Factory function to create initial agent state.
 
     Args:
         query: User's question
-        conversation_id: Optional conversation ID for memory
-        collection: ChromaDB collection for retrieval
-        dept_id: Department ID for filtering
-        user_id: User ID for filtering
-        openai_client: OpenAI client instance
-        conversation_history: Pre-loaded conversation history (avoids async issues in nodes)
 
     Returns:
-        Initial agent state with runtime context
+        Initial agent state (serializable, checkpointable)
     """
-    agent_state = AgentState(
+    return AgentState(
         # Core
         messages=[HumanMessage(content=query)],
         query=query,
-        conversation_id=conversation_id,
         # Planning
         plan=None,
         current_step=0,
@@ -117,13 +143,42 @@ def create_initial_state(
         next_step="plan",
         iteration_count=0,
         error=None,
-        # Runtime Context
+    )
+
+
+def create_initial_state_with_context(
+    query: str,
+    collection: Optional[Any] = None,
+    openai_client: Optional[Any] = None,
+    dept_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+    request_data: Optional[dict] = None,
+    conversation_history: Optional[List[dict]] = None,
+) -> Tuple[AgentState, RuntimeContext]:
+    """
+    Factory function to create both initial state and runtime context.
+
+    This is a convenience function that creates both in one call.
+
+    Args:
+        query: User's question
+        collection: ChromaDB collection for retrieval
+        openai_client: OpenAI client instance
+        dept_id: Department ID for filtering
+        user_id: User ID for filtering
+        request_data: Original request payload
+        conversation_history: Pre-loaded conversation history
+
+    Returns:
+        Tuple of (AgentState, RuntimeContext)
+    """
+    state = create_initial_state(query)
+    runtime = create_runtime_context(
         collection=collection,
+        openai_client=openai_client,
         dept_id=dept_id,
         user_id=user_id,
         request_data=request_data,
-        openai_client=openai_client,
-        conversation_history=conversation_history or [],
+        conversation_history=conversation_history,
     )
-
-    return agent_state
+    return state, runtime

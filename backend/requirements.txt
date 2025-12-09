@@ -23,11 +23,13 @@ ddgs>=2.0.0  # Renamed from duckduckgo-search
 tavily-python>=0.5.0
 langsmith>=0.1.0
 psycopg2-binary>=2.9.0
+psycopg[binary,pool]>=3.0.0  # Required for langgraph-checkpoint-postgres (pool for ConnectionPool)
 redis>=5.0.0
 prisma>=0.11.0
 asgiref>=3.11.0
 # LangGraph for agentic RAG implementation
 langgraph>=0.2.0
+langgraph-checkpoint-postgres>=0.0.1
 langchain>=0.3.0
 langchain-core>=0.3.0
 langchain-openai>=0.2.0

@@ -5,7 +5,7 @@ These functions decide which node to execute next based on state.
 """
 
 from src.services.langgraph_state import AgentState
-from src.models.evaluation import EvaluationResult, RecommendationAction
+from src.models.evaluation import RecommendationAction
 from src.config.settings import Config
 
 
@@ -97,11 +97,17 @@ def route_after_reflection(state: AgentState) -> str:
     if iteration_count >= Config.LANGGRAPH_MAX_ITERATIONS:
         return "error"
 
-    evaluation_result: EvaluationResult = state.get("evaluation_result", None)
-    if not evaluation_result:
+    # evaluation_result is now stored as dict for serialization
+    evaluation_result_dict = state.get("evaluation_result", None)
+    if not evaluation_result_dict:
         return "error"
 
-    recommendation = evaluation_result.recommendation
+    # Access recommendation as string from dict, convert to enum for comparison
+    recommendation_str = evaluation_result_dict.get("recommendation")
+    if not recommendation_str:
+        return "error"
+
+    recommendation = RecommendationAction(recommendation_str)
     refinement_count = state.get("refinement_count", 0)
 
     # Max refinement attempts to prevent infinite loops

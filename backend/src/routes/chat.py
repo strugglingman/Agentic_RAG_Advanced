@@ -17,6 +17,8 @@ chat_bp = Blueprint("chat", __name__)
 openai_client = OpenAI(api_key=Config.OPENAI_KEY)
 # Redis + PostgreSQL
 conversation_client = ConversationService()
+# Query supervisor (created once, reused across all requests)
+supervisor = QuerySupervisor(openai_client=openai_client)
 
 
 @chat_bp.post("/chat")
@@ -221,6 +223,7 @@ async def chat_agent(collection):
             "collection": collection,
             "dept_id": dept_id,
             "user_id": user_id,
+            "conversation_id": conversation_id,  # For langGraph checkpointing
             "conversation_history": conversation_history,  # Pre-loaded history
             "request_data": payload,  # For build_where and filters, but can not pass request directly, active request context changed.
             "use_hybrid": Config.USE_HYBRID,
@@ -238,8 +241,6 @@ async def chat_agent(collection):
         #     temperature=Config.OPENAI_TEMPERATURE,
         # )
 
-        supervisor = QuerySupervisor(openai_client=openai_client)
-
         def generate():
             import asyncio
 
@@ -250,6 +251,10 @@ async def chat_agent(collection):
                 final_answer, contexts = asyncio.run(
                     supervisor.process_query(query, agent_context)
                 )
+
+                print("############################################")
+                print(f"Final Answer: {final_answer}")
+                print(f"Contexts: {contexts}")
 
                 # Stream the answer chunks with UTF-8 encoding
                 for chunk in stream_text_smart(final_answer):

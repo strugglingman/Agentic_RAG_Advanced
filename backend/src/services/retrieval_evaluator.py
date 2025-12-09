@@ -40,7 +40,9 @@ class RetrievalEvaluator:
         openai_client: OpenAI client for LLM-based evaluation (required for BALANCED/THOROUGH)
     """
 
-    def __init__(self, config: ReflectionConfig, openai_client: Optional[OpenAI] = None):
+    def __init__(
+        self, config: ReflectionConfig, openai_client: Optional[OpenAI] = None
+    ):
         """
         Initialize the evaluator.
 
@@ -65,7 +67,6 @@ class RetrievalEvaluator:
         if self.config.mode in [ReflectionMode.BALANCED, ReflectionMode.THOROUGH]:
             if self.client is None:
                 raise ValueError("OpenAI client required for BALANCED/THOROUGH modes")
-
 
     @traceable
     def evaluate(self, criteria: EvaluationCriteria) -> EvaluationResult:
@@ -170,13 +171,20 @@ class RetrievalEvaluator:
         context_text = self._extract_context_text(criteria.contexts)
         keyword_overlap = self._calculate_keyword_overlap(query_keywords, context_text)
         relevance_scores = self._extract_relevance_scores(criteria.contexts)
-        avg_score = sum(relevance_scores) / len(relevance_scores) if relevance_scores else 0.0
+        avg_score = (
+            sum(relevance_scores) / len(relevance_scores) if relevance_scores else 0.0
+        )
         min_score = min(relevance_scores) if relevance_scores else 0.0
         context_presence = 1.0 if context_count > 0 else 0.0
         # Calculate evaluation confidence
         evaluation_confidence = min(
             1.0,
-            (keyword_overlap * 0.4 + avg_score * 0.3 + min_score * 0.2 + context_presence * 0.1),
+            (
+                keyword_overlap * 0.4
+                + avg_score * 0.3
+                + min_score * 0.2
+                + context_presence * 0.1
+            ),
         )
         coverage = keyword_overlap if context_count > 0 else 0.0
         issues = self._detect_issues(context_count, avg_score, keyword_overlap)
@@ -335,10 +343,16 @@ class RetrievalEvaluator:
                 messages=[{"role": "user", "content": prompt}],
             )
             content = response.choices[0].message.content
-            answer_match = re.search(r"ANSWER:\s*(yes|partial|no)", content, re.IGNORECASE)
+            answer_match = re.search(
+                r"ANSWER:\s*(yes|partial|no)", content, re.IGNORECASE
+            )
             reasoning_match = re.search(r"REASONING:\s*(.*)", content, re.IGNORECASE)
 
-            if not answer_match or answer_match.group(1).lower() not in ["yes", "partial", "no"]:
+            if not answer_match or answer_match.group(1).lower() not in [
+                "yes",
+                "partial",
+                "no",
+            ]:
                 return baseline_confidence, "LLM check failed"
             answer = answer_match.group(1).lower()
             adjusted = baseline_confidence
@@ -348,7 +362,9 @@ class RetrievalEvaluator:
                 adjusted = max(0.0, baseline_confidence - 0.1)
 
             reasoning = (
-                reasoning_match.group(1).strip() if reasoning_match else "No reasoning provided"
+                reasoning_match.group(1).strip()
+                if reasoning_match
+                else "No reasoning provided"
             )
 
             return adjusted, reasoning
@@ -435,7 +451,10 @@ class RetrievalEvaluator:
         """
         # Step 1: Format contexts into numbered list with full text
         formatted_contexts = "\n\n".join(
-            [f"Context {i+1}:\n{c.get('chunk', '')}" for i, c in enumerate(criteria.contexts)]
+            [
+                f"Context {i+1}:\n{c.get('chunk', '')}"
+                for i, c in enumerate(criteria.contexts)
+            ]
         )
 
         # Step 2: Build detailed evaluation prompt
@@ -539,6 +558,28 @@ class RetrievalEvaluator:
     # HELPER METHODS
     # =========================================================================
 
+    def _contains_cjk(self, text: str) -> bool:
+        """
+        Check if text contains CJK (Chinese, Japanese, Korean) characters.
+
+        Args:
+            text: Text to check
+
+        Returns:
+            True if text contains CJK characters
+        """
+        if not text:
+            return False
+        # Unicode ranges for CJK characters
+        for char in text:
+            if "\u4e00" <= char <= "\u9fff":  # CJK Unified Ideographs
+                return True
+            if "\u3400" <= char <= "\u4dbf":  # CJK Extension A
+                return True
+            if "\uf900" <= char <= "\ufaff":  # CJK Compatibility Ideographs
+                return True
+        return False
+
     def _extract_keywords(self, query: str) -> List[str]:
         """
         Extract keywords from query (remove stopwords).
@@ -563,6 +604,21 @@ class RetrievalEvaluator:
 
         4. Return list of keywords
         """
+        # For CJK languages, use character-based extraction
+        if self._contains_cjk(query):
+            # Extract all CJK characters as individual tokens
+            # This is better than word-splitting which breaks CJK text incorrectly
+            cjk_chars = [
+                char
+                for char in query
+                if "\u4e00" <= char <= "\u9fff"
+                or "\u3400" <= char <= "\u4dbf"
+                or "\uf900" <= char <= "\ufaff"
+            ]
+            # Also extract English words if present
+            english_words = re.findall(r"[a-zA-Z]+", query.lower())
+            return cjk_chars + english_words
+
         stopwords = {
             "the",
             "a",
@@ -614,7 +670,9 @@ class RetrievalEvaluator:
 
         return " ".join(texts).lower()
 
-    def _calculate_keyword_overlap(self, keywords: List[str], context_text: str) -> float:
+    def _calculate_keyword_overlap(
+        self, keywords: List[str], context_text: str
+    ) -> float:
         """
         Calculate keyword overlap score.
 
@@ -636,7 +694,19 @@ class RetrievalEvaluator:
         if not keywords:
             return 0.0
 
-        found_count = sum(1 for kw in keywords if kw.lower() in context_text.lower())
+        # For CJK character-based keywords, check character presence
+        # For English keywords, use case-insensitive word matching
+        found_count = 0
+        for kw in keywords:
+            if len(kw) == 1 and self._contains_cjk(kw):
+                # Single CJK character - check presence
+                if kw in context_text:
+                    found_count += 1
+            else:
+                # English word or multi-char - case insensitive
+                if kw.lower() in context_text.lower():
+                    found_count += 1
+
         return found_count / len(keywords)
 
     def _detect_issues(
@@ -677,7 +747,9 @@ class RetrievalEvaluator:
 
         return issues
 
-    def _identify_missing_aspects(self, keywords: List[str], context_text: str) -> List[str]:
+    def _identify_missing_aspects(
+        self, keywords: List[str], context_text: str
+    ) -> List[str]:
         """
         Identify query aspects not covered by contexts.
 
@@ -694,7 +766,17 @@ class RetrievalEvaluator:
            missing = [kw for kw in keywords if kw not in context_text]
         2. Return missing list
         """
-        return [kw for kw in keywords if kw.lower() not in context_text.lower()]
+        missing = []
+        for kw in keywords:
+            if len(kw) == 1 and self._contains_cjk(kw):
+                # Single CJK character check
+                if kw not in context_text:
+                    missing.append(kw)
+            else:
+                # English word or multi-char - case insensitive
+                if kw.lower() not in context_text.lower():
+                    missing.append(kw)
+        return missing
 
     def _is_external_query(self, query: str) -> bool:
         """

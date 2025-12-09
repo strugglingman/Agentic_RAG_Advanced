@@ -186,7 +186,7 @@ class Config:
     LANGCHAIN_ENDPOINT = os.getenv(
         "LANGCHAIN_ENDPOINT", "https://eu.api.smith.langchain.com"
     )
-    USE_LANGGRAPH = os.getenv("USE_LANGGRAPH", "false").lower() in {
+    USE_LANGGRAPH = os.getenv("USE_LANGGRAPH", "true").lower() in {
         "1",
         "true",
         "yes",
@@ -214,6 +214,10 @@ class Config:
         os.getenv("CONVERSATION_MESSAGE_LIMIT", "200")
     )
     CONVERSATION_USER_LIMIT: int = int(os.getenv("CONVERSATION_USER_LIMIT", "50"))
+    # Checkpoint Postgres settings
+    CHECKPOINT_POSTGRES_DATABASE_URL: str = os.getenv(
+        "CHECKPOINT_POSTGRES_DATABASE_URL", ""
+    )
 
 
 class DevelopmentConfig(Config):
