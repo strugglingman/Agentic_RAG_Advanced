@@ -18,6 +18,7 @@ from typing import Tuple, List, Dict, Any
 import json
 from langgraph.checkpoint.postgres import PostgresSaver
 from psycopg_pool import ConnectionPool
+from psycopg.rows import dict_row
 import psycopg
 from src.config.settings import Config
 from src.services.langgraph_state import (
@@ -73,6 +74,7 @@ class QuerySupervisor:
                 connection_kwargs = {
                     "autocommit": True,
                     "prepare_threshold": 0,  # Disable prepared statements for pgbouncer compatibility
+                    "row_factory": dict_row,  # Required: PostgresSaver accesses rows as dicts
                 }
                 self._connection_pool = ConnectionPool(
                     conninfo=Config.CHECKPOINT_POSTGRES_DATABASE_URL,
@@ -265,11 +267,9 @@ class QuerySupervisor:
         thread_id = (
             context.get("thread_id") or context.get("conversation_id") or "default"
         )
-        print(f"[DEBUG] Using thread_id for checkpoint: {thread_id}")
         config = {"configurable": {"thread_id": thread_id}}
 
         final_state = langgraph_agent.invoke(agent_state, config=config)
-        print(f"[DEBUG] Graph execution completed, checking if checkpoint was saved...")
         return self._extract_langgraph_results(final_state)
 
     def _build_langgraph_initial_state(self, query: str) -> Dict[str, Any]:
