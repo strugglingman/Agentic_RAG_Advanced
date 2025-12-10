@@ -53,8 +53,8 @@ class Config:
     # ==============================================================================
     # Embedding & Reranking Models
     # ==============================================================================
-    EMBED_MODEL_NAME = os.getenv(
-        "EMBED_MODEL_NAME", "sentence-transformers/all-MiniLM-L6-v2"
+    EMBEDDING_MODEL_NAME = os.getenv(
+        "EMBEDDING_MODEL_NAME", "sentence-transformers/all-MiniLM-L6-v2"
     )
     RERANKER_MODEL_NAME = os.getenv(
         "RERANKER_MODEL_NAME", "cross-encoder/ms-marco-MiniLM-L-6-v2"

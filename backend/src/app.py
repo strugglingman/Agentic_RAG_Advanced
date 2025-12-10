@@ -48,11 +48,11 @@ def create_app(config_name="development"):
     app.config["MAX_CONTENT_LENGTH"] = int(config.MAX_UPLOAD_MB * 1024 * 1024)
 
     # Initialize ChromaDB
-    embed_model_name = config.EMBED_MODEL_NAME
+    embedding_model_name = config.EMBEDDING_MODEL_NAME
     chroma_path = config.CHROMA_PATH
     embedding_fun = (
         sentence_transformer_embedding_function.SentenceTransformerEmbeddingFunction(
-            model_name=embed_model_name
+            model_name=embedding_model_name
         )
     )
     chroma_client = chromadb.PersistentClient(path=chroma_path)
