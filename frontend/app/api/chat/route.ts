@@ -3,17 +3,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import { authOptions } from "@/lib/auth";
 import { getServerSession } from 'next-auth';
 import { mintServiceToken, ServiceAuthError } from "@/lib/service-auth";
+
 export const runtime = 'nodejs';
 
-function getOrCreateSid() {
-    const jar = cookies();
-    let sid = jar.get('sid')?.value;
-    if (!sid) {
-        sid = crypto.randomUUID();
-        jar.set('sid', sid, { httpOnly: true, sameSite: 'lax', path: '/', maxAge: 60 * 60 * 24 * 7 });
-    }
-    return sid;
-}
 
 export async function POST(req: NextRequest) {
     const session = await getServerSession(authOptions);
@@ -22,11 +14,10 @@ export async function POST(req: NextRequest) {
     }
 
     const body = await req.json();
-    const sid = getOrCreateSid();
 
     let serviceToken: string;
     try {
-        serviceToken = mintServiceToken({ email: session?.user?.email, dept: session?.user?.dept, sid });
+        serviceToken = mintServiceToken({ email: session?.user?.email, dept: session?.user?.dept });
     } catch (error) {
         if (error instanceof ServiceAuthError) {
             return NextResponse.json({ error: error.message }, { status: error.status });

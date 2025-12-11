@@ -47,7 +47,7 @@ if backend_dir not in sys.path:
 import chromadb
 from chromadb.utils.embedding_functions import sentence_transformer_embedding_function
 from openai import OpenAI
-from src.services.agent_service import Agent
+from src.services.agent_service import AgentService
 from src.config.settings import Config
 from flask import request
 
@@ -129,7 +129,7 @@ def test_calculator():
     client = OpenAI(api_key=Config.OPENAI_KEY)
 
     # Initialize agent
-    agent = Agent(openai_client=client, max_iterations=5)
+    agent = AgentService(openai_client=client, max_iterations=5)
 
     try:
         # Test simple calculation
@@ -156,7 +156,7 @@ def test_calculator_complex():
     print_test("Calculator Tool - Complex Math")
 
     client = OpenAI(api_key=Config.OPENAI_KEY)
-    agent = Agent(openai_client=client, max_iterations=5)
+    agent = AgentService(openai_client=client, max_iterations=5)
 
     try:
         answer = agent.run(
@@ -184,7 +184,7 @@ def test_document_search():
     print_test("Document Search Tool - RAG Integration")
 
     client = OpenAI(api_key=Config.OPENAI_KEY)
-    agent = Agent(openai_client=client, max_iterations=5)
+    agent = AgentService(openai_client=client, max_iterations=5)
 
     try:
         # Get ChromaDB collection
@@ -241,7 +241,7 @@ def test_multi_step():
     print_test("Multi-Step Reasoning - Chained Tools")
 
     client = OpenAI(api_key=Config.OPENAI_KEY)
-    agent = Agent(openai_client=client, max_iterations=5)
+    agent = AgentService(openai_client=client, max_iterations=5)
 
     try:
         # This should trigger both search AND calculator
@@ -284,7 +284,7 @@ def test_no_tool_needed():
     print_test("No Tool Needed - Direct Answer")
 
     client = OpenAI(api_key=Config.OPENAI_KEY)
-    agent = Agent(openai_client=client, max_iterations=5)
+    agent = AgentService(openai_client=client, max_iterations=5)
 
     try:
         answer = agent.run(query="What is the capital of France?", context={})
@@ -311,7 +311,7 @@ def test_max_iterations():
     client = OpenAI(api_key=Config.OPENAI_KEY)
 
     # Create agent with very low max_iterations for testing
-    agent = Agent(openai_client=client, max_iterations=1)
+    agent = AgentService(openai_client=client, max_iterations=1)
 
     try:
         # This query might require multiple tool calls

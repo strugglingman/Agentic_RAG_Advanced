@@ -11,12 +11,17 @@ Each tool has two parts:
 - execute_xxx: The Python function that actually executes the tool
 """
 
-import json
 import re
-from typing import Dict, Any, List
+from typing import Dict, Any
 from src.services.retrieval import retrieve, build_where
 from src.config.settings import Config
-from src.utils.safety import looks_like_injection, scrub_context
+from src.utils.safety import scrub_context
+from src.services.retrieval_evaluator import RetrievalEvaluator
+from src.models.evaluation import ReflectionConfig, EvaluationCriteria
+from src.services.query_refiner import QueryRefiner
+from src.services.clarification_helper import ClarificationHelper
+from src.services.web_search import WebSearchService
+from langsmith import traceable
 
 # ============================================================================
 # TOOL 1: SEARCH DOCUMENTS
@@ -57,6 +62,7 @@ SEARCH_DOCUMENTS_SCHEMA = {
 }
 
 
+@traceable
 def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]) -> str:
     """
     Execute the search_documents tool.
@@ -75,14 +81,15 @@ def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
     Returns:
         Formatted string result for LLM containing document chunks
 
-    TODO: Implement this function
-    Steps:
-    1. Extract query and top_k from args
-    2. Get collection, dept_id, user_id from context
-    3. Build where clause using build_where()
-    4. Call retrieve() with all parameters
-    5. Format results as readable text for LLM
-    6. Handle errors gracefully
+    Flow with refinement loop:
+    1. Retrieve contexts with original query
+    2. Evaluate quality
+    3. If REFINE recommended and attempts < MAX:
+       - Refine query
+       - Retrieve again
+       - Re-evaluate
+       - Repeat until ANSWER or max attempts
+    4. Return best contexts found
     """
     query = args.get("query", "")
     top_k = args.get("top_k", 5)
@@ -99,9 +106,12 @@ def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
     try:
         # Build where clause
         where = build_where(request_data, dept_id, user_id)
+
+        # Initial retrieval
+        current_query = query
         ctx, _ = retrieve(
             collection=collection,
-            query=query,
+            query=current_query,
             dept_id=dept_id,
             user_id=user_id,
             top_k=top_k,
@@ -114,10 +124,186 @@ def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
             return "No relevant documents found."
 
         # Store raw contexts in context dict for agent to access later
-        if "_retrieved_contexts" not in context:
-            context["_retrieved_contexts"] = []
-        context["_retrieved_contexts"].extend(ctx)
+        context["_retrieved_contexts"] = ctx
 
+        # Initialize messages (set by self-reflection based on quality)
+        clarification_msg = None
+        external_msg = None
+
+        if Config.USE_SELF_REFLECTION:
+            config = ReflectionConfig.from_settings(Config)
+            client = context.get("openai_client", None)
+            evaluator = RetrievalEvaluator(config=config, openai_client=client)
+
+            # Initial evaluation
+            criteria = EvaluationCriteria(
+                query=current_query,
+                contexts=ctx,
+                search_metadata={
+                    "hybrid": use_hybrid,
+                    "reranker": use_reranker,
+                    "top_k": top_k,
+                },
+                mode=config.mode,
+            )
+            eval_result = evaluator.evaluate(criteria)
+            context["_last_evaluation"] = eval_result
+
+            # Log initial evaluation
+            print(
+                f"[SELF-REFLECTION] Quality: {eval_result.quality.value}, "
+                f"Confidence: {eval_result.confidence:.2f}, "
+                f"Recommendation: {eval_result.recommendation.value}"
+            )
+            print(f"[SELF-REFLECTION] Reasoning: {eval_result.reasoning}")
+            if eval_result.issues:
+                print(f"[SELF-REFLECTION] Issues: {', '.join(eval_result.issues)}")
+            if eval_result.missing_aspects:
+                print(
+                    f"[SELF-REFLECTION] Missing aspects: {', '.join(eval_result.missing_aspects)}"
+                )
+
+            # =================================================================
+            # Handle Direct CLARIFY (confidence < 0.5) - skip refinement
+            # =================================================================
+            if eval_result.should_clarify:
+                clarifier = ClarificationHelper(openai_client=client)
+                clarification_msg = clarifier.generate_clarification(
+                    query=query,
+                    eval_result=eval_result,
+                    max_attempts_reached=False,
+                    context_hint="uploaded documents",
+                )
+                print(f"[CLARIFICATION] Direct clarify (confidence < 0.5)")
+
+            # =================================================================
+            # Handle EXTERNAL Recommendation (Week 3 - Day 6)
+            # =================================================================
+            # Signal agent to use web_search tool (don't execute automatically)
+            if eval_result.should_search_external:
+                print(f"[SELF-REFLECTION] EXTERNAL recommended - suggesting web search")
+                external_msg = (
+                    f"[EXTERNAL SEARCH SUGGESTED]\n"
+                    f'The query "{query}" appears to require external information '
+                    f"not found in the uploaded documents.\n\n"
+                    f"Reason: {eval_result.reasoning}\n\n"
+                    f"Recommendation: Use the web_search tool to find current or external information.\n\n"
+                    f"---\n\n"
+                )
+
+            # Refinement loop with local counter (only if not already CLARIFY)
+            refinement_count = 0
+            if Config.REFLECTION_AUTO_REFINE and eval_result.should_refine:
+                max_attempts = Config.REFLECTION_MAX_REFINEMENT_ATTEMPTS
+                openai_model = context.get("model", Config.OPENAI_MODEL)
+                temperature = context.get("temperature", Config.OPENAI_TEMPERATURE)
+                query_refiner = QueryRefiner(
+                    openai_client=client, model=openai_model, temperature=temperature
+                )
+
+                # Track refinement history for this tool call (for logging)
+                refinement_history = []
+
+                while refinement_count < max_attempts:
+
+                    refinement_count += 1
+                    print(
+                        f"[QUERY_REFINER] Refinement attempt {refinement_count}/{max_attempts}"
+                    )
+
+                    # Refine the query (use current_query, not original)
+                    refined_query = query_refiner.refine_query(
+                        original_query=current_query,
+                        eval_result=eval_result,
+                        context_hint=" ".join([c.get("chunk", "")[:100] for c in ctx]),
+                    )
+
+                    # Track for logging
+                    refinement_history.append(
+                        {
+                            "attempt": refinement_count,
+                            "from": current_query,
+                            "to": refined_query,
+                        }
+                    )
+                    print(f"[QUERY_REFINER] '{current_query}' -> '{refined_query}'")
+
+                    # Update current query for next iteration
+                    current_query = refined_query
+
+                    # Retrieve with refined query
+                    ctx, _ = retrieve(
+                        collection=collection,
+                        query=current_query,
+                        dept_id=dept_id,
+                        user_id=user_id,
+                        top_k=top_k,
+                        where=where,
+                        use_hybrid=use_hybrid,
+                        use_reranker=use_reranker,
+                    )
+
+                    if not ctx:
+                        print(
+                            f"[QUERY_REFINER] No results for refined query, keeping previous results"
+                        )
+                        # Restore previous contexts
+                        ctx = context["_retrieved_contexts"]
+                        break
+
+                    # Update stored contexts
+                    context["_retrieved_contexts"] = ctx
+
+                    # Re-evaluate
+                    criteria = EvaluationCriteria(
+                        query=current_query,
+                        contexts=ctx,
+                        search_metadata={
+                            "hybrid": use_hybrid,
+                            "reranker": use_reranker,
+                            "top_k": top_k,
+                        },
+                        mode=config.mode,
+                    )
+                    eval_result = evaluator.evaluate(criteria)
+                    context["_last_evaluation"] = eval_result
+
+                    # Log refined evaluation
+                    print(
+                        f"[SELF-REFLECTION] (Attempt {refinement_count}) Quality: {eval_result.quality.value}, "
+                        f"Confidence: {eval_result.confidence:.2f}, "
+                        f"Recommendation: {eval_result.recommendation.value}"
+                    )
+
+                # Log final status
+                if refinement_count > 0:
+                    if refinement_count >= max_attempts:
+                        print(
+                            f"[QUERY_REFINER] Max refinement attempts ({max_attempts}) reached"
+                        )
+
+                        # =================================================================
+                        # Progressive Fallback: max attempts reached → clarification
+                        # =================================================================
+                        clarifier = ClarificationHelper(openai_client=client)
+                        clarification_msg = clarifier.generate_clarification(
+                            query=query,  # Original query (not refined)
+                            eval_result=eval_result,
+                            max_attempts_reached=True,
+                            context_hint="uploaded documents",
+                        )
+                        print(
+                            f"[CLARIFICATION] Max attempts reached, returning clarification"
+                        )
+                    else:
+                        print(
+                            f"[QUERY_REFINER] Refinement complete after {refinement_count} attempt(s)"
+                        )
+
+                    # Store history in context for debugging (optional)
+                    context["_refinement_history"] = refinement_history
+
+        # Continue with normal flow: format and return contexts
         for c in ctx:
             c["chunk"] = scrub_context(c.get("chunk", ""))
 
@@ -143,15 +329,35 @@ def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
         )
 
         # Return formatted contexts with instructions for the LLM
-        return (
+        result = (
             f"Found {len(ctx)} relevant document(s):\n\n"
             f"{context_str}\n\n"
-            f"Instructions: Answer the question concisely by synthesizing information from the contexts above. "
-            f"Include bracket citations [n] for every sentence (e.g., [1], [2]). "
-            f"At the end of your answer, cite the sources you used. For each source file, list the specific page numbers "
+            f"Instructions for DOCUMENT CONTEXTS ABOVE (Context 1-{len(ctx)}):\n"
+            f"- CRITICAL: Every sentence MUST include at least one citation like [1], [2] that refers to the numbered Context items\n"
+            f"- Place bracket citations [n] IMMEDIATELY AFTER each sentence\n"
+            f"- Example: 'The revenue was $50M [1]. Sales increased by 20% [2].'\n"
+            f"- Use ONLY the information from these contexts to answer\n"
+            f"- At the end of your answer, cite the sources you used. For each source file, list the specific page numbers "
             f"from the contexts you referenced (look at the 'Page:' information in each context header). "
-            f"Format: 'Sources: filename1.pdf (pages 15, 23), filename2.pdf (page 7)'"
+            f"Format: 'Sources: filename1.pdf (pages 15, 23), filename2.pdf (page 7)'\n"
+            f"- If you also have web_search results in other tool responses, answer those naturally WITHOUT citations\n"
         )
+
+        # Prepend external search suggestion if recommended
+        if external_msg:
+            print(
+                "[SEARCH_DOCUMENTS] BUT!!!!!!!!!!!!!! Prepending external search suggestion"
+            )
+            result = external_msg + result
+            print(f"[SEARCH_DOCUMENTS] External search suggestion:\n{result}")
+
+        # Prepend clarification message if quality was poor
+        if clarification_msg:
+            result = (
+                f"[QUALITY WARNING]\n{clarification_msg}\n\n" f"---\n\n" f"{result}"
+            )
+
+        return result
     except Exception as e:
         return f"Error during document retrieval: {str(e)}"
 
@@ -186,6 +392,7 @@ CALCULATOR_SCHEMA = {
 }
 
 
+@traceable
 def execute_calculator(args: Dict[str, Any], context: Dict[str, Any]) -> str:
     """
     Execute the calculator tool.
@@ -273,11 +480,77 @@ def _safe_eval(expr: str) -> float:
 
 
 # ============================================================================
+# TOOL 3: WEB SEARCH
+# ============================================================================
+WEB_SEARCH_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "web_search",
+        "description": (
+            "Search the web for up-to-date information when not found in internal documents. "
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": (
+                        "The search query. Be specific and use keywords from the user's question. "
+                        "For example: 'Q1 2024 revenue', 'employee vacation policy', 'sales targets'"
+                    ),
+                },
+                "max_results": {
+                    "type": "integer",
+                    "description": (
+                        "Number of web search results to return. "
+                        "Use 3-5 for quick lookups, 8-10 for comprehensive answers. Default is 5."
+                    ),
+                    "default": 5,
+                },
+            },
+            "required": ["query"],
+        },
+    },
+}
+
+
+@traceable
+def execute_web_search(args: Dict[str, Any], context: Dict[str, Any]) -> str:
+    """
+    Execute the web_search tool.
+
+    Args:
+        args: Arguments from LLM containing:
+            - query (str): Search query
+            - top_k (int, optional): Number of results to return
+    """
+    query = args.get("query", "")
+    max_results = args.get("max_results", 5) or Config.WEB_SEARCH_MAX_RESULTS
+    try:
+        web_search_service = WebSearchService(
+            provider=Config.WEB_SEARCH_PROVIDER,
+            max_results=max_results,
+            tavily_api_key=Config.TAVILY_API_KEY,
+        )
+        web_search_results = web_search_service.search(
+            query=query, max_results=max_results
+        )
+        if web_search_results:
+            return web_search_service.format_for_agent(web_search_results, query)
+        else:
+            print("[WEB_SEARCH] No results found, falling back to document contexts")
+            return "No relevant web results found."
+    except Exception as e:
+        return f"Error during web search: {str(e)}"
+
+
+# ============================================================================
 # TOOL REGISTRY
 # ============================================================================
 
 TOOL_REGISTRY = {
     "search_documents": execute_search_documents,
+    "web_search": execute_web_search,
     "calculator": execute_calculator,
 }
 """
@@ -293,6 +566,7 @@ When LLM calls a tool, we lookup the function here and execute it.
 ALL_TOOLS = [
     SEARCH_DOCUMENTS_SCHEMA,
     CALCULATOR_SCHEMA,
+    WEB_SEARCH_SCHEMA,
 ]
 """
 List of all tool schemas to send to OpenAI API.
@@ -322,6 +596,7 @@ def get_tool_executor(tool_name: str):
     return TOOL_REGISTRY.get(tool_name)
 
 
+@traceable
 def execute_tool_call(
     tool_name: str, tool_args: Dict[str, Any], context: Dict[str, Any]
 ) -> str:

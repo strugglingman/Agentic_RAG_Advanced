@@ -1,6 +1,7 @@
 """Authentication middleware"""
 
 import jwt
+import asyncio
 from functools import wraps
 from flask import request, jsonify, g
 
@@ -30,28 +31,43 @@ def load_identity(secret: str, issuer: str, audience: str):
 
     email = claims.get("email", "")
     dept = claims.get("dept", "")
-    sid = claims.get("sid", "")
-    if not email or not dept or not sid:
+    if not email or not dept:
         return
 
-    g.identity = {"user_id": email, "dept_id": dept, "sid": sid}
+    g.identity = {"user_id": email, "dept_id": dept}
 
 
 def require_identity(fn):
-    """Decorator to require valid authentication"""
+    """Decorator to require valid authentication (supports both sync and async functions)"""
 
     @wraps(fn)
-    def wrapper(*args, **kwargs):
+    async def async_wrapper(*args, **kwargs):
         identity = getattr(g, "identity", None)
         if not identity:
             return jsonify({"error": "Unauthorized"}), 401
 
         user_id = identity.get("user_id", "")
         dept_id = identity.get("dept_id", "")
-        sid = identity.get("sid", "")
-        if not user_id or not dept_id or not sid:
+        if not user_id or not dept_id:
+            return jsonify({"error": "Unauthorized"}), 401
+
+        return await fn(*args, **kwargs)
+
+    @wraps(fn)
+    def sync_wrapper(*args, **kwargs):
+        identity = getattr(g, "identity", None)
+        if not identity:
+            return jsonify({"error": "Unauthorized"}), 401
+
+        user_id = identity.get("user_id", "")
+        dept_id = identity.get("dept_id", "")
+        if not user_id or not dept_id:
             return jsonify({"error": "Unauthorized"}), 401
 
         return fn(*args, **kwargs)
 
-    return wrapper
+    # Return async wrapper if function is async, otherwise sync wrapper
+    if asyncio.iscoroutinefunction(fn):
+        return async_wrapper
+    else:
+        return sync_wrapper

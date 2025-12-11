@@ -1,5 +1,6 @@
 "use client";
 import React, { useState, useEffect, useMemo } from "react";
+import { useFilters } from "./filters-context"
 
 type Props = {
   selectedExts: Set<string>;
@@ -11,11 +12,8 @@ type Props = {
 }
 const PRESET_TAGS = ['sentimental', 'ghost', 'finance', 'documentary', 'fiction', 'policy', 'hr'];
 
-export default function SidebarFilters(
-  { selectedExts, setSelectedExts, 
-    selectedTags, setSelectedTags,
-    customTags, setCustomTags
-  }: Props) {
+export default function SidebarFilters() {
+  const { selectedExts, setSelectedExts, selectedTags, setSelectedTags, customTags, setCustomTags } = useFilters();
   const [model, setModel] = useState("gpt-4o-mini");
   const [exts, setExts] = useState<string[]>([]);
   const [onlyErrors, setOnlyErrors] = useState(false);

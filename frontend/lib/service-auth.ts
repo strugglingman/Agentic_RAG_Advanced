@@ -13,7 +13,6 @@ export class ServiceAuthError extends Error {
 export function mintServiceToken(args: {
   email?: string | null;
   dept?: string | null;
-  sid: string;
 }) {
   const secret = process.env.SERVICE_AUTH_SECRET;
   if (!secret) {
@@ -25,9 +24,6 @@ export function mintServiceToken(args: {
   if (!args.dept) {
     throw new ServiceAuthError("Department is required to mint service token", 400);
   }
-  if (!args.sid) {
-    throw new ServiceAuthError("Session ID is required to mint service token", 400);
-  }
 
   const issuer = process.env.SERVICE_AUTH_ISSUER ?? "chat-frontend";
   const audience = process.env.SERVICE_AUTH_AUDIENCE ?? "flask-backend";
@@ -36,7 +32,6 @@ export function mintServiceToken(args: {
     {
       email: args.email ?? null,
       dept: args.dept,
-      sid: args.sid,
     },
     secret,
     {

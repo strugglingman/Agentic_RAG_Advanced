@@ -7,21 +7,89 @@ load_dotenv()
 
 
 class Config:
-    # Flask settings
+    # ==============================================================================
+    # Flask Application Settings
+    # ==============================================================================
     SECRET_KEY = os.getenv("FLASK_SECRET", "default-secret-key")
     TESTING = os.getenv("TESTING", "false").lower() in {"1", "true", "yes", "on"}
     DEBUG = os.getenv("DEBUG", "false").lower() in {"1", "true", "yes", "on"}
     MAX_CONTENT_LENGTH = int(float(os.getenv("MAX_UPLOAD_MB", "25")) * 1024 * 1024)
 
-    # Model settings
-    EMBED_MODEL_NAME = os.getenv(
-        "EMBED_MODEL_NAME", "sentence-transformers/all-MiniLM-L6-v2"
+    # ==============================================================================
+    # OpenAI API Settings
+    # ==============================================================================
+    OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    OPENAI_TEMPERATURE = float(os.getenv("OPENAI_TEMPERATURE", "0.1"))
+    OPENAI_KEY = os.getenv("OPENAI_API_KEY", "")
+    AGENT_MAX_ITERATIONS = int(os.getenv("AGENT_MAX_ITERATIONS", "5"))
+
+    # ==============================================================================
+    # LangChain & LangSmith Tracing
+    # ==============================================================================
+    LANGCHAIN_TRACING_V2 = os.getenv("LANGCHAIN_TRACING_V2", "false").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    LANGCHAIN_API_KEY = os.getenv("LANGCHAIN_API_KEY", "")
+    LANGCHAIN_PROJECT = os.getenv("LANGCHAIN_PROJECT", "agentic-rag-chatbot")
+    LANGCHAIN_ENDPOINT = os.getenv(
+        "LANGCHAIN_ENDPOINT", "https://eu.api.smith.langchain.com"
+    )
+    LANGCHAIN_EMBEDDING_MODEL = os.getenv(
+        "LANGCHAIN_EMBEDDING_MODEL", "text-embedding-3-small"
+    )
+
+    # ==============================================================================
+    # LangGraph Configuration
+    # ==============================================================================
+    USE_LANGGRAPH = os.getenv("USE_LANGGRAPH", "true").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    LANGGRAPH_MAX_ITERATIONS = 20
+    LANGGRAPH_TIMEOUT = 120  # seconds
+
+    # ==============================================================================
+    # Embedding & Reranking Models
+    # ==============================================================================
+    EMBEDDING_MODEL_NAME = os.getenv(
+        "EMBEDDING_MODEL_NAME", "sentence-transformers/all-MiniLM-L6-v2"
     )
     RERANKER_MODEL_NAME = os.getenv(
         "RERANKER_MODEL_NAME", "cross-encoder/ms-marco-MiniLM-L-6-v2"
     )
 
-    # Search settings
+    # ==============================================================================
+    # Vector Database (ChromaDB)
+    # ==============================================================================
+    CHROMA_PATH = os.getenv("CHROMA_PATH", "./chroma_db")
+
+    # ==============================================================================
+    # PostgreSQL Database (Conversations & Checkpoints)
+    # ==============================================================================
+    DATABASE_URL: str = os.getenv("DATABASE_URL", "")
+    CHECKPOINT_POSTGRES_DATABASE_URL: str = os.getenv(
+        "CHECKPOINT_POSTGRES_DATABASE_URL", ""
+    )
+    CONVERSATION_MESSAGE_LIMIT: int = int(
+        os.getenv("CONVERSATION_MESSAGE_LIMIT", "200")
+    )
+    CONVERSATION_USER_LIMIT: int = int(os.getenv("CONVERSATION_USER_LIMIT", "50"))
+
+    # ==============================================================================
+    # Redis Cache
+    # ==============================================================================
+    REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379")
+    REDIS_CACHE_TTL: int = int(os.getenv("REDIS_CACHE_TTL", "3600"))
+    REDIS_CACHE_LIMIT: int = int(os.getenv("REDIS_CACHE_LIMIT", "15"))
+
+    # ==============================================================================
+    # Retrieval & Search Settings
+    # ==============================================================================
     USE_HYBRID = os.getenv("USE_HYBRID", "false").lower() in {"1", "true", "yes", "on"}
     USE_RERANKER = os.getenv("USE_RERANKER", "false").lower() in {
         "1",
@@ -32,29 +100,36 @@ class Config:
     TOP_K = int(os.getenv("TOP_K", "5"))
     CANDIDATES = int(os.getenv("CANDIDATES", "20"))
     FUSE_ALPHA = float(os.getenv("FUSE_ALPHA", "0.5"))
+
+    # Quality thresholds for hybrid search and reranking
     MIN_HYBRID = float(os.getenv("MIN_HYBRID", "0.1"))
     AVG_HYBRID = float(os.getenv("AVG_HYBRID", "0.1"))
     MIN_SEM_SIM = float(os.getenv("MIN_SEM_SIM", "0.35"))
     AVG_SEM_SIM = float(os.getenv("AVG_SEM_SIM", "0.2"))
     MIN_RERANK = float(os.getenv("MIN_RERANK", "0.5"))
     AVG_RERANK = float(os.getenv("AVG_RERANK", "0.3"))
+    ENFORCE_CITATIONS = os.getenv("ENFORCE_CITATIONS", "false").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
-    # Document processing
+    # ==============================================================================
+    # Document Processing & Chunking
+    # ==============================================================================
     SENT_TARGET = int(os.getenv("SENT_TARGET", "400"))
     SENT_OVERLAP = int(os.getenv("SENT_OVERLAP", "90"))
     TEXT_MAX = int(os.getenv("TEXT_MAX", "400000"))
 
-    # Chat settings
-    CHAT_MAX_TOKENS = int(os.getenv("CHAT_MAX_TOKENS", "200"))
-    MAX_HISTORY = int(os.getenv("MAX_HISTORY", "6"))
+    # ==============================================================================
+    # Chat Settings
+    # ==============================================================================
+    CHAT_MAX_TOKENS = int(os.getenv("CHAT_MAX_TOKENS", "2000"))
 
-    # OpenAI
-    OPENAI_KEY = os.getenv("OPENAI_API_KEY", "")
-
-    # Database
-    CHROMA_PATH = os.getenv("CHROMA_PATH", "./chroma_db")
-
-    # File upload
+    # ==============================================================================
+    # File Upload Configuration
+    # ==============================================================================
     UPLOAD_BASE = os.getenv("UPLOAD_BASE", "uploads")
     MAX_UPLOAD_MB = float(os.getenv("MAX_UPLOAD_MB", "25"))
     ALLOWED_EXTENSIONS = os.getenv("ALLOWED_EXTENSIONS", "txt,pdf,docx,md").split(",")
@@ -65,27 +140,110 @@ class Config:
     FOLDER_SHARED = os.getenv("FOLDER_SHARED", "shared")
     DEPT_SPLIT = os.getenv("DEPT_SPLIT", "|")
 
-    # Auth
+    # ==============================================================================
+    # Authentication & Authorization
+    # ==============================================================================
     SERVICE_AUTH_SECRET = os.getenv("SERVICE_AUTH_SECRET", "")
     SERVICE_AUTH_ISSUER = os.getenv("SERVICE_AUTH_ISSUER", "your_service_name")
     SERVICE_AUTH_AUDIENCE = os.getenv("SERVICE_AUTH_AUDIENCE", "your_service_audience")
 
-    # Organization
+    # ==============================================================================
+    # Organization Structure
+    # ==============================================================================
     ORG_STRUCTURE_FILE = os.getenv("ORG_STRUCTURE_FILE", "org_structure.json")
 
-    # Rate limiting
+    # ==============================================================================
+    # Rate Limiting
+    # ==============================================================================
     RATELIMIT_STORAGE_URI = os.getenv("RATELIMIT_STORAGE_URI", "memory://")
     DEFAULT_RATE_LIMITS = os.getenv(
         "DEFAULT_RATE_LIMITS", "500 per day,20 per minute"
     ).split(",")
 
-    # MCP Server settings
+    # ==============================================================================
+    # MCP (Model Context Protocol) Settings
+    # ==============================================================================
     USE_MCP = os.getenv("USE_MCP", "false").lower() in {"1", "true", "yes", "on"}
     MCP_TRIGGER_THRESHOLD = float(os.getenv("MCP_TRIGGER_THRESHOLD", "0.6"))
     MCP_SERVER_COMMAND = os.getenv(
         "MCP_SERVER_COMMAND", "npx -y @modelcontextprotocol/server-brave-search"
-    )  # e.g., "npx -y @modelcontextprotocol/server-brave-search"
+    )
     BRAVE_API_KEY = os.getenv("BRAVE_API_KEY", "")
+
+    # ==============================================================================
+    # Web Search Configuration
+    # ==============================================================================
+    WEB_SEARCH_ENABLED: bool = os.getenv("WEB_SEARCH_ENABLED", "false").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    WEB_SEARCH_PROVIDER: str = os.getenv("WEB_SEARCH_PROVIDER", "duckduckgo")
+    WEB_SEARCH_MAX_RESULTS: int = int(os.getenv("WEB_SEARCH_MAX_RESULTS", "5"))
+    TAVILY_API_KEY: str = os.getenv("TAVILY_API_KEY", "")
+
+    # ==============================================================================
+    # Self-Reflection / Retrieval Evaluation
+    # ==============================================================================
+    # Master switch - enables/disables the entire self-reflection feature
+    USE_SELF_REFLECTION = os.getenv("USE_SELF_REFLECTION", "true").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+    # Performance mode: "fast", "balanced", "thorough"
+    # - "fast": Heuristics only, no LLM (50ms, cheap)
+    # - "balanced": Light LLM check (500ms, moderate) - RECOMMENDED
+    # - "thorough": Full LLM evaluation (2s, expensive)
+    REFLECTION_MODE = os.getenv("REFLECTION_MODE", "balanced")
+
+    # Quality thresholds (0.0-1.0)
+    REFLECTION_THRESHOLD_EXCELLENT = float(
+        os.getenv("REFLECTION_THRESHOLD_EXCELLENT", "0.85")
+    )
+    REFLECTION_THRESHOLD_GOOD = float(os.getenv("REFLECTION_THRESHOLD_GOOD", "0.70"))
+    REFLECTION_THRESHOLD_PARTIAL = float(
+        os.getenv("REFLECTION_THRESHOLD_PARTIAL", "0.50")
+    )
+
+    # Minimum number of contexts required to proceed with answer
+    REFLECTION_MIN_CONTEXTS = int(os.getenv("REFLECTION_MIN_CONTEXTS", "1"))
+    REFLECTION_AVG_SCORE = float(os.getenv("REFLECTION_AVG_SCORE", "0.6"))
+    REFLECTION_KEYWORD_OVERLAP = float(os.getenv("REFLECTION_KEYWORD_OVERLAP", "0.3"))
+
+    # Automatic action flags
+    REFLECTION_AUTO_REFINE = os.getenv("REFLECTION_AUTO_REFINE", "true").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    REFLECTION_AUTO_EXTERNAL = os.getenv(
+        "REFLECTION_AUTO_EXTERNAL", "false"
+    ).lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+    # Maximum refinement attempts (prevents infinite loops)
+    REFLECTION_MAX_REFINEMENT_ATTEMPTS = int(
+        os.getenv("REFLECTION_MAX_REFINEMENT_ATTEMPTS", "3")
+    )
+
+    # ==============================================================================
+    # Query Routing
+    # ==============================================================================
+    COMPLEXITY_THRESHOLD = float(os.getenv("COMPLEXITY_THRESHOLD", "0.6"))
+    ENABLE_QUERY_ROUTING = os.getenv("ENABLE_QUERY_ROUTING", "true").lower() in {
+        "1",
+        "true",
+        "yes",
+    }
 
 
 class DevelopmentConfig(Config):

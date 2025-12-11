@@ -11,16 +11,9 @@ export async function GET(req: Request) {
         return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const jar = cookies();
-    let sid = jar.get('sid')?.value;
-    if (!sid) {
-        sid = crypto.randomUUID();
-        jar.set('sid', sid, { httpOnly: true, sameSite: 'lax', path: '/', maxAge: 60 * 60 * 24 * 7 });
-    }
-
     let token: string = "";
     try {
-        token = mintServiceToken({ email: session?.user?.email, dept: session?.user?.dept, sid });
+        token = mintServiceToken({ email: session?.user?.email, dept: session?.user?.dept });
     } catch (error) {
         if (error instanceof ServiceAuthError) {
             return NextResponse.json({ error: error.message }, { status: error.status });
