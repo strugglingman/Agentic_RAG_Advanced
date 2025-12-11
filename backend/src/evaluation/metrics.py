@@ -7,11 +7,17 @@ This module manages which Ragas metrics to use for evaluation.
 from dataclasses import dataclass
 from enum import Enum
 from typing import Callable, Optional
-from ragas.metrics import (faithfulness, answer_relevancy, context_precision, context_recall)
+from ragas.metrics import (
+    faithfulness,
+    answer_relevancy,
+    context_precision,
+    context_recall,
+)
 
 
 class MetricType(Enum):
     """Available Ragas metric types."""
+
     FAITHFULNESS = "faithfulness"
     ANSWER_RELEVANCY = "answer_relevancy"
     CONTEXT_PRECISION = "context_precision"
@@ -24,6 +30,7 @@ class MetricType(Enum):
 @dataclass
 class MetricResult:
     """Result from a single metric evaluation."""
+
     name: str
     score: float
     details: Optional[dict] = None
@@ -39,7 +46,7 @@ class RAGMetrics:
             MetricType.FAITHFULNESS,
             MetricType.ANSWER_RELEVANCY,
             MetricType.CONTEXT_PRECISION,
-            MetricType.CONTEXT_RECALL
+            MetricType.CONTEXT_RECALL,
         ]
         self._custom_metrics: dict[str, Callable] = {}
 
@@ -109,23 +116,23 @@ class RAGMetrics:
         """
         Aggregate metric results across samples.
 
-        TODO:
-        1. Input: List of dicts, each dict contains metric scores for one sample
-           Example: [{'faithfulness': 0.9, 'answer_relevancy': 0.8},
-                     {'faithfulness': 0.85, 'answer_relevancy': 0.75}]
-        2. Calculate average for each metric across all samples
-        3. Return dict with aggregated scores
-           Example: {'faithfulness': 0.875, 'answer_relevancy': 0.775}
+        Args:
+            results: List of dicts from Ragas evaluation (includes all columns)
 
-        HINT: Use numpy or simple list comprehension to calculate means
+        Returns:
+            Dict with averaged scores for metric columns only
         """
         if len(results) == 0:
             return {}
 
-        keys = results[0].keys()
+        # aggreegate by averaging metric columns
         aggregated = {}
-        for key in keys:
-            values = [result[key] for result in results if key in result]
-            aggregated[key]= sum(values) / len(values) if values else 0.0
+        metric_names = [m.value for m in self._enabled_metrics]
+        for m in metric_names:
+            values = [
+                r[m] for r in results if m in r and isinstance(r[m], (int, float))
+            ]
+            if values:
+                aggregated[m] = sum(values) / len(values)
 
         return aggregated
