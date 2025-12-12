@@ -62,6 +62,12 @@ class Config:
     }
     LANGGRAPH_MAX_ITERATIONS = 20
     LANGGRAPH_TIMEOUT = 120  # seconds
+    CHECKPOINT_ENABLED = os.getenv("CHECKPOINT_ENABLED", "false").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
     # ==============================================================================
     # Embedding & Reranking Models

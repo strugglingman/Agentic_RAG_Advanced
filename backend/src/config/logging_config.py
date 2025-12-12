@@ -26,7 +26,6 @@ class CorrelationIdFilter(logging.Filter):
             and has_request_context()
             and hasattr(g, "identity")
         ):
-            print("*****************Come into filter again")
             g_identity = g.identity
             if isinstance(g_identity, dict):
                 correlation_id = g_identity.get("correlation_id", "NO Correlation ID")
@@ -46,7 +45,6 @@ class SafeFormatter(logging.Formatter):
 
 def setup_logging(level: str = "INFO", log_file: str | None = None):
     # Set up root logger
-    print(f"Setting up logging: level={level}, log_file={log_file}")
     root = logging.getLogger()
     root.setLevel(logging.WARNING)  # Set root to WARNING to avoid too much noise
     # Add a filter for correlation ID if exists

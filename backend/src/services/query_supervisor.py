@@ -60,33 +60,35 @@ class QuerySupervisor:
         # Initialize PostgreSQL checkpointer (cached for all requests)
         self._checkpointer = None
         self._connection_pool = None  # Store connection pool for cleanup
-        if Config.CHECKPOINT_POSTGRES_DATABASE_URL and PostgresSaver and psycopg:
-            try:
-                # Setup tables first (needs autocommit for CREATE INDEX CONCURRENTLY)
-                with psycopg.connect(
-                    Config.CHECKPOINT_POSTGRES_DATABASE_URL, autocommit=True
-                ) as setup_conn:
-                    temp_saver = PostgresSaver(setup_conn)
-                    temp_saver.setup()
 
-                # Create connection pool with autocommit for checkpoint operations
-                # This ensures each checkpoint write is committed immediately
-                connection_kwargs = {
-                    "autocommit": True,
-                    "prepare_threshold": 0,  # Disable prepared statements for pgbouncer compatibility
-                    "row_factory": dict_row,  # Required: PostgresSaver accesses rows as dicts
-                }
-                self._connection_pool = ConnectionPool(
-                    conninfo=Config.CHECKPOINT_POSTGRES_DATABASE_URL,
-                    max_size=20,
-                    kwargs=connection_kwargs,
-                )
-                self._checkpointer = PostgresSaver(self._connection_pool)
+        if Config.CHECKPOINT_ENABLED:
+            if Config.CHECKPOINT_POSTGRES_DATABASE_URL and PostgresSaver and psycopg:
+                try:
+                    # Setup tables first (needs autocommit for CREATE INDEX CONCURRENTLY)
+                    with psycopg.connect(
+                        Config.CHECKPOINT_POSTGRES_DATABASE_URL, autocommit=True
+                    ) as setup_conn:
+                        temp_saver = PostgresSaver(setup_conn)
+                        temp_saver.setup()
 
-                print("✓ PostgreSQL checkpointer initialized with connection pool")
-            except Exception as e:
-                print(f"⚠ Could not initialize PostgreSQL checkpointer: {e}")
-                print("  Falling back to in-memory checkpointer")
+                    # Create connection pool with autocommit for checkpoint operations
+                    # This ensures each checkpoint write is committed immediately
+                    connection_kwargs = {
+                        "autocommit": True,
+                        "prepare_threshold": 0,  # Disable prepared statements for pgbouncer compatibility
+                        "row_factory": dict_row,  # Required: PostgresSaver accesses rows as dicts
+                    }
+                    self._connection_pool = ConnectionPool(
+                        conninfo=Config.CHECKPOINT_POSTGRES_DATABASE_URL,
+                        max_size=20,
+                        kwargs=connection_kwargs,
+                    )
+                    self._checkpointer = PostgresSaver(self._connection_pool)
+
+                    print("✓ PostgreSQL checkpointer initialized with connection pool")
+                except Exception as e:
+                    print(f"⚠ Could not initialize PostgreSQL checkpointer: {e}")
+                    print("  Falling back to in-memory checkpointer")
 
     def close(self):
         """Close connection pool when shutting down."""
@@ -253,9 +255,6 @@ class QuerySupervisor:
         )
 
         # Build graph with runtime context bound to nodes, using cached checkpointer
-        print(
-            f"[DEBUG] Using checkpointer: {type(self._checkpointer).__name__ if self._checkpointer else 'None (will use MemorySaver)'}"
-        )
         langgraph_agent = build_langgraph_agent(
             runtime, checkpointer=self._checkpointer
         )

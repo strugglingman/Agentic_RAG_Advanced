@@ -41,11 +41,9 @@ def load_identity(secret: str, issuer: str, audience: str):
 
     correlation_id = request.headers.get("X-Correlation-ID", "NO Correlation ID")
 
-    # Set in both contextvars (for async/threads) and g (for sync Flask)
+    # Set in contextvars (propagates to async/threads)
     correlation_id_var.set(correlation_id)
-    g.identity = {"user_id": email, "dept_id": dept}
-
-    print(f"Set correlation_id: {correlation_id}")
+    g.identity = {"user_id": email, "dept_id": dept, "correlation_id": correlation_id}
 
 
 def require_identity(fn):

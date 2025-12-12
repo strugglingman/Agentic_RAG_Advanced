@@ -5,6 +5,7 @@ This file constructs the state machine for the agentic RAG system.
 """
 
 from typing import Optional
+import logging
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -25,7 +26,9 @@ from src.services.langgraph_routing import (
     route_after_planning,
     should_continue,
 )
+from src.config.settings import Config
 
+logger = logging.getLogger(__name__)
 
 # Module-level checkpointer instance for persistence across requests
 _default_checkpointer: Optional[BaseCheckpointSaver] = None
@@ -151,10 +154,20 @@ def build_langgraph_agent(
     # Use provided checkpointer or default MemorySaver
     # Checkpointing now works because AgentState is fully serializable
     # (runtime objects are passed via closure, not stored in state)
-    active_checkpointer = (
-        checkpointer if checkpointer is not None else get_checkpointer()
+    if Config.CHECKPOINT_ENABLED:
+        active_checkpointer = (
+            checkpointer if checkpointer is not None else get_checkpointer()
+        )
+        logger.info(
+            f"[DEBUG] Using checkpointer used in langgraph_builder: {type(active_checkpointer).__name__}"
+        )
+    else:
+        active_checkpointer = None
+        logger.info("[DEBUG] Checkpointing disabled in langgraph_builder")
+
+    compiled_graph = (
+        graph.compile(active_checkpointer) if active_checkpointer else graph.compile()
     )
-    compiled_graph = graph.compile(checkpointer=active_checkpointer)
 
     return compiled_graph
 
