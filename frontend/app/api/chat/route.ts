@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { authOptions } from "@/lib/auth";
 import { getServerSession } from 'next-auth';
 import { mintServiceToken, ServiceAuthError } from "@/lib/service-auth";
+import { randomUUID } from 'crypto';
 
 export const runtime = 'nodejs';
 
@@ -30,6 +31,7 @@ export async function POST(req: NextRequest) {
         headers: {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${serviceToken}`,
+            'X-Correlation-ID': randomUUID(),
         },
         body: JSON.stringify(body)
     });

@@ -8,6 +8,16 @@ load_dotenv()
 
 class Config:
     # ==============================================================================
+    # Python logging configuration
+    # ==============================================================================
+    LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
+    LOG_FORMAT: str = os.getenv(
+        "LOG_FORMAT",
+        "%(asctime)s - %(correlation_id)s - %(funcName)s - %(lineno)d - %(message)s",
+    )
+    LOG_PATH: str = os.getenv("LOG_PATH", "logs/app.log")
+
+    # ==============================================================================
     # Flask Application Settings
     # ==============================================================================
     SECRET_KEY = os.getenv("FLASK_SECRET", "default-secret-key")

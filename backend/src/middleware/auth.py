@@ -2,8 +2,12 @@
 
 import jwt
 import asyncio
+import logging
 from functools import wraps
 from flask import request, jsonify, g
+from src.config.logging_config import correlation_id_var
+
+logger = logging.getLogger(__name__)
 
 
 def load_identity(secret: str, issuer: str, audience: str):
@@ -26,7 +30,8 @@ def load_identity(secret: str, issuer: str, audience: str):
             issuer=issuer,
             options={"require": ["exp", "iat", "aud", "iss"]},
         )
-    except:
+    except Exception as e:
+        print(f"JWT decode failed: {e}")
         return
 
     email = claims.get("email", "")
@@ -34,7 +39,13 @@ def load_identity(secret: str, issuer: str, audience: str):
     if not email or not dept:
         return
 
+    correlation_id = request.headers.get("X-Correlation-ID", "NO Correlation ID")
+
+    # Set in both contextvars (for async/threads) and g (for sync Flask)
+    correlation_id_var.set(correlation_id)
     g.identity = {"user_id": email, "dept_id": dept}
+
+    print(f"Set correlation_id: {correlation_id}")
 
 
 def require_identity(fn):

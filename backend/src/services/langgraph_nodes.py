@@ -10,6 +10,7 @@ without storing them in the checkpointable AgentState.
 
 from typing import Dict, Any, Callable
 import json
+import logging
 from langchain_core.messages import AIMessage
 from src.services.langgraph_state import AgentState, RuntimeContext
 from src.services.retrieval import retrieve, build_where
@@ -28,6 +29,7 @@ from src.utils.safety import enforce_citations
 from src.utils.sanitizer import sanitize_text
 from src.config.settings import Config
 
+logger = logging.getLogger(__name__)
 
 # ==================== HELPER: EvaluationResult <-> dict ====================
 
@@ -142,7 +144,7 @@ Return ONLY JSON:
         try:
             client = runtime.get("openai_client")
             if not client:
-                print("[PLAN_NODE] No OpenAI client found in runtime context.")
+                logger.debug("[PLAN_NODE] No OpenAI client found in runtime context.")
                 raise ValueError("OpenAI client is required for planning node.")
 
             response = client.chat.completions.create(
@@ -156,9 +158,9 @@ Return ONLY JSON:
             if response.choices and response.choices[0].message:
                 plan_data = json.loads(response.choices[0].message.content)
 
-            print("000000000000000000000000000000000")
-            print("Plan node response:", plan_data)
-            print(f"current step: {state.get('current_step', 0)}")
+            logger.debug("000000000000000000000000000000000")
+            logger.debug(f"Plan node response: {plan_data}")
+            logger.debug(f"current step: {state.get('current_step', 0)}")
             plans = []
             if plan_data:
                 plans = plan_data.get(
@@ -1024,13 +1026,19 @@ def create_generate_node(
                     "draft_answer": "",
                     "iteration_count": state.get("iteration_count", 0) + 1,
                     "messages": state.get("messages", [])
-                    + [AIMessage(content="No context available to generate answer from.")],
+                    + [
+                        AIMessage(
+                            content="No context available to generate answer from."
+                        )
+                    ],
                 }
 
             step_ctx = step_contexts[target_step]
             plan_step_desc = step_ctx.get("plan_step", "")
 
-            print(f"[GENERATE] Generating answer for step {target_step}: {plan_step_desc}")
+            print(
+                f"[GENERATE] Generating answer for step {target_step}: {plan_step_desc}"
+            )
 
             # Build numbered context from ONLY this step's data
             contexts = []
@@ -1149,7 +1157,9 @@ Instructions: Answer the question concisely by synthesizing information from the
                 )
 
             # Add current query with contexts
-            openai_messages.append({"role": "user", "content": user_message_with_context})
+            openai_messages.append(
+                {"role": "user", "content": user_message_with_context}
+            )
 
             print("&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&")
             print(
@@ -1348,7 +1358,9 @@ def create_verify_node(
 
                     final_answer = "\n\n".join(answer_parts)
 
-                print(f"[VERIFY] Final answer composed from {len(step_answers)} step(s)")
+                print(
+                    f"[VERIFY] Final answer composed from {len(step_answers)} step(s)"
+                )
             else:
                 final_answer = None
 

@@ -2,6 +2,7 @@ import { getServerSession } from 'next-auth';
 import { authOptions } from "@/lib/auth";
 import { NextResponse } from 'next/server';
 import { mintServiceToken, ServiceAuthError } from "@/lib/service-auth";
+import { randomUUID } from 'crypto';
 
 export const runtime = 'nodejs'
 export async function GET(req: Request, { params }: { params: { id: string } }) {
@@ -21,6 +22,7 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
     const r = await fetch(`${process.env.FLASK_URL}/conversations/${params.id}`, {
         headers: {
             'Authorization': `Bearer ${token}`,
+            'X-Correlation-ID': randomUUID(),
         }
     });
 
@@ -48,6 +50,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string; }}
         headers: {
             'Authorization': `Bearer ${token}`,
             'Content-Type': 'application/json',
+            'X-Correlation-ID': randomUUID(),
         },
         body: JSON.stringify(payload),
     });
@@ -74,6 +77,7 @@ export async function DELETE(req: Request, { params }: { params: { id: string }}
         method: 'DELETE',
         headers: {
             'Authorization': `Bearer ${token}`,
+            'X-Correlation-ID': randomUUID(),
         }
     });
 

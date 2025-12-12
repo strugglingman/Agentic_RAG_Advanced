@@ -3,7 +3,12 @@ Flask application factory.
 Creates and configures the Flask application with all routes, middleware, and error handlers.
 """
 
-import os
+from src.config.logging_config import setup_logging
+from src.config.settings import get_config, Config
+
+setup_logging(Config.LOG_LEVEL, Config.LOG_PATH)
+
+# pylint: disable=wrong-import-position
 from flask import Flask, jsonify, g
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
@@ -11,7 +16,7 @@ from werkzeug.exceptions import RequestEntityTooLarge, TooManyRequests
 import chromadb
 from chromadb.utils.embedding_functions import sentence_transformer_embedding_function
 
-from src.config.settings import get_config
+# pylint: disable=ungrouped-imports
 from src.middleware.auth import load_identity
 from src.routes.chat import chat_bp
 from src.routes.upload import upload_bp

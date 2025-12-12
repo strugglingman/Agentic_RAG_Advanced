@@ -269,8 +269,25 @@ class QuerySupervisor:
         )
         config = {"configurable": {"thread_id": thread_id}}
 
-        final_state = langgraph_agent.invoke(agent_state, config=config)
-        return self._extract_langgraph_results(final_state)
+        try:
+            final_state = langgraph_agent.invoke(agent_state, config=config)
+            return self._extract_langgraph_results(final_state)
+        except (ValueError, EOFError) as e:
+            # Handle checkpoint corruption - likely pickle deserialization error
+            if "unexpected end" in str(e) or "EOFError" in type(e).__name__:
+                print(
+                    f"[ERROR] Checkpoint corruption detected for thread_id={thread_id}: {e}"
+                )
+                print("[FIX] Generating new thread_id to bypass corrupted checkpoint")
+                # Generate new thread_id to start fresh
+                import uuid
+
+                new_thread_id = str(uuid.uuid4())
+                config = {"configurable": {"thread_id": new_thread_id}}
+                final_state = langgraph_agent.invoke(agent_state, config=config)
+                return self._extract_langgraph_results(final_state)
+            else:
+                raise
 
     def _build_langgraph_initial_state(self, query: str) -> Dict[str, Any]:
         """
