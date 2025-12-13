@@ -20,6 +20,7 @@ from src.services.langgraph_nodes import (
     error_handler_node,
     create_tool_calculator_node,
     create_tool_web_search_node,
+    create_direct_answer_node,
 )
 from src.services.langgraph_routing import (
     route_after_reflection,
@@ -87,6 +88,7 @@ def build_langgraph_agent(
     graph.add_node("verify", create_verify_node(runtime))
     graph.add_node("tool_calculator", create_tool_calculator_node(runtime))
     graph.add_node("tool_web_search", create_tool_web_search_node(runtime))
+    graph.add_node("direct_answer", create_direct_answer_node(runtime))
     graph.add_node("error", error_handler_node)  # No runtime needed
 
     # ==================== SET ENTRY POINT ====================
@@ -100,6 +102,7 @@ def build_langgraph_agent(
         "plan",
         route_after_planning,
         {
+            "direct_answer": "direct_answer",
             "retrieve": "retrieve",
             "tool_calculator": "tool_calculator",
             "tool_web_search": "tool_web_search",
@@ -132,6 +135,7 @@ def build_langgraph_agent(
     # After tool execution, generate answer with tool results
     graph.add_edge("tool_calculator", "generate")
     graph.add_edge("tool_web_search", "generate")
+    graph.add_edge("direct_answer", "generate")
 
     # After verification, check if more plan steps remain
     # This is the key change for Plan-Execute pattern:

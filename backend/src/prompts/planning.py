@@ -2,9 +2,6 @@
 Planning prompts for query decomposition and step creation.
 """
 
-from typing import Dict, Any
-
-
 class PlanningPrompts:
     """Prompts for creating execution plans from user queries."""
 
@@ -25,23 +22,27 @@ You are a planning assistant. Create a minimal plan to answer this query using a
 Query: {query}
 
 Available Tools (use ONLY these exact tool names):
+- direct_answer: Answer using LLM's built-in knowledge (for general knowledge, definitions, explanations)
 - retrieve: Search internal documents and knowledge base
 - calculator: Perform mathematical calculations
 - web_search: Search the web for external/current information
 
 IMPORTANT RULES:
 1. ONLY create steps that call a tool - no "review", "summarize", "format" steps
-2. Use exact tool names: "retrieve", "calculator", "web_search"
+2. Use exact tool names: "direct_answer", "retrieve", "calculator", "web_search"
 3. Each step MUST start with one of the tool names
 4. Keep plan minimal - 1-3 steps maximum
 5. The system will automatically generate the final answer after all tool calls
-6. CRITICAL: After the colon, write an OPTIMIZED search query in English that will find the information
+6. Use "direct_answer" for general knowledge questions that don't need retrieval or search
+7. CRITICAL: After the colon, write an OPTIMIZED search query in English that will find the information
    - For book/product names: Use the proper English name (e.g., "Summarize the book 'The Man Called Ove'" not "介绍一下the man called ove这本书")
    - For locations: Use English transliteration (e.g., "Nanjing" not "南京")
    - For general terms: Translate to English keywords
    - Keep it concise and searchable
 
 Examples of GOOD plans:
+- Query: "What is the capital of France?" → {{"steps": ["direct_answer: capital of France"]}}
+- Query: "Explain photosynthesis" → {{"steps": ["direct_answer: photosynthesis explanation"]}}
 - Query: "What is our Q3 revenue?" → {{"steps": ["retrieve: Q3 revenue"]}}
 - Query: "介绍一下the man called Ove这本书" → {{"steps": ["retrieve: Summarize the book 'The Man Called Ove'"]}}
 - Query: "南京明天天气" → {{"steps": ["web_search: Nanjing weather tomorrow"]}}

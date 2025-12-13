@@ -796,6 +796,32 @@ def create_tool_web_search_node(
     return tool_web_search_node
 
 
+# ==================== DIRECT ANSWER NODE ====================
+# TODO: Implement direct_answer node for handling general knowledge questions
+# This node should:
+# 1. Extract question from plan step (format: "direct_answer: question")
+# 2. Call LLM directly without external tools (no retrieval/web search)
+# 3. Store result in tool_results and step_contexts like other tool nodes
+# 4. Follow the same pattern as create_tool_calculator_node and create_tool_web_search_node
+# 5. Increment current_step after completion
+#
+def create_direct_answer_node(
+    runtime: RuntimeContext,
+) -> Callable[[AgentState], Dict[str, Any]]:
+    """
+    Factory function to create direct_answer_node with runtime context bound.
+    """
+    def direct_answer_node(state: AgentState) -> Dict[str, Any]:
+        # TODO: Implement the logic here
+        # - Get OpenAI client from runtime
+        # - Extract question from plan[current_step]
+        # - Call LLM with simple prompt (no tools, no retrieval)
+        # - Store result in step_contexts with type="direct_answer"
+        # - Return updated state
+        pass
+    return direct_answer_node
+
+
 # ==================== REFINEMENT NODE ====================
 def create_refine_node(
     runtime: RuntimeContext,
@@ -1035,6 +1061,16 @@ def create_generate_node(
                 context_entry = f"{header}Result: {result_text}"
                 contexts.append(context_entry)
                 context_num += 1
+
+            # TODO: Add handling for direct_answer type
+            # elif step_ctx["type"] == "direct_answer":
+            #     # Direct answer from LLM's built-in knowledge
+            #     result_text = step_ctx.get("result", "")
+            #     question = step_ctx.get("question", "")
+            #     header = f"Context {context_num} (Direct Answer for: {question}):\n"
+            #     context_entry = f"{header}{result_text}"
+            #     contexts.append(context_entry)
+            #     context_num += 1
 
             if not contexts:
                 print("No context available for answer generation.")

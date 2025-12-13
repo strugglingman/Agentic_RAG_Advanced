@@ -40,6 +40,10 @@ def route_after_planning(state: AgentState) -> str:
     print(f"[ROUTE_AFTER_PLANNING] step={step}")
 
     # IMPORTANT: Check specific tools BEFORE generic keywords to avoid false matches
+    # Direct answer keywords
+    if ("direct_answer" in step or "direct answer" in step):
+        print("[ROUTE_AFTER_PLANNING] Matched direct_answer, returning direct_answer")
+        return "direct_answer"
 
     # Web search keywords (check BEFORE generic "search")
     if (
