@@ -28,6 +28,8 @@ from src.services.query_refiner import QueryRefiner
 from src.utils.safety import enforce_citations
 from src.utils.sanitizer import sanitize_text
 from src.config.settings import Config
+from src.prompts import PlanningPrompts, GenerationPrompts, ToolPrompts
+from src.prompts.generation import ContextType
 
 logger = logging.getLogger(__name__)
 
@@ -104,43 +106,7 @@ def create_plan_node(runtime: RuntimeContext) -> Callable[[AgentState], Dict[str
             }
 
         query = state.get("query", "")
-        planning_prompt = f"""
-You are a planning assistant. Create a minimal plan to answer this query using available tools.
-
-Query: {query}
-
-Available Tools (use ONLY these exact tool names):
-- retrieve: Search internal documents and knowledge base
-- calculator: Perform mathematical calculations
-- web_search: Search the web for external/current information
-
-IMPORTANT RULES:
-1. ONLY create steps that call a tool - no "review", "summarize", "format" steps
-2. Use exact tool names: "retrieve", "calculator", "web_search"
-3. Each step MUST start with one of the tool names
-4. Keep plan minimal - 1-3 steps maximum
-5. The system will automatically generate the final answer after all tool calls
-6. CRITICAL: After the colon, write an OPTIMIZED search query in English that will find the information
-   - For book/product names: Use the proper English name (e.g., "Summarize the book 'The Man Called Ove'" not "介绍一下the man called ove这本书")
-   - For locations: Use English transliteration (e.g., "Nanjing" not "南京")
-   - For general terms: Translate to English keywords
-   - Keep it concise and searchable
-
-Examples of GOOD plans:
-- Query: "What is our Q3 revenue?" → {{"steps": ["retrieve: Q3 revenue"]}}
-- Query: "介绍一下the man called Ove这本书" → {{"steps": ["retrieve: Summarize the book 'The Man Called Ove'"]}}
-- Query: "南京明天天气" → {{"steps": ["web_search: Nanjing weather tomorrow"]}}
-- Query: "Calculate 15% of our budget" → {{"steps": ["retrieve: budget", "calculator: 15% of budget"]}}
-- Query: "Compare our revenue to industry" → {{"steps": ["retrieve: company revenue", "web_search: industry revenue benchmarks"]}}
-
-Examples of BAD plans (DO NOT DO THIS):
-- {{"steps": ["retrieve: 介绍一下the man called ove这本书"]}} ← Don't copy Chinese query as-is, use "The Man Called Ove"
-- {{"steps": ["retrieve: get data", "review the results"]}} ← "review" is NOT a tool
-- {{"steps": ["web_search: find info", "format the response"]}} ← "format" is NOT a tool
-
-Return ONLY JSON:
-{{"steps": ["tool_name: optimized search query", ...]}}
-"""
+        planning_prompt = PlanningPrompts.create_plan(query)
         try:
             client = runtime.get("openai_client")
             if not client:
@@ -167,7 +133,6 @@ Return ONLY JSON:
                     "steps", [f"Retrieve documents for: {query}", "Generate answer"]
                 )
         except Exception as e:
-            print(f"Planning node error: {e}")
             plans = [
                 f"Retrieve documents for the query: {query}",
                 "Generate answer from retrieved documents",
@@ -219,12 +184,9 @@ def create_retrieve_node(
         """
         plan = state.get("plan", [])
         current_step = state.get("current_step", 0)
-        print("111111111111111111111111")
-        print("In retrieve node")
-        print(f"current step: {current_step}")
+        logger.debug(f"In tretrieve node and current step is {current_step}")
         is_detour = state.get("evaluation_result") is not None
         if not plan:
-            print("In retrieve node but no plan.")
             return {
                 "retrieved_docs": [],
                 "current_step": current_step + 1 if not is_detour else current_step,
@@ -544,13 +506,7 @@ def create_tool_calculator_node(
             if plan and current_step < len(plan) and not is_detour:
                 # PLANNED call - use current step
                 action_step = plan[current_step]
-                prompt = f"""You need to call the calculator tool for this specific task.
-
-Task: {action_step}
-
-IMPORTANT: Extract the calculation request ONLY from the task description above. Do NOT use unrelated parts from other tasks.
-
-Call the calculator tool with the appropriate expression."""
+                prompt = ToolPrompts.calculator_prompt(action_step, is_detour=False)
             elif is_detour:
                 # DETOUR call - prefer refined_query (from refine_node), else previous step
                 refined_query = state.get("refined_query")
@@ -563,16 +519,10 @@ Call the calculator tool with the appropriate expression."""
                 else:
                     # Final fallback
                     task_query = query
-                prompt = f"""You need to call the calculator tool for this specific task.
-
-Task: {task_query}
-
-IMPORTANT: Extract the calculation request ONLY from the task description above.
-
-Call the calculator tool with the appropriate expression."""
+                prompt = ToolPrompts.calculator_prompt(task_query, is_detour=True)
             else:
                 # True fallback - no plan, no detour
-                prompt = f"Based on the user's query, call the appropriate calculator tool.\n\nUser Query: {query}"
+                prompt = ToolPrompts.fallback_prompt(query, "calculator")
 
             response = client.chat.completions.create(
                 model=Config.OPENAI_MODEL,
@@ -735,13 +685,7 @@ def create_tool_web_search_node(
             print(f"Is detour: {is_detour}")
             if plan and current_step < len(plan) and not is_detour:
                 action_step = plan[current_step]
-                prompt = f"""You need to call the web_search tool for this specific task.
-
-Task: {action_step}
-
-IMPORTANT: Extract the search query ONLY from the task description above. Do NOT use unrelated parts from other tasks.
-
-Call the web_search tool with the appropriate query."""
+                prompt = ToolPrompts.web_search_prompt(action_step, is_detour=False)
             elif is_detour:
                 refined_query = state.get("refined_query")
                 if refined_query:
@@ -750,15 +694,9 @@ Call the web_search tool with the appropriate query."""
                     task_query = plan[current_step - 1]
                 else:
                     task_query = query
-                prompt = f"""You need to call the web_search tool for this specific task.
-
-Task: {task_query}
-
-IMPORTANT: Extract the search query ONLY from the task description above.
-
-Call the web_search tool with the appropriate query."""
+                prompt = ToolPrompts.web_search_prompt(task_query, is_detour=True)
             else:
-                prompt = f"Based on the user's query, search the web for relevant information.\n\nUser Query: {query}"
+                prompt = ToolPrompts.fallback_prompt(query, "web_search")
 
             print("Prompt for web search tool calling:", prompt)
 
@@ -999,11 +937,9 @@ def create_generate_node(
                 evaluation_result
                 and evaluation_result.recommendation == RecommendationAction.CLARIFY
             ):
-                # Generate clear clarification request message
-                clarification_message = (
-                    "I need more information to answer your question accurately. "
-                    f"{evaluation_result.reasoning}\n\n"
-                    "Could you please provide more specific details or rephrase your question?"
+                # Generate clear clarification request message using prompt registry
+                clarification_message = GenerationPrompts.clarification_message(
+                    evaluation_result.reasoning
                 )
                 return {
                     "draft_answer": clarification_message,
@@ -1036,9 +972,16 @@ def create_generate_node(
             step_ctx = step_contexts[target_step]
             plan_step_desc = step_ctx.get("plan_step", "")
 
+            # Detect if this is a web search result
+            is_web_search = (
+                step_ctx.get("type") == "tool"
+                and step_ctx.get("tool_name") == "web_search"
+            )
+
             print(
                 f"[GENERATE] Generating answer for step {target_step}: {plan_step_desc}"
             )
+            print(f"[GENERATE] Is web search: {is_web_search}")
 
             # Build numbered context from ONLY this step's data
             contexts = []
@@ -1101,18 +1044,14 @@ def create_generate_node(
 
             final_context = "\n\n".join(contexts)
 
-            # Build system prompt (similar to agent_service.py)
-            system_prompt = """You are a helpful assistant that answers questions using provided contexts or tool results.
+            # Build system prompt - different rules for web search vs document retrieval
+            # Use prompt registry for context-aware prompts
+            if is_web_search:
+                context_type = ContextType.WEB_SEARCH
+            else:
+                context_type = ContextType.DOCUMENT
 
-STRICT RULES:
-1. Use ONLY information from the numbered contexts below - DO NOT use external knowledge
-2. Include bracket citations [n] for every sentence that uses information (e.g., [1], [2])
-3. Synthesize information from multiple contexts when relevant
-4. At the end of your answer, cite the sources you used:
-   - For document sources: List the filename and specific page numbers (e.g., "Sources: report.pdf (pages 15, 23)")
-   - For tool sources: List the tool names used (e.g., "Tools: web_search, calculator")
-5. If the contexts don't contain sufficient information to answer, say: "I don't have enough information to answer that based on the available context."
-6. Be concise, accurate, and professional"""
+            system_prompt = GenerationPrompts.get_system_prompt(context_type)
 
             # Use the SPECIFIC plan step as the question (not the full multi-part query)
             # This ensures the LLM answers ONLY what this step is about
@@ -1123,18 +1062,12 @@ STRICT RULES:
             if ":" in plan_step_desc:
                 step_question = plan_step_desc.split(":", 1)[1].strip()
 
-            question_section = f"Question: {step_question}"
-            if refined_query and refined_query != step_question:
-                question_section += f"\n(Refined as: {refined_query})"
-
-            # Build user message with contexts (similar to build_prompt in retrieval.py)
-            user_message_with_context = f"""{question_section}
-
-Context:
-{final_context}
-
-Instructions: Answer the question concisely by synthesizing information from the contexts above.
-"""
+            # Build user message using prompt registry
+            user_message_with_context = GenerationPrompts.build_user_message(
+                question=step_question,
+                context=final_context,
+                refined_query=refined_query,
+            )
             # Comment out too much citation prompt
             # Include bracket citations [n] for every sentence that uses information.
             # At the end of your answer, cite the sources you used. For each source file, list the specific page numbers
