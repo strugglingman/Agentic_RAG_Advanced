@@ -14,7 +14,7 @@ const PRESET_TAGS = ['sentimental', 'ghost', 'finance', 'documentary', 'fiction'
 
 export default function SidebarFilters() {
   const { selectedExts, setSelectedExts, selectedTags, setSelectedTags, customTags, setCustomTags } = useFilters();
-  const [model, setModel] = useState("gpt-4o-mini");
+  const [model, setModel] = useState("gpt-5.2");
   const [exts, setExts] = useState<string[]>([]);
   const [onlyErrors, setOnlyErrors] = useState(false);
   const filterLabel = useMemo(
@@ -107,6 +107,7 @@ export default function SidebarFilters() {
           onChange={(e) => setModel(e.target.value)}
           className="w-full rounded-md border px-3 py-2 text-sm"
         >
+          <option value="gpt-5.2">GPT-5.2</option>
           <option value="gpt-4o-mini">GPT-4o mini</option>
           <option value="gpt-4o">GPT-4o</option>
           <option value="llama-3.1">Llama 3.1</option>

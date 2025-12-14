@@ -141,7 +141,7 @@ class QuerySupervisor:
         response = self.openai_client.chat.completions.create(
             model=Config.OPENAI_MODEL,
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=150,
+            max_completion_tokens=150,
             temperature=0,
             response_format={"type": "json_object"},
         )

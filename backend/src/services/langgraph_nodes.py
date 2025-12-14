@@ -106,7 +106,21 @@ def create_plan_node(runtime: RuntimeContext) -> Callable[[AgentState], Dict[str
             }
 
         query = state.get("query", "")
-        planning_prompt = PlanningPrompts.create_plan(query)
+
+        # Build conversation context summary for reference resolution
+        conversation_history = runtime.get("conversation_history", [])
+        conversation_context = ""
+        if conversation_history:
+            # Build a concise summary of recent conversation for context
+            recent_messages = conversation_history[-10:]  # Last 10 messages max
+            context_parts = []
+            for msg in recent_messages:
+                role = msg.get("role", "user")
+                content = msg.get("content", "")[:500]  # Truncate long messages
+                context_parts.append(f"{role}: {content}")
+            conversation_context = "\n".join(context_parts)
+
+        planning_prompt = PlanningPrompts.create_plan(query, conversation_context)
         try:
             client = runtime.get("openai_client")
             if not client:
@@ -817,60 +831,71 @@ def create_direct_answer_node(
             action_step.split(":", 1)[1].strip() if ":" in action_step else action_step
         )
 
-        # Build prompts for LLM
-        system_prompt = GenerationPrompts.get_system_prompt(ContextType.DIRECT_ANSWER)
-        openai_messages = [{"role": "system", "content": system_prompt}]
-        conversation_history = runtime.get("conversation_history", [])
-        if conversation_history:
-            for h in conversation_history:
-                sanitized_msg = {
-                    "role": h.get("role", "user"),
-                    "content": sanitize_text(h.get("content", ""), max_length=5000),
+        try:
+            # Build prompts for LLM
+            system_prompt = GenerationPrompts.get_system_prompt(
+                ContextType.DIRECT_ANSWER
+            )
+            openai_messages = [{"role": "system", "content": system_prompt}]
+            conversation_history = runtime.get("conversation_history", [])
+            if conversation_history:
+                for h in conversation_history:
+                    sanitized_msg = {
+                        "role": h.get("role", "user"),
+                        "content": sanitize_text(h.get("content", ""), max_length=5000),
+                    }
+                    openai_messages.append(sanitized_msg)
+            user_message = GenerationPrompts.build_user_message(step_query)
+            openai_messages.append({"role": "user", "content": user_message})
+
+            response = openai_client.chat.completions.create(
+                model=Config.OPENAI_MODEL,
+                messages=openai_messages,
+                max_completion_tokens=Config.CHAT_MAX_TOKENS,
+                temperature=Config.OPENAI_TEMPERATURE,
+            )
+            direct_answer = ""
+            if response.choices and response.choices[0].message:
+                direct_answer = response.choices[0].message.content
+
+            # Store direct answer in step_contexts
+            # Replace if exists (unlikely for direct_answer, but keep consistent)
+            step_contexts = state.get("step_contexts", {})
+            if current_step not in step_contexts:
+                step_contexts[current_step] = []
+
+            # Remove any existing direct_answer context
+            step_contexts[current_step] = [
+                ctx
+                for ctx in step_contexts[current_step]
+                if ctx.get("type") != "direct_answer"
+            ]
+
+            # Add new direct_answer context
+            step_contexts[current_step].append(
+                {
+                    "type": "direct_answer",
+                    "answer": direct_answer,
+                    "plan_step": action_step,
                 }
-                openai_messages.append(sanitized_msg)
-        user_message = GenerationPrompts.build_user_message(step_query)
-        openai_messages.append({"role": "user", "content": user_message})
+            )
 
-        response = openai_client.chat.completions.create(
-            model=Config.OPENAI_MODEL,
-            messages=openai_messages,
-            max_tokens=Config.CHAT_MAX_TOKENS,
-            temperature=Config.OPENAI_TEMPERATURE,
-        )
-        direct_answer = ""
-        if response.choices and response.choices[0].message:
-            direct_answer = response.choices[0].message.content
-
-        # Store direct answer in step_contexts
-        # Replace if exists (unlikely for direct_answer, but keep consistent)
-        step_contexts = state.get("step_contexts", {})
-        if current_step not in step_contexts:
-            step_contexts[current_step] = []
-
-        # Remove any existing direct_answer context
-        step_contexts[current_step] = [
-            ctx
-            for ctx in step_contexts[current_step]
-            if ctx.get("type") != "direct_answer"
-        ]
-
-        # Add new direct_answer context
-        step_contexts[current_step].append(
-            {
-                "type": "direct_answer",
-                "answer": direct_answer,
-                "plan_step": action_step,
+            return {
+                "draft_answer": direct_answer,
+                "current_step": current_step,
+                "step_contexts": step_contexts,
+                "iteration_count": state.get("iteration_count", 0) + 1,
+                "messages": state.get("messages", [])
+                + [AIMessage(content="Generated answer from direct_answer directly.")],
             }
-        )
-
-        return {
-            "draft_answer": direct_answer,
-            "current_step": current_step,
-            "step_contexts": step_contexts,
-            "iteration_count": state.get("iteration_count", 0) + 1,
-            "messages": state.get("messages", [])
-            + [AIMessage(content="Generated answer from direct_answer directly.")],
-        }
+        except Exception as e:
+            return {
+                "draft_answer": "",
+                "current_step": current_step,
+                "iteration_count": state.get("iteration_count", 0) + 1,
+                "messages": state.get("messages", [])
+                + [AIMessage(content="Error during direct answer generation.")],
+            }
 
     return direct_answer_node
 
@@ -1140,7 +1165,7 @@ def create_generate_node(
             response = openai_client.chat.completions.create(
                 model=Config.OPENAI_MODEL,
                 messages=openai_messages,
-                max_tokens=Config.CHAT_MAX_TOKENS,
+                max_completion_tokens=Config.CHAT_MAX_TOKENS,
                 temperature=Config.OPENAI_TEMPERATURE,
             )
             draft_answer = ""

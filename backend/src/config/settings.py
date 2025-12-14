@@ -28,7 +28,7 @@ class Config:
     # ==============================================================================
     # OpenAI API Settings
     # ==============================================================================
-    OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.2")
     OPENAI_TEMPERATURE = float(os.getenv("OPENAI_TEMPERATURE", "0.1"))
     OPENAI_KEY = os.getenv("OPENAI_API_KEY", "")
     AGENT_MAX_ITERATIONS = int(os.getenv("AGENT_MAX_ITERATIONS", "5"))
@@ -141,7 +141,9 @@ class Config:
     # ==============================================================================
     # Chat Settings
     # ==============================================================================
-    CHAT_MAX_TOKENS = int(os.getenv("CHAT_MAX_TOKENS", "2000"))
+    # Note: For reasoning models (o1, gpt-5.2), this needs to be higher because
+    # reasoning tokens count against this limit. Recommended: 8000-16000 for complex queries.
+    CHAT_MAX_TOKENS = int(os.getenv("CHAT_MAX_TOKENS", "16000"))
 
     # ==============================================================================
     # File Upload Configuration

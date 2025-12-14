@@ -6,6 +6,7 @@ import time
 from openai import OpenAI
 import robot as rc
 from typing import Optional
+from src.config.settings import Config
 
 # Initialize OpenAI client from environment variable instead of hard-coding secret.
 # This prevents leaking the API key and satisfies GitHub secret scanning.
@@ -96,13 +97,13 @@ def eval(d: dict[str, any], k_list: list[int], mode: str):
     system, user = rc.build_prompt(query, ctx_bot)
     t1 = time.time()
     resp = openAI_Client.chat.completions.create(
-        model="gpt-4o-mini",
+        model=Config.OPENAI_MODEL,
         messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ],
         temperature=0.2,
-        max_tokens=500,
+        max_completion_tokens=500,
     )
     time_answer = time.time() - t1
     answer_bot = resp.choices[0].message.content.strip()

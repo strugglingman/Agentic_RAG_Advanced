@@ -10,6 +10,7 @@ Week 2 - Day 4: Clarification & Progressive Fallback
 from typing import Optional
 from openai import OpenAI
 from src.models.evaluation import EvaluationResult
+from src.config.settings import Config
 from langsmith import traceable
 
 
@@ -32,7 +33,7 @@ class ClarificationHelper:
     def __init__(
         self,
         openai_client: Optional[OpenAI] = None,
-        model: str = "gpt-4o-mini",
+        model: str = None,
         temperature: float = 0.1,
     ):
         """
@@ -40,7 +41,7 @@ class ClarificationHelper:
 
         Args:
             openai_client: Optional OpenAI client (for future LLM-based suggestions)
-            model: Model to use (default: gpt-4o-mini)
+            model: Model to use (default: Config.OPENAI_MODEL)
             temperature: Temperature for creativity (0.5 = balanced)
 
         TODO: Implement initialization
@@ -50,9 +51,8 @@ class ClarificationHelper:
         3. Store temperature as self.temperature
         """
         self.client = openai_client
-        self.model = model
+        self.model = model or Config.OPENAI_MODEL
         self.temperature = temperature
-
 
     @traceable
     def generate_clarification(
@@ -298,7 +298,11 @@ if __name__ == "__main__":
        print("ALL TESTS COMPLETE!")
        print("=" * 70)
     """
-    from src.models.evaluation import EvaluationResult, QualityLevel, RecommendationAction
+    from src.models.evaluation import (
+        EvaluationResult,
+        QualityLevel,
+        RecommendationAction,
+    )
 
     print("=" * 70)
     print("CLARIFICATION HELPER TEST")
@@ -312,8 +316,7 @@ if __name__ == "__main__":
     print("Test 1: No Results Message")
     print("-" * 70)
     message = helper._no_results_message(
-        "What is quantum physics?",
-        context_hint="HR documents"
+        "What is quantum physics?", context_hint="HR documents"
     )
     print(message)
 
@@ -333,9 +336,7 @@ if __name__ == "__main__":
         metrics={},
     )
     message = helper._ambiguous_query_message(
-        "How do I apply?",
-        mock_eval,
-        context_hint="company policies"
+        "How do I apply?", mock_eval, context_hint="company policies"
     )
     print(message)
 
@@ -344,9 +345,7 @@ if __name__ == "__main__":
     print("Test 3: Max Attempts Message")
     print("-" * 70)
     message = helper._max_attempts_message(
-        "Tell me about xyz",
-        mock_eval,
-        context_hint="company documents"
+        "Tell me about xyz", mock_eval, context_hint="company documents"
     )
     print(message)
 
@@ -361,7 +360,9 @@ if __name__ == "__main__":
         eval_result=mock_eval,
         max_attempts_reached=True,
     )
-    print(f"  max_attempts_reached=True: {'_max_attempts_message' if 'multiple search attempts' in msg1 else 'WRONG'}")
+    print(
+        f"  max_attempts_reached=True: {'_max_attempts_message' if 'multiple search attempts' in msg1 else 'WRONG'}"
+    )
 
     # Test empty issues → _no_results_message
     empty_eval = EvaluationResult(
@@ -388,7 +389,9 @@ if __name__ == "__main__":
         eval_result=mock_eval,
         max_attempts_reached=False,
     )
-    print(f"  issues present: {'_ambiguous_query_message' if 'low-quality results' in msg3 else 'WRONG'}")
+    print(
+        f"  issues present: {'_ambiguous_query_message' if 'low-quality results' in msg3 else 'WRONG'}"
+    )
 
     print("  [OK] Routing logic verified")
 

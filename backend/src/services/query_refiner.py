@@ -103,7 +103,7 @@ class QueryRefiner:
             response = self.client.chat.completions.create(
                 model=self.model,
                 temperature=self.temperature,
-                max_tokens=150,
+                max_completion_tokens=150,
                 messages=[
                     {
                         "role": "system",

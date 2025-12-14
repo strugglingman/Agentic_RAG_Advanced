@@ -23,7 +23,7 @@ def parse_args():
         "--output", type=str, default="eval_results", help="Output directory"
     )
     parser.add_argument(
-        "--model", type=str, default="gpt-4o-mini", help="LLM for evaluation"
+        "--model", type=str, default="gpt-5.2", help="LLM for evaluation"
     )
     parser.add_argument(
         "--metrics", type=str, default="all", help="Comma-separated metrics or 'all'"

@@ -2,58 +2,76 @@
 Planning prompts for query decomposition and step creation.
 """
 
+
 class PlanningPrompts:
     """Prompts for creating execution plans from user queries."""
 
     @staticmethod
-    def create_plan(query: str) -> str:
+    def create_plan(query: str, conversation_context: str = "") -> str:
         """
         Generate prompt for creating a multi-step execution plan.
 
         Args:
             query: User's original question
+            conversation_context: Summary of recent conversation for context understanding
 
         Returns:
             Prompt string for plan generation
         """
+        context_section = ""
+        if conversation_context:
+            context_section = f"""
+## Recent Conversation Context
+{conversation_context}
+
+CRITICAL: The user may reference previous messages using words like "这些", "以上", "those", "these", "it", "them".
+You MUST resolve these references using the conversation context above and include the ACTUAL content in your plan.
+For example: If user previously discussed "南京10个景点" and now asks "这些景点的路线", you must include the actual attraction names.
+"""
+
         return f"""
-You are a planning assistant. Create a minimal plan to answer this query using available tools.
+You are a planning assistant. Create a plan to answer this query using available tools.
+{context_section}
+## User Query
+{query}
 
-Query: {query}
-
-Available Tools (use ONLY these exact tool names):
-- direct_answer: Answer using LLM's built-in knowledge (for general knowledge, definitions, explanations)
-- retrieve: Search internal documents and knowledge base
+## Available Tools (use ONLY these exact tool names):
+- direct_answer: Answer using LLM's built-in knowledge (for general knowledge, travel routes, cultural info, how-to guides, explanations)
+- retrieve: Search internal COMPANY documents and uploaded files ONLY
 - calculator: Perform mathematical calculations
-- web_search: Search the web for external/current information
+- web_search: Search the web for CURRENT/real-time information (weather, news, stock prices, recent events)
 
-IMPORTANT RULES:
-1. ONLY create steps that call a tool - no "review", "summarize", "format" steps
-2. Use exact tool names: "direct_answer", "retrieve", "calculator", "web_search"
-3. Each step MUST start with one of the tool names
-4. Keep plan minimal - 1-3 steps maximum
-5. The system will automatically generate the final answer after all tool calls
-6. Use "direct_answer" for general knowledge questions that don't need retrieval or search
-7. CRITICAL: After the colon, write an OPTIMIZED search query in English that will find the information
-   - For book/product names: Use the proper English name (e.g., "Summarize the book 'The Man Called Ove'" not "介绍一下the man called ove这本书")
-   - For locations: Use English transliteration (e.g., "Nanjing" not "南京")
-   - For general terms: Translate to English keywords
-   - Keep it concise and searchable
+## CRITICAL TOOL SELECTION RULES:
 
-Examples of GOOD plans:
-- Query: "What is the capital of France?" → {{"steps": ["direct_answer: capital of France"]}}
-- Query: "Explain photosynthesis" → {{"steps": ["direct_answer: photosynthesis explanation"]}}
-- Query: "What is our Q3 revenue?" → {{"steps": ["retrieve: Q3 revenue"]}}
-- Query: "介绍一下the man called Ove这本书" → {{"steps": ["retrieve: Summarize the book 'The Man Called Ove'"]}}
-- Query: "南京明天天气" → {{"steps": ["web_search: Nanjing weather tomorrow"]}}
-- Query: "Calculate 15% of our budget" → {{"steps": ["retrieve: budget", "calculator: 15% of budget"]}}
-- Query: "Compare our revenue to industry" → {{"steps": ["retrieve: company revenue", "web_search: industry revenue benchmarks"]}}
+### Use "direct_answer" for:
+- General knowledge (history, geography, science, culture)
+- Travel recommendations, routes, and itineraries
+- How-to guides and explanations
+- Information about famous places, people, books
+- Anything the LLM already knows from training
 
-Examples of BAD plans (DO NOT DO THIS):
-- {{"steps": ["retrieve: 介绍一下the man called ove这本书"]}} ← Don't copy Chinese query as-is, use "The Man Called Ove"
-- {{"steps": ["retrieve: get data", "review the results"]}} ← "review" is NOT a tool
-- {{"steps": ["web_search: find info", "format the response"]}} ← "format" is NOT a tool
+### Use "retrieve" ONLY for:
+- Company internal documents
+- User-uploaded files
+- Organization-specific policies or data
+
+### Use "web_search" ONLY for:
+- Current/real-time information (today's weather, live prices)
+- Very recent events (within last few months)
+- Information that changes frequently
+
+## IMPORTANT:
+1. Write DETAILED, COMPREHENSIVE queries after the colon
+2. Include ALL context from conversation when resolving references
+3. For travel/route questions, specify: locations, order, and request for transportation details
+4. The LLM will generate a detailed, well-formatted answer based on your plan
+
+## Examples:
+- Query: "南京的10个旅游景点" → {{"steps": ["direct_answer: List and describe the top 10 tourist attractions in Nanjing, China, including historical significance and visitor tips"]}}
+- Query: "这些景点的具体路线" (after discussing Nanjing attractions) → {{"steps": ["direct_answer: Provide a detailed travel itinerary and route connecting Nanjing Memorial Hall, Zhongshan Mausoleum, Ming Xiaoling Tomb, Xuanwu Lake, Yangtze River Bridge, Confucius Temple, Nanjing Museum, Zhonghua Gate, Purple Mountain Observatory, and Jiming Temple, including transportation options between each location, recommended visiting order, and time estimates"]}}
+- Query: "What is our Q3 revenue?" → {{"steps": ["retrieve: Q3 quarterly revenue report"]}}
+- Query: "明天北京天气怎么样" → {{"steps": ["web_search: Beijing weather forecast tomorrow"]}}
 
 Return ONLY JSON:
-{{"steps": ["tool_name: optimized search query", ...]}}
+{{"steps": ["tool_name: detailed comprehensive query with full context", ...]}}
 """

@@ -16,6 +16,7 @@ from typing import Dict, Any, List, Optional, Tuple
 from openai import OpenAI
 from langsmith import traceable
 
+from src.config.settings import Config
 from src.models.evaluation import (
     EvaluationCriteria,
     EvaluationResult,
@@ -337,9 +338,9 @@ class RetrievalEvaluator:
                 Be strict: only answer 'yes' if contexts directly and completely answer the query.
             """
             response = self.client.chat.completions.create(
-                model="gpt-4o-mini",
+                model=Config.OPENAI_MODEL,
                 temperature=0.0,
-                max_tokens=150,
+                max_completion_tokens=150,
                 messages=[{"role": "user", "content": prompt}],
             )
             content = response.choices[0].message.content
@@ -489,7 +490,7 @@ class RetrievalEvaluator:
         # Step 3: Call OpenAI API
         try:
             response = self.client.chat.completions.create(
-                model="gpt-4o-mini",
+                model=Config.OPENAI_MODEL,
                 temperature=0.0,
                 response_format={"type": "json_object"},
                 messages=[{"role": "user", "content": prompt}],

@@ -137,7 +137,7 @@ async def chat(collection):
                     model=Config.OPENAI_MODEL,
                     messages=messages,
                     temperature=0.1,
-                    max_tokens=Config.CHAT_MAX_TOKENS,
+                    max_completion_tokens=Config.CHAT_MAX_TOKENS,
                     stream=True,
                 )
 
