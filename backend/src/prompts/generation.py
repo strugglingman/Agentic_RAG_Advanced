@@ -8,6 +8,7 @@ from enum import Enum
 class ContextType(Enum):
     """Types of context sources that require different generation rules."""
 
+    DIRECT_ANSWER = "direct_answer"
     WEB_SEARCH = "web_search"
     DOCUMENT = "document"
     TOOL = "tool"
@@ -17,6 +18,13 @@ class GenerationPrompts:
     """Prompts for generating answers from various context sources."""
 
     # Base system prompts for different context types
+    DIRECT_ANSWER_SYSTEM = """You are a helpful assistant that provides direct answers to questions without external context.
+STRICT RULES:
+1. Use your internal knowledge to answer the question directly
+2. Do NOT reference any external sources or contexts
+3. Be concise, accurate, and professional
+"""
+
     WEB_SEARCH_SYSTEM = """You are a helpful assistant that answers questions using web search results.
 
 RULES FOR WEB SEARCH RESULTS:
@@ -59,7 +67,9 @@ RULES FOR TOOL RESULTS:
         Returns:
             System prompt string
         """
-        if context_type == ContextType.WEB_SEARCH:
+        if context_type == ContextType.DIRECT_ANSWER:
+            return GenerationPrompts.DIRECT_ANSWER_SYSTEM
+        elif context_type == ContextType.WEB_SEARCH:
             return GenerationPrompts.WEB_SEARCH_SYSTEM
         elif context_type == ContextType.DOCUMENT:
             return GenerationPrompts.DOCUMENT_SYSTEM
@@ -70,7 +80,7 @@ RULES FOR TOOL RESULTS:
 
     @staticmethod
     def build_user_message(
-        question: str, context: str, refined_query: str = None
+        question: str, context: str = "", refined_query: str = None
     ) -> str:
         """
         Build user message with question and context.
@@ -86,6 +96,11 @@ RULES FOR TOOL RESULTS:
         question_section = f"Question: {question}"
         if refined_query and refined_query != question:
             question_section += f"\n(Refined as: {refined_query})"
+
+        if context.strip() == "":
+            return f"""{question_section}
+Instructions: Answer the question concisely. You have no additional context.
+"""
 
         return f"""{question_section}
 

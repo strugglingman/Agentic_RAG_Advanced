@@ -135,7 +135,9 @@ def build_langgraph_agent(
     # After tool execution, generate answer with tool results
     graph.add_edge("tool_calculator", "generate")
     graph.add_edge("tool_web_search", "generate")
-    graph.add_edge("direct_answer", "generate")
+
+    # After direct answer, verify the answer directly
+    graph.add_edge("direct_answer", "verify")
 
     # After verification, check if more plan steps remain
     # This is the key change for Plan-Execute pattern:

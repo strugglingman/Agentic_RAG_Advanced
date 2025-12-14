@@ -16,6 +16,7 @@ Usage:
 from enum import Enum
 from typing import Tuple, List, Dict, Any
 import json
+import logging
 from langgraph.checkpoint.postgres import PostgresSaver
 from psycopg_pool import ConnectionPool
 from psycopg.rows import dict_row
@@ -26,7 +27,9 @@ from src.services.langgraph_state import (
     create_runtime_context,
 )
 from src.services.agent_service import AgentService
-from src.services.langgraph_builder import build_langgraph_agent, set_checkpointer
+from src.services.langgraph_builder import build_langgraph_agent
+
+logger = logging.getLogger(__name__)
 
 
 class ExecutionRoute(str, Enum):
@@ -85,9 +88,11 @@ class QuerySupervisor:
                     )
                     self._checkpointer = PostgresSaver(self._connection_pool)
 
-                    print("✓ PostgreSQL checkpointer initialized with connection pool")
+                    print(
+                        "[OK] PostgreSQL checkpointer initialized with connection pool"
+                    )
                 except Exception as e:
-                    print(f"⚠ Could not initialize PostgreSQL checkpointer: {e}")
+                    print(f"[WARN] Could not initialize PostgreSQL checkpointer: {e}")
                     print("  Falling back to in-memory checkpointer")
 
     def close(self):
@@ -95,9 +100,9 @@ class QuerySupervisor:
         if self._connection_pool:
             try:
                 self._connection_pool.close()
-                print("✓ PostgreSQL connection pool closed")
+                print("[OK] PostgreSQL connection pool closed")
             except Exception as e:
-                print(f"⚠ Error closing connection pool: {e}")
+                print(f"[WARN] Error closing connection pool: {e}")
 
     async def process_query(
         self, query: str, context: Dict[str, Any]
@@ -322,22 +327,28 @@ class QuerySupervisor:
         all_contexts = []
 
         for step_num in sorted(step_contexts.keys()):
-            step_ctx = step_contexts[step_num]
-            ctx_type = step_ctx.get("type", "")
+            step_ctx_list = step_contexts[step_num]  # Now a list of contexts
 
-            if ctx_type == "retrieval":
-                # Add retrieved documents from this step
-                docs = step_ctx.get("docs", [])
-                all_contexts.extend(docs)
-            elif ctx_type == "tool":
-                # Add tool result as a context entry
-                tool_context = {
-                    "tool_name": step_ctx.get("tool_name", "unknown"),
-                    "result": step_ctx.get("result", ""),
-                    "args": step_ctx.get("args", {}),
-                    "step": step_num,
-                }
-                all_contexts.append(tool_context)
+            # Iterate through all contexts for this step (e.g., retrieve + web_search)
+            for step_ctx in step_ctx_list:
+                ctx_type = step_ctx.get("type", "")
+
+                if ctx_type == "retrieval":
+                    # Add retrieved documents from this step
+                    docs = step_ctx.get("docs", [])
+                    all_contexts.extend(docs)
+                elif ctx_type == "tool":
+                    # Add tool result as a context entry
+                    tool_context = {
+                        "tool_name": step_ctx.get("tool_name", "unknown"),
+                        "result": step_ctx.get("result", ""),
+                        "args": step_ctx.get("args", {}),
+                        "step": step_num,
+                    }
+                    all_contexts.append(tool_context)
+                elif ctx_type == "direct_answer":
+                    # Direct answer doesn't have contexts to return
+                    pass
 
         # Fallback: if step_contexts is empty, use legacy approach
         if not all_contexts:
