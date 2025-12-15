@@ -31,7 +31,7 @@ class Config:
     OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.2")
     OPENAI_TEMPERATURE = float(os.getenv("OPENAI_TEMPERATURE", "0.1"))
     OPENAI_KEY = os.getenv("OPENAI_API_KEY", "")
-    AGENT_MAX_ITERATIONS = int(os.getenv("AGENT_MAX_ITERATIONS", "5"))
+    AGENT_MAX_ITERATIONS = int(os.getenv("AGENT_MAX_ITERATIONS", "20"))
 
     # ==============================================================================
     # LangChain & LangSmith Tracing
@@ -54,7 +54,7 @@ class Config:
     # ==============================================================================
     # LangGraph Configuration
     # ==============================================================================
-    USE_LANGGRAPH = os.getenv("USE_LANGGRAPH", "true").lower() in {
+    USE_LANGGRAPH = os.getenv("USE_LANGGRAPH", "false").lower() in {
         "1",
         "true",
         "yes",
@@ -262,6 +262,14 @@ class Config:
         "true",
         "yes",
     }
+
+    # ==============================================================================
+    # Email Settings
+    # ==============================================================================
+    SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.office365.com")
+    SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+    SMTP_USER = os.getenv("SMTP_USER", "xinwei.wang@atex.com")
+    SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "12345678Aa!")
 
 
 class DevelopmentConfig(Config):

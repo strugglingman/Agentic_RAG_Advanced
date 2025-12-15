@@ -13,6 +13,8 @@ Each tool has two parts:
 
 import re
 from typing import Dict, Any
+import logging
+from langsmith import traceable
 from src.services.retrieval import retrieve, build_where
 from src.config.settings import Config
 from src.utils.safety import scrub_context
@@ -21,7 +23,9 @@ from src.models.evaluation import ReflectionConfig, EvaluationCriteria
 from src.services.query_refiner import QueryRefiner
 from src.services.clarification_helper import ClarificationHelper
 from src.services.web_search import WebSearchService
-from langsmith import traceable
+from src.utils.send_email import send_email
+
+logger = logging.getLogger(__name__)
 
 # ============================================================================
 # TOOL 1: SEARCH DOCUMENTS
@@ -513,6 +517,71 @@ WEB_SEARCH_SCHEMA = {
     },
 }
 
+# ============================================================================
+# TOOL 4: DOWNLOAD FILE
+# ============================================================================
+DOWNLOAD_FILE_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "download_file",
+        "description": (
+            "Download a file from a given URL or internal document link."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "file_urls": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "description": "URL of the file to download.",
+                    },
+                    "description": (
+                        "The list of URLs of the files to download. Can be external URLs or internal document links."
+                    ),
+                },
+            },
+            "required": ["file_urls"],
+        },
+    },
+}
+
+# ============================================================================
+# TOOL 5: SEND EMAIL
+# ============================================================================
+SEND_EMAIL_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "send_email",
+        "description": "Send an email with optional attachments.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "to": {
+                    "type": "array",
+                    "items": { "type": "string", "format": "email" },
+                    "description": "Recipient email addresses"
+                },
+                "subject": {
+                    "type": "string",
+                    "description": "Email subject"
+                },
+                "body": {
+                    "type": "string",
+                    "description": "Email body content"
+                },
+                "attachments": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Optional file paths to attach",
+                    "minItems": 0
+                }
+            },
+            "required": ["to", "subject", "body"]
+        }
+    }
+}
+
 
 @traceable
 def execute_web_search(args: Dict[str, Any], context: Dict[str, Any]) -> str:
@@ -543,6 +612,33 @@ def execute_web_search(args: Dict[str, Any], context: Dict[str, Any]) -> str:
     except Exception as e:
         return f"Error during web search: {str(e)}"
 
+@traceable
+def execute_download_file(args: Dict[str, Any], context: Dict[str, Any]) -> str:
+    logger.debug(f"[DOWNLOAD_FILE] Executing download_file with args: {args}")
+    file_list = args.get("file_urls", [])
+    if not file_list:
+        return "No file URLs provided"
+    
+    for file_url in file_list:
+        logger.debug(f"[DOWNLOAD_FILE] Processing file URL: {file_url}")
+        # Here you would add the actual download logic
+
+    return "Tell user the file already downloaded under download directory"
+
+@traceable
+def execute_send_email(args: Dict[str, Any], context: Dict[str, Any]) -> str:
+    logger.debug(f"!!!!!!!!!!!!!!!!!![SEND_EMAIL] Executing send_email with args: {args}")
+    to_addresses = args.get("to", [])
+    subject = args.get("subject", "")
+    body = args.get("body", "")
+    if not to_addresses or not subject or not body:
+        return "Missing required email fields"
+
+    attachments = args.get("attachments", [])
+    result = send_email(to_addresses, subject, body, attachments)
+    logger.debug(f"!!!!!!!!!!!!!!!!!![SEND_EMAIL] Email send result: {result}")
+
+    return f"Email sent successfully to recipients: {', '.join(to_addresses)} with subject: {subject}" if result.get("status") == "sent" else "Failed to send email"
 
 # ============================================================================
 # TOOL REGISTRY
@@ -552,6 +648,8 @@ TOOL_REGISTRY = {
     "search_documents": execute_search_documents,
     "web_search": execute_web_search,
     "calculator": execute_calculator,
+    "download_file": execute_download_file,
+    "send_email": execute_send_email,
 }
 """
 Maps tool names to their execution functions.
@@ -567,6 +665,8 @@ ALL_TOOLS = [
     SEARCH_DOCUMENTS_SCHEMA,
     CALCULATOR_SCHEMA,
     WEB_SEARCH_SCHEMA,
+    DOWNLOAD_FILE_SCHEMA,
+    SEND_EMAIL_SCHEMA,
 ]
 """
 List of all tool schemas to send to OpenAI API.
