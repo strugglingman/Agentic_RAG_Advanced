@@ -842,7 +842,7 @@ def create_direct_answer_node(
                 for h in conversation_history:
                     sanitized_msg = {
                         "role": h.get("role", "user"),
-                        "content": sanitize_text(h.get("content", ""), max_length=5000),
+                        "content": sanitize_text(h.get("content", ""), max_length=Config.ONE_HISTORY_MAX_TOKENS),
                     }
                     openai_messages.append(sanitized_msg)
             user_message = GenerationPrompts.build_user_message(step_query)
@@ -1153,7 +1153,7 @@ def create_generate_node(
                 for h in conversation_history:
                     sanitized_msg = {
                         "role": h.get("role", "user"),
-                        "content": sanitize_text(h.get("content", ""), max_length=5000),
+                        "content": sanitize_text(h.get("content", ""), max_length=Config.ONE_HISTORY_MAX_TOKENS),
                     }
                     openai_messages.append(sanitized_msg)
 

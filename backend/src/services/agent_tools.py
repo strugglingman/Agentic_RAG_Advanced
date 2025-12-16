@@ -627,7 +627,7 @@ def execute_download_file(args: Dict[str, Any], context: Dict[str, Any]) -> str:
 
 @traceable
 def execute_send_email(args: Dict[str, Any], context: Dict[str, Any]) -> str:
-    logger.debug(f"!!!!!!!!!!!!!!!!!![SEND_EMAIL] Executing send_email with args: {args}")
+    logger.debug(f"[SEND_EMAIL] Executing send_email with args: {args}")
     to_addresses = args.get("to", [])
     subject = args.get("subject", "")
     body = args.get("body", "")
@@ -636,9 +636,11 @@ def execute_send_email(args: Dict[str, Any], context: Dict[str, Any]) -> str:
 
     attachments = args.get("attachments", [])
     result = send_email(to_addresses, subject, body, attachments)
-    logger.debug(f"!!!!!!!!!!!!!!!!!![SEND_EMAIL] Email send result: {result}")
+    if result.get("status", "failed") == "failed":
+        logger.error(f"[SEND_EMAIL] Failed to send email: {result.get('error', 'Unknown error')}")
+        return f"Failed to send email: {result.get('error', 'Unknown error')}"
 
-    return f"Email sent successfully to recipients: {', '.join(to_addresses)} with subject: {subject}" if result.get("status") == "sent" else "Failed to send email"
+    return f"Email sent successfully to recipients: {', '.join(to_addresses)} with subject: {subject}"
 
 # ============================================================================
 # TOOL REGISTRY

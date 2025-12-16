@@ -144,6 +144,7 @@ class Config:
     # Note: For reasoning models (o1, gpt-5.2), this needs to be higher because
     # reasoning tokens count against this limit. Recommended: 8000-16000 for complex queries.
     CHAT_MAX_TOKENS = int(os.getenv("CHAT_MAX_TOKENS", "16000"))
+    ONE_HISTORY_MAX_TOKENS = int(os.getenv("ONE_HISTORY_MAX_TOKENS", "1500"))
 
     # ==============================================================================
     # File Upload Configuration
@@ -266,10 +267,10 @@ class Config:
     # ==============================================================================
     # Email Settings
     # ==============================================================================
-    SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.office365.com")
+    SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.outlook.com")
     SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
-    SMTP_USER = os.getenv("SMTP_USER", "xinwei.wang@atex.com")
-    SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "12345678Aa!")
+    SMTP_USER = os.getenv("SMTP_USER", "myname@outlook.com")
+    SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "12345!A")
 
 
 class DevelopmentConfig(Config):
