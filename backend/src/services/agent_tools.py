@@ -11,6 +11,7 @@ Each tool has two parts:
 - execute_xxx: The Python function that actually executes the tool
 """
 
+import os, tempfile, base64
 import re
 from typing import Dict, Any
 import logging
@@ -524,9 +525,7 @@ DOWNLOAD_FILE_SCHEMA = {
     "type": "function",
     "function": {
         "name": "download_file",
-        "description": (
-            "Download a file from a given URL or internal document link."
-        ),
+        "description": ("Download a file from a given URL or internal document link."),
         "parameters": {
             "type": "object",
             "properties": {
@@ -559,27 +558,21 @@ SEND_EMAIL_SCHEMA = {
             "properties": {
                 "to": {
                     "type": "array",
-                    "items": { "type": "string", "format": "email" },
-                    "description": "Recipient email addresses"
+                    "items": {"type": "string", "format": "email"},
+                    "description": "Recipient email addresses",
                 },
-                "subject": {
-                    "type": "string",
-                    "description": "Email subject"
-                },
-                "body": {
-                    "type": "string",
-                    "description": "Email body content"
-                },
+                "subject": {"type": "string", "description": "Email subject"},
+                "body": {"type": "string", "description": "Email body content"},
                 "attachments": {
                     "type": "array",
-                    "items": { "type": "string" },
+                    "items": {"type": "string"},
                     "description": "Optional file paths to attach",
-                    "minItems": 0
-                }
+                    "minItems": 0,
+                },
             },
-            "required": ["to", "subject", "body"]
-        }
-    }
+            "required": ["to", "subject", "body"],
+        },
+    },
 }
 
 
@@ -612,35 +605,169 @@ def execute_web_search(args: Dict[str, Any], context: Dict[str, Any]) -> str:
     except Exception as e:
         return f"Error during web search: {str(e)}"
 
+
 @traceable
 def execute_download_file(args: Dict[str, Any], context: Dict[str, Any]) -> str:
-    logger.debug(f"[DOWNLOAD_FILE] Executing download_file with args: {args}")
+    # logger.debug(f"[DOWNLOAD_FILE] Executing download_file with args: {args}")
     file_list = args.get("file_urls", [])
     if not file_list:
         return "No file URLs provided"
-    
+
     for file_url in file_list:
         logger.debug(f"[DOWNLOAD_FILE] Processing file URL: {file_url}")
         # Here you would add the actual download logic
 
     return "Tell user the file already downloaded under download directory"
 
+
 @traceable
 def execute_send_email(args: Dict[str, Any], context: Dict[str, Any]) -> str:
-    logger.debug(f"[SEND_EMAIL] Executing send_email with args: {args}")
+    """
+    Execute the send_email tool.
+
+    Args:
+        args: Arguments from LLM containing:
+            - to (list[str]): Recipient email addresses
+            - subject (str): Email subject
+            - body (str): Email body content
+            - attachments (list[str], optional): Attachment identifiers
+              Can be: "chat_attachment_0", "chat_attachment_1", etc. to use
+              files uploaded in the current chat message
+
+        context: System context containing:
+            - attachments (list[dict]): Files uploaded by user in chat, each with:
+                - type: "image" | "file"
+                - filename: Original filename
+                - mime_type: MIME type
+                - data: Base64 encoded content
+
+    Attachment Flow:
+    ================
+    1. User uploads file in chat UI → frontend sends as base64 in payload.attachments
+    2. Backend stores in context["attachments"]
+    3. LLM can reference these using "chat_attachment_0", "chat_attachment_1", etc.
+    4. This function resolves references and passes to send_email utility
+
+    TODO Implementation Steps:
+    ==========================
+    Step 1: Parse attachment references from args
+        - Check if attachments list contains "chat_attachment_N" patterns
+        - Map N to context["attachments"][N]
+
+    Step 2: Convert base64 attachments to temp files (if needed by send_email)
+        - Decode base64 data
+        - Save to temp file with original filename
+        - Or pass base64 directly if send_email supports it
+
+    Step 3: Handle mixed attachments
+        - Some might be chat attachments ("chat_attachment_0")
+        - Some might be file paths (existing behavior)
+        - Merge both lists for send_email
+
+    Step 4: Cleanup temp files after send (if created)
+    """
     to_addresses = args.get("to", [])
     subject = args.get("subject", "")
     body = args.get("body", "")
     if not to_addresses or not subject or not body:
         return "Missing required email fields"
 
-    attachments = args.get("attachments", [])
-    result = send_email(to_addresses, subject, body, attachments)
+    # Get attachment references from LLM args
+    attachment_refs = args.get("attachments", [])
+    logger.debug(
+        f"!!!!!!!!!!!!!!![SEND_EMAIL] Attachment references: {attachment_refs}"
+    )
+    # Get chat attachments from context (uploaded by user in chat)
+    chat_attachments = context.get("attachments", [])
+    attas = [atta.get("filename", "") for atta in chat_attachments]
+    logger.debug(f"[SEND_EMAIL] Original chat attachments: {attas}")
+
+    real_attachments = []
+    for ref in attachment_refs:
+        if ref.startswith("chat_attachment_"):
+            idx = int(ref.split("_")[-1])
+            if idx < len(chat_attachments):
+                real_atta = chat_attachments[idx]
+                atta_path = _save_attachment_to_temp(real_atta)
+                real_attachments.append(atta_path)
+        else:
+            # Existing file path reference
+            real_attachments.append(ref)
+
+    logger.debug(f"[SEND_EMAIL] Resolved attachments: {real_attachments}")
+
+    # Current implementation: pass attachment refs as-is (file paths only)
+    result = send_email(to_addresses, subject, body, real_attachments)
+    # Clean up temp files created for attachments
+    _cleanup_temp_attachments(real_attachments)
+
     if result.get("status", "failed") == "failed":
-        logger.error(f"[SEND_EMAIL] Failed to send email: {result.get('error', 'Unknown error')}")
+        logger.error(
+            f"[SEND_EMAIL] Failed to send email: {result.get('error', 'Unknown error')}"
+        )
         return f"Failed to send email: {result.get('error', 'Unknown error')}"
 
     return f"Email sent successfully to recipients: {', '.join(to_addresses)} with subject: {subject}"
+
+
+# ============================================================================
+# ATTACHMENT HELPERS (TODO: Implement these)
+# ============================================================================
+
+
+def _save_attachment_to_temp(attachment: Dict[str, Any]) -> str:
+    """
+    Save a base64 attachment to a temporary file.
+
+    Args:
+        attachment: Dict with keys:
+            - filename: Original filename
+            - data: Base64 encoded content
+            - mime_type: MIME type
+
+    Returns:
+        Path to temporary file
+
+    TODO Implementation:
+        import tempfile
+        import base64
+        import os
+
+        # Create temp file with original extension
+        _, ext = os.path.splitext(attachment["filename"])
+        with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as f:
+            f.write(base64.b64decode(attachment["data"]))
+            return f.name
+    """
+    _, ext = os.path.splitext(attachment.get("filename", ""))
+    with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as f:
+        f.write(base64.b64decode(attachment.get("data", "")))
+        return f.name
+
+
+def _cleanup_temp_attachments(temp_paths: list) -> None:
+    """
+    Remove temporary attachment files after email is sent.
+
+    Args:
+        temp_paths: List of temporary file paths to delete
+
+    TODO Implementation:
+        import os
+        for path in temp_paths:
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+            except Exception as e:
+                logger.warning(f"Failed to cleanup temp file {path}: {e}")
+    """
+    for path in temp_paths:
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except Exception as e:
+            logger.warning(f"Failed to cleanup temp file {path}: {str(e)}")
+
 
 # ============================================================================
 # TOOL REGISTRY

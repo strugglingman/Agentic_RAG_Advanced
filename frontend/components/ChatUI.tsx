@@ -7,7 +7,9 @@ import ShimmerBubble from './ShimmerBubble';
 import { looksLikeInjection } from '../lib/safety';
 
 type Role = 'user' | 'assistant';
-type Msg = { id?: string; role: Role; content: string; created_at?: string; ts?: number };
+type Msg = { id?: string; role: Role; content: string; created_at?: string; ts?: number; attachments?: AttachmentPreview[] };
+type AttachmentPreview = { name: string; type: string; url: string; data?: string };
+type AttachmentPayload = { type: 'image' | 'file'; filename: string; mime_type: string; data: string };
 type Context = { bm25: number; chunk: string; chunk_id: string; dept_id: string;
   ext: string; file_for_user: boolean; file_id: string; hybrid: number; page: number;
   rerank: number; sem_sim: number; size_kb: number; source: string; tags: string;
@@ -40,8 +42,10 @@ export default function ChatPage() {
   const [isRecording, setIsRecording] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [language, setLanguage] = useState('en-US');
+  const [attachments, setAttachments] = useState<File[]>([]);
 
   const scrollRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const streamingRef = useRef(false);
   const speakingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -148,23 +152,51 @@ export default function ChatPage() {
   }
 
   async function onSend() {
-    if (!input.trim() || streamingRef.current) return;
-    const { flagged, error } = looksLikeInjection(input); 
+    if ((!input.trim() && attachments.length === 0) || streamingRef.current) return;
+    const { flagged, error } = looksLikeInjection(input);
     if (flagged) {
       const msgs: Msg[] = [...messages, { role: 'user', content: error, ts: Date.now() }];
       setMessages(msgs);
       setContexts([]);
       setInput('');
+      setAttachments([]);
       return;
     }
 
     streamingRef.current = true;
     setBusy(true);
 
+    // Convert attachments to base64 for API payload
+    const attachmentPayloads: AttachmentPayload[] = await Promise.all(
+      attachments.map(async (file) => {
+        const base64 = await fileToBase64(file);
+        return {
+          type: file.type.startsWith('image/') ? 'image' as const : 'file' as const,
+          filename: file.name,
+          mime_type: file.type,
+          data: base64,
+        };
+      })
+    );
+
+    // Create preview URLs for displaying in chat
+    const attachmentPreviews: AttachmentPreview[] = attachments.map(file => ({
+      name: file.name,
+      type: file.type,
+      url: URL.createObjectURL(file),
+    }));
+
     const ts = Date.now();
-    const next: Msg[] = [...messages, { role: 'user', content: input.trim(), ts }, { role: 'assistant', content: '', ts }];
+    const userMessage: Msg = {
+      role: 'user',
+      content: input.trim(),
+      ts,
+      attachments: attachmentPreviews.length > 0 ? attachmentPreviews : undefined
+    };
+    const next: Msg[] = [...messages, userMessage, { role: 'assistant', content: '', ts }];
     setMessages(next);
     setInput('');
+    setAttachments([]);
 
     const messages_payload = next.filter(m => m.role == 'user' || m.content.trim());
     const filters_payload = [];
@@ -189,7 +221,8 @@ export default function ChatPage() {
     const payload = {
       messages: messages_payload,
       conversation_id: conversationId,
-      filters: filters_payload.length ? filters_payload : undefined
+      filters: filters_payload.length ? filters_payload : undefined,
+      attachments: attachmentPayloads.length > 0 ? attachmentPayloads : undefined
     };
 
     let startContext = false;
@@ -272,6 +305,44 @@ export default function ChatPage() {
     }
   };
 
+  // File upload handlers
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files) return;
+
+    const validFiles: File[] = [];
+    const maxSize = 10 * 1024 * 1024; // 10MB
+
+    Array.from(files).forEach(file => {
+      if (file.size > maxSize) {
+        alert(`${file.name} is too large. Max 10MB.`);
+        return;
+      }
+      validFiles.push(file);
+    });
+
+    setAttachments(prev => [...prev, ...validFiles]);
+    e.target.value = ''; // Reset input to allow re-selecting same file
+  };
+
+  const removeAttachment = (index: number) => {
+    setAttachments(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const fileToBase64 = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.readAsDataURL(file);
+      reader.onload = () => {
+        const result = reader.result as string;
+        // Remove data URL prefix (e.g., "data:image/png;base64,")
+        const base64 = result.split(',')[1];
+        resolve(base64);
+      };
+      reader.onerror = reject;
+    });
+  };
+
   return (
     <div className="h-full w-full bg-neutral-100 flex justify-center">
       <div className="flex h-full w-full max-w-6xl flex-col border-x border-neutral-200 bg-white shadow-sm">
@@ -321,6 +392,38 @@ export default function ChatPage() {
                       m.role === 'user' ? 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900' : 'bg-white border shadow-sm dark:bg-neutral-800 dark:border-neutral-700 dark:text-neutral-100'
                     )}
                   >
+                    {/* Attachments preview in message */}
+                    {m.attachments && m.attachments.length > 0 && (
+                      <div className="flex flex-wrap gap-2 mb-2">
+                        {m.attachments.map((att, idx) => (
+                          <div
+                            key={idx}
+                            className="relative cursor-pointer"
+                            onClick={() => window.open(att.url, '_blank')}
+                            title={`Click to open ${att.name}`}
+                          >
+                            {att.type.startsWith('image/') ? (
+                              <img
+                                src={att.url}
+                                alt={att.name}
+                                className="h-24 w-24 object-cover rounded-lg border border-neutral-600 hover:opacity-80 transition"
+                              />
+                            ) : (
+                              <div className="h-16 w-20 rounded-lg border border-neutral-600 bg-neutral-800 flex flex-col items-center justify-center p-2 hover:bg-neutral-700 transition">
+                                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-neutral-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                                  <polyline points="14 2 14 8 20 8" />
+                                </svg>
+                                <span className="text-[10px] text-neutral-400 mt-1 truncate max-w-full">{att.name.split('.').pop()?.toUpperCase()}</span>
+                              </div>
+                            )}
+                            <div className="absolute bottom-0 left-0 right-0 bg-black/60 text-white text-[9px] px-1 py-0.5 truncate rounded-b-lg pointer-events-none">
+                              {att.name}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                     <div className={cls('mt-1 text-[16px]', 'whitespace-pre-wrap')}>{m.content}</div>
                     <div className={cls('mt-1 text-[12px]', m.role === 'user' ? 'text-neutral-300 dark:text-neutral-600' : 'text-neutral-500 dark:text-neutral-400')}>
                       {tstr(m)}
@@ -368,8 +471,57 @@ export default function ChatPage() {
               e.preventDefault();
               void onSend();
             }}
-            className="mx-auto flex max-w-3xl items-end gap-2 px-4 py-3"
+            className="mx-auto flex max-w-3xl flex-col gap-2 px-4 py-3"
           >
+          {/* Attachment Preview */}
+          {attachments.length > 0 && (
+            <div className="flex flex-wrap gap-2 px-1">
+              {attachments.map((file, idx) => (
+                <div key={idx} className="relative group">
+                  {file.type.startsWith('image/') ? (
+                    <img
+                      src={URL.createObjectURL(file)}
+                      alt={file.name}
+                      onClick={() => window.open(URL.createObjectURL(file), '_blank')}
+                      className="h-16 w-16 object-cover rounded-lg border cursor-pointer hover:opacity-80 transition"
+                    />
+                  ) : (
+                    <div
+                      onClick={() => window.open(URL.createObjectURL(file), '_blank')}
+                      className="h-16 w-16 rounded-lg border bg-neutral-100 flex flex-col items-center justify-center cursor-pointer hover:bg-neutral-200 transition"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-neutral-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                        <polyline points="14 2 14 8 20 8" />
+                      </svg>
+                      <span className="text-[10px] text-neutral-500 mt-1 truncate max-w-[56px] px-1">
+                        {file.name.split('.').pop()?.toUpperCase()}
+                      </span>
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); removeAttachment(idx); }}
+                    className="absolute -top-2 -right-2 h-5 w-5 rounded-full bg-red-500 text-white text-xs flex items-center justify-center opacity-0 group-hover:opacity-100 transition"
+                  >
+                    ×
+                  </button>
+                  <div className="absolute bottom-0 left-0 right-0 bg-black/50 text-white text-[9px] px-1 truncate rounded-b-lg pointer-events-none">
+                    {file.name}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+          {/* Hidden file input */}
+          <input
+            type="file"
+            ref={fileInputRef}
+            onChange={handleFileSelect}
+            multiple
+            accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.csv,.txt"
+            className="hidden"
+          />
           <div className="flex items-end gap-1 w-full">
             <textarea
               className="text-[16px] flex-grow resize-y rounded-xl border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-neutral-900/20 w-full md:w-[85%]"
@@ -380,10 +532,23 @@ export default function ChatPage() {
             />
             <button
               type="submit"
-              disabled={busy || !input.trim()}
+              disabled={busy || (!input.trim() && attachments.length === 0)}
               className="text-[18px] h-10 px-6 rounded-xl bg-neutral-900 text-white text-sm disabled:opacity-50"
             >
               Send
+            </button>
+            {/* Attach button */}
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={busy}
+              className="h-10 px-3 rounded-xl text-sm transition-all flex items-center gap-1 hover:bg-neutral-100"
+              title="Attach files or images"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-neutral-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+              </svg>
+              <span className="text-neutral-500 hidden sm:inline">Attach</span>
             </button>
             <button
               type="button"

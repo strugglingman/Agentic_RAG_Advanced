@@ -1,6 +1,7 @@
 """Chat routes"""
 
 import json
+import logging
 from flask import Blueprint, request, jsonify, Response, g
 from openai import OpenAI
 from src.services.query_supervisor import QuerySupervisor
@@ -10,6 +11,8 @@ from src.config.settings import Config
 from src.utils.safety import looks_like_injection, scrub_context
 from src.utils.stream_utils import stream_text_smart
 from src.services.conversation_service import ConversationService
+
+logger = logging.getLogger(__name__)
 
 chat_bp = Blueprint("chat", __name__)
 
@@ -218,6 +221,8 @@ async def chat_agent(collection):
             conversation_id, Config.REDIS_CACHE_LIMIT
         )
 
+        attachments = payload.get("attachments", [])
+
         # Build context for agent (all system parameters)
         agent_context = {
             "collection": collection,
@@ -231,6 +236,7 @@ async def chat_agent(collection):
             "openai_client": openai_client,  # For self-reflection LLM calls
             "model": Config.OPENAI_MODEL,
             "temperature": Config.OPENAI_TEMPERATURE,
+            "attachments": attachments,  # Files that uploaded by user in the chat window
         }
 
         # Create agent
