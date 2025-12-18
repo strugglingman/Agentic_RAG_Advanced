@@ -339,9 +339,12 @@ class AgentService:
                 "\n\nThe user has attached the following files in the chat:\n"
                 f"{att_list}\n"
                 "IMPORTANT: When using send_email tool:\n"
-                f"- By DEFAULT, attach ALL uploaded files: {all_attachment_refs}\n"
-                "- Only exclude files if the user EXPLICITLY says not to attach them\n"
+                "- If the user specifies which files to attach (e.g., 'send file 2 and 3', 'attach the PDF only'), "
+                "use ONLY those specific files they mentioned\n"
+                "- If the user does NOT specify which files, attach ALL uploaded files by default: "
+                f"{all_attachment_refs}\n"
                 "- Use the reference names 'chat_attachment_0', 'chat_attachment_1', etc. in the attachments parameter\n"
+                "- Pay careful attention to file selection keywords like 'only', 'just', 'except', etc.\n"
             )
 
         if images_content:
@@ -368,8 +371,6 @@ class AgentService:
                 user_msg_log["content"][i]["image_url"]["url"] = (
                     user_msg_log["content"][i]["image_url"]["url"][:100] + "..."
                 )
-        logger.debug(f"*******************Built initial user msg: {user_msg_log}")
-        logger.debug(f"System msg: {system_msg}")
 
         if messages_history:
             return [system_msg] + messages_history + [user_msg]
@@ -480,21 +481,25 @@ def _extract_text_from_attachment(
             [page.extract_text() for page in reader.pages if page.extract_text()]
         )
         return "OK", text
-    elif filetype == "docx":
+    if filetype == "docx":
         docx_types_data = base64.b64decode(data)
         reader = Document(io.BytesIO(docx_types_data))
         text = "\n".join([p.text for p in reader.paragraphs])
         return "OK", text
-    elif filetype in ["xlsx", "xls"]:
+    if filetype in ["xlsx", "xls"]:
         try:
             excel_bytes_data = base64.b64decode(data)
-            workbook = openpyxl.load_workbook(io.BytesIO(excel_bytes_data), read_only=True, data_only=True)
+            workbook = openpyxl.load_workbook(
+                io.BytesIO(excel_bytes_data), read_only=True, data_only=True
+            )
             text_parts = []
             for sheet_name in workbook.sheetnames:
                 sheet = workbook[sheet_name]
                 text_parts.append(f"\n--- Sheet: {sheet_name} ---")
                 for row in sheet.iter_rows(values_only=True):
-                    row_text = "\t".join([str(cell) if cell is not None else "" for cell in row])
+                    row_text = "\t".join(
+                        [str(cell) if cell is not None else "" for cell in row]
+                    )
                     if row_text.strip():
                         text_parts.append(row_text)
             workbook.close()
@@ -502,8 +507,8 @@ def _extract_text_from_attachment(
             return "OK", text
         except Exception as e:
             return "ERROR", f"[Error extracting spreadsheet: {str(e)}]"
-    elif filetype in ["txt", "csv", "md"]:
+    if filetype in ["txt", "csv", "md"]:
         text = base64.b64decode(data).decode("utf-8", errors="ignore")
         return "OK", text
-    else:
-        return "UNSUPPORTED", f"[Unsupported file type: {filetype}]"
+
+    return "UNSUPPORTED", f"[Unsupported file type: {filetype}]"

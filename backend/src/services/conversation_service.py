@@ -209,7 +209,10 @@ class ConversationService:
             cache_key = self._get_cache_key(conversation_id)
             cached_messages = await self.redis.lrange(cache_key, 0, limit - 1)
             if cached_messages:
-                return [json.loads(msg) for msg in cached_messages]
+                latest_messages = [json.loads(msg) for msg in cached_messages]
+                canonical_messages = list(reversed(latest_messages))
+
+                return canonical_messages
         except Exception as e:
             print(f"Warning: Failed to read from Redis cache: {str(e)}")
 
@@ -231,7 +234,9 @@ class ConversationService:
             except Exception as e:
                 print(f"Warning: Failed to populate Redis cache: {str(e)}")
 
-        return [m.model_dump() for m in messages]
+        latest_messages = [m.model_dump() for m in messages]
+        canonical_messages = list(reversed(latest_messages))
+        return canonical_messages
 
     async def load_message_history_db(
         self, conversation_id: str, limit: int = Config.CONVERSATION_MESSAGE_LIMIT
@@ -239,11 +244,11 @@ class ConversationService:
         await self.connect()
         query = {
             "where": {"conversation_id": conversation_id},
-            "order": {"created_at": "asc"},
+            "order": {"created_at": "desc"},
             "take": limit,
         }
         messages = await self.prisma_client.message.find_many(**query)
-
+        messages.reverse()
         return [m.model_dump() for m in messages]
 
     async def get_user_conversations_list(

@@ -4,6 +4,8 @@ import json
 import logging
 from flask import Blueprint, request, jsonify, Response, g
 from openai import OpenAI
+from redis import asyncio as redis
+import asyncio
 from src.services.query_supervisor import QuerySupervisor
 from src.middleware.auth import require_identity
 from src.services.retrieval import retrieve, build_where, build_prompt
@@ -11,6 +13,7 @@ from src.config.settings import Config
 from src.utils.safety import looks_like_injection, scrub_context
 from src.utils.stream_utils import stream_text_smart
 from src.services.conversation_service import ConversationService
+from src.config.redis_client import get_redis
 
 logger = logging.getLogger(__name__)
 
@@ -221,7 +224,35 @@ async def chat_agent(collection):
             conversation_id, Config.REDIS_CACHE_LIMIT
         )
 
+        # logger.debug(
+        #     f"[CHAT_AGENT] Conversation history loaded: {conversation_history}"
+        # )
+
         attachments = payload.get("attachments", [])
+
+        # Attachment persistence: cache in Redis to persist across conversation turns
+        # This solves the problem where user uploads files in turn 1, LLM asks for
+        # confirmation, then in turn 2 user says "yes" but doesn't re-upload files
+        attachments_cache_key = f"attachments:{conversation_id}"
+
+        try:
+            # Create fresh Redis connection
+            redis_client = await redis.from_url(Config.REDIS_URL, decode_responses=True)
+            if attachments:
+                # User uploaded new files - cache them
+                await redis_client.setex(
+                    attachments_cache_key, 3600, json.dumps(attachments)
+                )
+            else:
+                # No new uploads - try to retrieve from cache
+                cached_attachments = await redis_client.get(attachments_cache_key)
+                if cached_attachments:
+                    attachments = json.loads(cached_attachments)
+        except:
+            pass
+        finally:
+            if redis_client:
+                await redis_client.close()
 
         # Build context for agent (all system parameters)
         agent_context = {
@@ -239,17 +270,7 @@ async def chat_agent(collection):
             "attachments": attachments,  # Files that uploaded by user in the chat window
         }
 
-        # Create agent
-        # agent = AgentService(
-        #     openai_client,
-        #     max_iterations=int(Config.AGENT_MAX_ITERATIONS),
-        #     model=Config.OPENAI_MODEL,
-        #     temperature=Config.OPENAI_TEMPERATURE,
-        # )
-
         def generate():
-            import asyncio
-
             answer_parts = []
             try:
                 # Run agent with streaming
