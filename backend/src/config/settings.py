@@ -272,6 +272,13 @@ class Config:
     SMTP_USER = os.getenv("SMTP_USER", "myname@outlook.com")
     SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "12345!A")
 
+    # ==============================================================================
+    # Download Settings
+    # ==============================================================================
+    DOWNLOAD_BASE = os.getenv("DOWNLOAD_BASE", "downloads")
+    MAX_DOWNLOAD_SIZE_MB = float(os.getenv("MAX_DOWNLOAD_SIZE_MB", "100"))
+    DOWNLOAD_TIMEOUT = int(os.getenv("DOWNLOAD_TIMEOUT", "30"))  # seconds
+
 
 class DevelopmentConfig(Config):
     """Development configuration"""

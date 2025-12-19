@@ -24,6 +24,7 @@ from src.routes.ingest import ingest_bp
 from src.routes.files import files_bp
 from src.routes.org import org_bp
 from src.routes.conversations import conversations_bp
+from src.routes.downloads import downloads_bp
 
 
 def get_limiter_key():
@@ -128,6 +129,7 @@ def create_app(config_name="development"):
     app.register_blueprint(conversations_bp)
     app.register_blueprint(files_bp)
     app.register_blueprint(org_bp)
+    app.register_blueprint(downloads_bp)
 
     # Register blueprints that need collection dependency
     # We need to wrap the route functions to inject collection

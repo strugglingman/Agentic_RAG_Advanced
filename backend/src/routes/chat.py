@@ -33,7 +33,6 @@ async def chat(collection):
     """Chat endpoint with RAG retrieval."""
     dept_id = g.identity.get("dept_id", "")
     user_id = g.identity.get("user_id", "")
-    print("0" * 20)
 
     if not dept_id or not user_id:
         return jsonify({"error": "No organization ID or user ID provided"}), 400

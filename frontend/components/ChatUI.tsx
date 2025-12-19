@@ -5,6 +5,7 @@ import { useFilters } from './filters-context';
 import { useChat } from './chat-context';
 import ShimmerBubble from './ShimmerBubble';
 import { looksLikeInjection } from '../lib/safety';
+import { MarkdownRenderer } from './MarkdownRenderer';
 
 type Role = 'user' | 'assistant';
 type Msg = { id?: string; role: Role; content: string; created_at?: string; ts?: number; attachments?: AttachmentPreview[] };
@@ -230,12 +231,34 @@ export default function ChatPage() {
     try {
       setContexts([]);
       for await (const chunk of streamChat(payload)) {
-        if (chunk.includes('__CONTEXT__:') || startContext) {
+        // Check if this chunk contains the context marker
+        if (chunk.includes('__CONTEXT__:')) {
           startContext = true;
-          contextStr += chunk;
-        }
+          // Split the chunk: text before marker goes to message, rest goes to context
+          const contextIndex = chunk.indexOf('__CONTEXT__:');
+          const textPart = chunk.substring(0, contextIndex);
+          const contextPart = chunk.substring(contextIndex);
 
-        if (!startContext) {
+          // Add text part to message if it exists
+          if (textPart) {
+            setMessages(curr => {
+              const copy = [...curr];
+              if (!copy.length) return copy;
+              copy[copy.length - 1] = {
+                ...copy[copy.length - 1],
+                content: copy[copy.length - 1].content + textPart,
+              };
+              return copy;
+            });
+          }
+
+          // Start accumulating context
+          contextStr += contextPart;
+        } else if (startContext) {
+          // Already in context mode, add to context string
+          contextStr += chunk;
+        } else {
+          // Normal message chunk, add to message
           setMessages(curr => {
             const copy = [...curr];
             if (!copy.length) return copy;
@@ -424,7 +447,9 @@ export default function ChatPage() {
                         ))}
                       </div>
                     )}
-                    <div className={cls('mt-1 text-[16px]', 'whitespace-pre-wrap')}>{m.content}</div>
+                    <div className={cls('mt-1 text-[16px]')}>
+                      <MarkdownRenderer content={m.content} />
+                    </div>
                     <div className={cls('mt-1 text-[12px]', m.role === 'user' ? 'text-neutral-300 dark:text-neutral-600' : 'text-neutral-500 dark:text-neutral-400')}>
                       {tstr(m)}
                     </div>

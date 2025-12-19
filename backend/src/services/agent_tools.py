@@ -13,8 +13,12 @@ Each tool has two parts:
 
 import os, tempfile, base64
 import re
+from datetime import datetime
 from typing import Dict, Any
 import logging
+from urllib.parse import urlparse
+import urllib.parse
+import requests
 from langsmith import traceable
 from src.services.retrieval import retrieve, build_where
 from src.config.settings import Config
@@ -608,16 +612,231 @@ def execute_web_search(args: Dict[str, Any], context: Dict[str, Any]) -> str:
 
 @traceable
 def execute_download_file(args: Dict[str, Any], context: Dict[str, Any]) -> str:
-    # logger.debug(f"[DOWNLOAD_FILE] Executing download_file with args: {args}")
+    """
+    Execute the download_file tool - Downloads files from URLs to server and returns download links.
+
+    Architecture:
+    =============
+    User asks "download this PDF" → LLM calls download_file → Server downloads →
+    Server saves to downloads/{user_id}/{timestamp}_{filename} → Returns download URL →
+    User sees clickable link in chat
+
+    Args:
+        args: Arguments from LLM containing:
+            - file_urls (list[str]): List of URLs to download
+
+        context: System context containing:
+            - user_id (str): Current user ID for directory organization
+            - dept_id (str): Department ID (optional, for multi-tenancy)
+
+    Returns:
+        str: Success message with download links OR error message
+
+    Example output:
+        "Downloaded 2 files:
+        👉 [南京著名景点简介.pdf](/downloads/user123/20250118_120530_nanjing.pdf)
+        👉 [销售报告.xlsx](/downloads/user123/20250118_120531_sales.xlsx)"
+
+    TODO Implementation Steps:
+    ==========================
+    Step 1: Validate inputs
+        - Check if file_urls list is not empty
+        - Get user_id from context (required for directory structure)
+        - Return error if user_id missing: "Error: User ID not found in context"
+
+    Step 2: Setup downloads directory
+        - Create base downloads directory: DOWNLOAD_BASE = "downloads"
+        - Create user-specific subdirectory: downloads/{user_id}/
+        - Use os.makedirs(path, exist_ok=True) to ensure directory exists
+        - Example: downloads/user123/
+
+    Step 3: Download each file with safety checks
+        For each file_url in file_urls:
+            a) Validate URL format
+                - Use urllib.parse.urlparse to check scheme is http/https
+                - Reject file:// or other dangerous schemes
+                - Return error: "Invalid URL scheme: {url}"
+
+            b) Check file size before downloading (HEAD request)
+                - Make HEAD request: requests.head(url, timeout=10)
+                - Get Content-Length header
+                - MAX_DOWNLOAD_SIZE = 100 * 1024 * 1024  # 100MB
+                - If size > MAX_DOWNLOAD_SIZE: skip with error message
+
+            c) Download file content
+                - Use requests.get(url, stream=True, timeout=30)
+                - Check response.status_code == 200
+                - IMPORTANT: Must use stream=True to enable chunked reading
+
+            d) Extract filename and sanitize
+                - Try Content-Disposition header first
+                - Fallback to URL path: url.split("/")[-1]
+                - Decode URL encoding: urllib.parse.unquote(filename)
+                - Sanitize: Remove dangerous characters, path traversal attempts
+                - Replace spaces/special chars with underscores
+
+            e) Generate unique filename
+                - Add timestamp prefix: datetime.now().strftime("%Y%m%d_%H%M%S")
+                - Format: {timestamp}_{sanitized_filename}
+                - Example: "20250118_120530_report.pdf"
+
+            f) Save file to disk
+                - Full path: downloads/{user_id}/{timestamped_filename}
+                - MUST use chunked writing to preserve file size and save memory:
+                  with open(path, "wb") as f:
+                      for chunk in response.iter_content(chunk_size=8192):
+                          if chunk:
+                              f.write(chunk)
+                - DO NOT use: f.write(response.content) - loads entire file into memory
+
+            g) Generate download URL
+                - Format: /downloads/{user_id}/{timestamped_filename}
+                - URL-encode filename component for safety
+                - Store in results list: (original_url, download_url, filename)
+
+    Step 4: Build response message for LLM
+        - Count successful downloads
+        - Format markdown links: [filename](download_url)
+        - Add emoji: "👉 [filename.pdf](url)"
+        - Handle errors: "⚠️ Failed to download: {url} - {error}"
+        - Return formatted string that LLM will show to user
+
+    Step 5: Error handling
+        - Wrap entire function in try/except
+        - Catch requests.RequestException for network errors
+        - Catch IOError for file system errors
+        - Return user-friendly error messages
+        - Log errors with logger.error() for debugging
+
+    Security Considerations:
+    ========================
+    - Validate URL schemes (only http/https)
+    - Sanitize filenames (no path traversal: ../, \\)
+    - Check file size limits (prevent disk fill attacks)
+    - Use user-specific directories (prevent file access across users)
+    - Set download timeout (prevent hanging requests)
+    - Validate content types if needed (optional)
+
+    Directory Structure:
+    ====================
+    downloads/
+    ├── user123/
+    │   ├── 20250118_120530_report.pdf
+    │   ├── 20250118_120545_image.png
+    │   └── ...
+    └── user456/
+        └── ...
+
+    Example Usage:
+    ==============
+    User: "Please download this PDF: https://example.com/report.pdf"
+    LLM calls: download_file(file_urls=["https://example.com/report.pdf"])
+    Server downloads → Saves to downloads/user123/20250118_120530_report.pdf
+    Returns: "Downloaded 1 file:\\n👉 [report.pdf](/downloads/user123/20250118_120530_report.pdf)"
+    LLM shows: "Downloaded successfully! 👉 [report.pdf](/downloads/user123/20250118_120530_report.pdf)"
+    """
+    # TODO: Implement download_file logic following the steps above
+    # For now, return placeholder
     file_list = args.get("file_urls", [])
     if not file_list:
         return "No file URLs provided"
 
-    for file_url in file_list:
-        logger.debug(f"[DOWNLOAD_FILE] Processing file URL: {file_url}")
-        # Here you would add the actual download logic
+    user_id = context.get("user_id")
+    if not user_id:
+        return "Error: User ID not found in context"
 
-    return "Tell user the file already downloaded under download directory"
+    os.makedirs(f"{Config.DOWNLOAD_BASE}/{user_id}/", exist_ok=True)
+    results = []
+    errors = []
+
+    for file_url in file_list:
+        try:
+            logger.debug(f"[DOWNLOAD_FILE] File URL: {file_url}")
+            parsed_url = urlparse(file_url)
+            if parsed_url.scheme not in ("http", "https"):
+                errors.append(f"⚠️ Invalid URL scheme: {file_url}")
+                continue
+
+            # Check file size before downloading
+            try:
+                request_header = requests.head(
+                    file_url, timeout=10, allow_redirects=True
+                )
+                content_length = request_header.headers.get("Content-Length", 0)
+                if Config.MAX_DOWNLOAD_SIZE_MB and content_length:
+                    file_size_mb = int(content_length) / (1024 * 1024)
+                    if file_size_mb > Config.MAX_DOWNLOAD_SIZE_MB:
+                        errors.append(
+                            f"⚠️ File too large: {file_url} ({file_size_mb:.1f}MB > {Config.MAX_DOWNLOAD_SIZE_MB}MB)"
+                        )
+                        continue
+            except requests.RequestException:
+                # HEAD request failed, try downloading anyway
+                pass
+
+            # Download file
+            res = requests.get(
+                file_url,
+                stream=True,
+                timeout=Config.DOWNLOAD_TIMEOUT,
+                allow_redirects=True,
+            )
+            if res.status_code != 200:
+                errors.append(f"⚠️ Download failed: {file_url} (HTTP {res.status_code})")
+                continue
+
+            # Extract filename
+            filename = ""
+            if "Content-Disposition" in res.headers:
+                cd = res.headers.get("Content-Disposition")
+                fname_match = re.findall('filename="?([^\'";]+)"?', cd)
+                if fname_match:
+                    filename = fname_match[0]
+
+            if not filename:
+                filename = os.path.basename(parsed_url.path)
+
+            if not filename:
+                filename = "downloaded_file"
+
+            filename = urllib.parse.unquote(filename)
+            filename = re.sub(r"[^\w\-_\. ]", "_", filename)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            unique_filename = f"{timestamp}_{filename}"
+            download_path = os.path.join(Config.DOWNLOAD_BASE, user_id, unique_filename)
+
+            # Save file in chunks
+            with open(download_path, "wb") as f:
+                for chunk in res.iter_content(chunk_size=8192):
+                    if chunk:  # Filter out keep-alive chunks
+                        f.write(chunk)
+
+            download_url = f"/downloads/{user_id}/{urllib.parse.quote(unique_filename)}"
+            results.append(f"[{filename}]({download_url})")
+
+        except requests.RequestException as e:
+            errors.append(f"⚠️ Network error: {file_url} - {str(e)}")
+            logger.error(f"[DOWNLOAD_FILE] Request error for {file_url}: {e}")
+        except IOError as e:
+            errors.append(f"⚠️ File write error: {file_url} - {str(e)}")
+            logger.error(f"[DOWNLOAD_FILE] IO error for {file_url}: {e}")
+        except Exception as e:
+            errors.append(f"⚠️ Unexpected error: {file_url} - {str(e)}")
+            logger.error(f"[DOWNLOAD_FILE] Unexpected error for {file_url}: {e}")
+
+    # Build response message
+    if not results and not errors:
+        return "No files were downloaded"
+
+    response_parts = []
+    if results:
+        response_parts.append(
+            f"Downloaded {len(results)} file(s):\n" + "\n".join(results)
+        )
+    if errors:
+        response_parts.append("\nErrors:\n" + "\n".join(errors))
+
+    return "\n".join(response_parts)
 
 
 @traceable

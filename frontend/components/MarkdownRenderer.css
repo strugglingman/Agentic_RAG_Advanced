@@ -1,0 +1,37 @@
+/* MarkdownRenderer.css
+ * Styling for markdown-rendered download links
+ */
+
+/* Download link styling */
+.download-link {
+  /* TODO: Set color to match your theme */
+  color: #1890ff;
+
+  /* TODO: Add underline to make it obvious it's a link */
+  text-decoration: underline;
+
+  /* TODO: Change cursor to pointer on hover */
+  cursor: pointer;
+
+  /* TODO: Make it stand out from regular text */
+  font-weight: 500;
+
+  /* TODO: Add smooth transitions for hover effects */
+  transition: all 0.2s ease;
+}
+
+/* TODO: Add hover effect for better UX */
+.download-link:hover {
+  color: #40a9ff;
+  text-decoration: none;
+}
+
+/* TODO: Add active (click) effect */
+.download-link:active {
+  color: #096dd9;
+}
+
+/* Icon is already included in the backend response (👉 [filename](url))
+   so no need to add it again with ::before */
+
+/* TODO: Customize these styles to match your application's design system */
