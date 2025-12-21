@@ -2,7 +2,8 @@
 import React, { createContext, useContext, useState, useEffect } from "react";
 
 type Role = 'user' | 'assistant';
-type Msg = { id?: string; role: Role; content: string; created_at?: string; ts?: number };
+type AttachmentPreview = { name: string; type: string; url: string; data?: string };
+type Msg = { id?: string; role: Role; content: string; created_at?: string; ts?: number; attachments?: AttachmentPreview[] };
 type Context = { bm25: number; chunk: string; chunk_id: string; dept_id: string;
   ext: string; file_for_user: boolean; file_id: string; hybrid: number; page: number; 
   rerank: number; sem_sim: number; size_kb: number; source: string; tags: string; 

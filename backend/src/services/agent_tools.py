@@ -579,6 +579,89 @@ SEND_EMAIL_SCHEMA = {
     },
 }
 
+# ============================================================================
+# TOOL 6: CREATE DOCUMENTS
+# ============================================================================
+
+CREATE_DOCUMENTS_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "create_documents",
+        "description": (
+            "Create one or more formatted documents (TXT, CSV, HTML, PDF, DOCX etc.) from provided content. "
+            "Use this when user asks to generate reports, summaries, or comparison documents. "
+            "Each generated document will be saved and download links returned."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "documents": {
+                    "type": "array",
+                    "description": "List of documents to create",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "content": {
+                                "type": "string",
+                                "description": (
+                                    "The main content to include in the document. "
+                                    "Can include markdown formatting (headings, lists, bold, etc.)"
+                                ),
+                            },
+                            "filename": {
+                                "type": "string",
+                                "description": (
+                                    "Optional filename for the document (without extension). "
+                                    "If not provided, title will be used."
+                                ),
+                            },
+                            "title": {
+                                "type": "string",
+                                "description": "Document title (will be used as filename and header)",
+                            },
+                            "format": {
+                                "type": "string",
+                                "enum": [
+                                    "pdf",
+                                    "docx",
+                                    "txt",
+                                    "md",
+                                    "html",
+                                    "csv",
+                                    "xlsx",
+                                ],
+                                "description": (
+                                    "Output format:\n"
+                                    "- 'pdf': PDF document (formatted, professional)\n"
+                                    "- 'docx': Microsoft Word document\n"
+                                    "- 'txt': Plain text file\n"
+                                    "- 'md': Markdown file (preserves markdown formatting)\n"
+                                    "- 'html': HTML file (web-ready)\n"
+                                    "- 'csv': CSV file (for tabular data)\n"
+                                    "- 'xlsx': Excel spreadsheet (for tabular data)"
+                                ),
+                                "default": "pdf",
+                            },
+                            "metadata": {
+                                "type": "object",
+                                "description": "Optional metadata (author, date, description, etc.)",
+                                "properties": {
+                                    "author": {"type": "string"},
+                                    "subject": {"type": "string"},
+                                    "keywords": {"type": "string"},
+                                },
+                            },
+                        },
+                        "required": ["content", "title"],
+                    },
+                    "minItems": 1,
+                },
+            },
+            "required": ["documents"],
+        },
+    },
+}
+
 
 @traceable
 def execute_web_search(args: Dict[str, Any], context: Dict[str, Any]) -> str:
@@ -988,6 +1071,272 @@ def _cleanup_temp_attachments(temp_paths: list) -> None:
             logger.warning(f"Failed to cleanup temp file {path}: {str(e)}")
 
 
+@traceable
+def execute_create_documents(args: Dict[str, Any], context: Dict[str, Any]) -> str:
+    """
+    Execute the create_documents tool - supports creating multiple documents in one call.
+
+    Args:
+        args: Arguments from LLM containing:
+            - documents (list): List of document objects, each containing:
+                - content (str): Main document content (supports markdown)
+                - title (str): Document title
+                - format (str): Output format - pdf/docx/txt/md/html/csv/xlsx (default: 'pdf')
+                - metadata (dict, optional): Author, subject, keywords, etc.
+
+        context: System context containing:
+            - user_id (str): User ID for file ownership
+
+    Returns:
+        Formatted string with download links for all created documents
+
+    Implementation TODO:
+
+    SUPPORTED FORMATS (7 total):
+
+    1. PDF - reportlab (pip install reportlab)
+       - Professional formatted documents
+       - Markdown → styled PDF with fonts/sizes
+       - Page numbers, headers, metadata
+
+    2. DOCX - python-docx (pip install python-docx)
+       - Microsoft Word documents
+       - Markdown → Word styles (headings, lists, bold)
+       - Document properties
+
+    3. TXT - built-in
+       - Plain text, strip markdown or keep it
+       - open(path, "w", encoding="utf-8")
+
+    4. MD - built-in
+       - Markdown file (save content as-is)
+       - open(path, "w", encoding="utf-8")
+
+    5. HTML - markdown2 (pip install markdown2)
+       - Convert markdown → HTML
+       - Wrap in proper HTML structure
+       - Add CSS styling
+
+    6. CSV - built-in csv module
+       - For tabular data
+       - Parse content, write with csv.writer
+       - Headers, rows
+
+    7. XLSX - openpyxl (pip install openpyxl)
+       - Excel spreadsheets
+       - Parse content for tables
+       - Format cells (bold headers, borders)
+
+    IMPLEMENTATION:
+    Loop through documents → validate → generate based on format → collect results
+
+    LIBRARIES:
+    pip install reportlab python-docx markdown2 openpyxl
+    """
+    documents = args.get("documents", [])
+    if not documents:
+        return "No documents provided for creation"
+
+    user_id = context.get("user_id")
+    if not user_id:
+        return "Error: User ID not found in context"
+
+    # Create user downloads directory
+    user_dir = os.path.join(Config.DOWNLOAD_BASE, user_id)
+    os.makedirs(user_dir, exist_ok=True)
+
+    results = []
+    errors = []
+
+    for doc in documents:
+        try:
+            content = doc.get("content", "")
+            title = doc.get("title", "untitled")
+            custom_filename = doc.get("filename", "")
+            format_type = doc.get("format", "pdf").lower()
+            metadata = doc.get("metadata", {})
+
+            if format_type not in ("pdf", "docx", "txt", "md", "html", "csv", "xlsx"):
+                errors.append(f"⚠️ Unsupported format: {format_type} for {title}")
+                continue
+
+            # Sanitize filename
+            base_filename = custom_filename if custom_filename else title
+            base_filename = re.sub(r'[^\w\-_\. ]', '_', base_filename)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+            # Generate file based on format
+            if format_type == "txt":
+                filename = f"{timestamp}_{base_filename}.txt"
+                filepath = os.path.join(user_dir, filename)
+                with open(filepath, "w", encoding="utf-8") as f:
+                    f.write(content)
+
+            elif format_type == "md":
+                filename = f"{timestamp}_{base_filename}.md"
+                filepath = os.path.join(user_dir, filename)
+                with open(filepath, "w", encoding="utf-8") as f:
+                    f.write(content)
+
+            elif format_type == "html":
+                filename = f"{timestamp}_{base_filename}.html"
+                filepath = os.path.join(user_dir, filename)
+                try:
+                    import markdown2
+                    html_content = markdown2.markdown(content)
+                    full_html = f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>{title}</title>
+    <style>
+        body {{ font-family: Arial, sans-serif; max-width: 800px; margin: 40px auto; padding: 20px; }}
+        h1, h2, h3 {{ color: #333; }}
+        table {{ border-collapse: collapse; width: 100%; }}
+        th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
+        th {{ background-color: #f2f2f2; }}
+    </style>
+</head>
+<body>
+    <h1>{title}</h1>
+    {html_content}
+</body>
+</html>"""
+                    with open(filepath, "w", encoding="utf-8") as f:
+                        f.write(full_html)
+                except ImportError:
+                    errors.append(f"⚠️ HTML format requires markdown2 library: {title}")
+                    continue
+
+            elif format_type == "pdf":
+                filename = f"{timestamp}_{base_filename}.pdf"
+                filepath = os.path.join(user_dir, filename)
+                try:
+                    from reportlab.lib.pagesizes import letter
+                    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+                    from reportlab.lib.units import inch
+                    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+
+                    doc_pdf = SimpleDocTemplate(filepath, pagesize=letter)
+                    styles = getSampleStyleSheet()
+                    story = []
+
+                    # Add title
+                    title_style = ParagraphStyle(
+                        'CustomTitle',
+                        parent=styles['Heading1'],
+                        fontSize=24,
+                        textColor='#333333',
+                        spaceAfter=30,
+                    )
+                    story.append(Paragraph(title, title_style))
+                    story.append(Spacer(1, 0.2 * inch))
+
+                    # Add content (simple paragraph, markdown not fully rendered)
+                    for line in content.split('\n'):
+                        if line.strip():
+                            story.append(Paragraph(line, styles['BodyText']))
+                            story.append(Spacer(1, 0.1 * inch))
+
+                    doc_pdf.build(story)
+                except ImportError:
+                    errors.append(f"⚠️ PDF format requires reportlab library: {title}")
+                    continue
+
+            elif format_type == "docx":
+                filename = f"{timestamp}_{base_filename}.docx"
+                filepath = os.path.join(user_dir, filename)
+                try:
+                    from docx import Document
+
+                    doc_docx = Document()
+
+                    # Add title
+                    doc_docx.add_heading(title, 0)
+
+                    # Add content (basic paragraph formatting)
+                    for line in content.split('\n'):
+                        if line.strip():
+                            doc_docx.add_paragraph(line)
+
+                    # Set metadata if provided
+                    core_props = doc_docx.core_properties
+                    if metadata.get('author'):
+                        core_props.author = metadata['author']
+                    if metadata.get('subject'):
+                        core_props.subject = metadata['subject']
+
+                    doc_docx.save(filepath)
+                except ImportError:
+                    errors.append(f"⚠️ DOCX format requires python-docx library: {title}")
+                    continue
+
+            elif format_type == "csv":
+                filename = f"{timestamp}_{base_filename}.csv"
+                filepath = os.path.join(user_dir, filename)
+                import csv
+                # Simple CSV: treat each line as a row, split by commas or tabs
+                with open(filepath, "w", encoding="utf-8", newline='') as f:
+                    writer = csv.writer(f)
+                    for line in content.split('\n'):
+                        if line.strip():
+                            # Try tab-separated first, then comma-separated
+                            if '\t' in line:
+                                cells = [cell.strip() for cell in line.split('\t')]
+                            else:
+                                cells = [cell.strip() for cell in line.split(',')]
+                            writer.writerow(cells)
+
+            elif format_type == "xlsx":
+                filename = f"{timestamp}_{base_filename}.xlsx"
+                filepath = os.path.join(user_dir, filename)
+                try:
+                    from openpyxl import Workbook
+                    wb = Workbook()
+                    ws = wb.active
+                    ws.title = title[:31]  # Excel sheet name limit
+
+                    # Parse content as simple table (comma or tab-separated)
+                    row_num = 1
+                    for line in content.split('\n'):
+                        if line.strip():
+                            if '\t' in line:
+                                cells = [cell.strip() for cell in line.split('\t')]
+                            else:
+                                cells = [cell.strip() for cell in line.split(',')]
+                            for col_num, cell_value in enumerate(cells, 1):
+                                ws.cell(row=row_num, column=col_num, value=cell_value)
+                            row_num += 1
+
+                    wb.save(filepath)
+                except ImportError:
+                    errors.append(f"⚠️ XLSX format requires openpyxl library: {title}")
+                    continue
+
+            # Generate download URL
+            download_url = f"/downloads/{user_id}/{urllib.parse.quote(filename)}"
+            results.append(f"👉 [{base_filename}.{format_type}]({download_url})")
+            logger.info(f"[CREATE_DOCUMENTS] Created {format_type} document: {filepath}")
+
+        except Exception as e:
+            errors.append(f"⚠️ Failed to create document '{doc.get('title', 'unknown')}': {str(e)}")
+            logger.error(f"[CREATE_DOCUMENTS] Error creating document: {e}")
+
+    # Build response message
+    if not results and not errors:
+        return "No documents were created"
+
+    response_parts = []
+    if results:
+        response_parts.append(
+            f"Created {len(results)} document(s):\n" + "\n".join(results)
+        )
+    if errors:
+        response_parts.append("\nErrors:\n" + "\n".join(errors))
+
+    return "\n".join(response_parts)
+
+
 # ============================================================================
 # TOOL REGISTRY
 # ============================================================================
@@ -998,6 +1347,7 @@ TOOL_REGISTRY = {
     "calculator": execute_calculator,
     "download_file": execute_download_file,
     "send_email": execute_send_email,
+    "create_documents": execute_create_documents,
 }
 """
 Maps tool names to their execution functions.
@@ -1015,6 +1365,7 @@ ALL_TOOLS = [
     WEB_SEARCH_SCHEMA,
     DOWNLOAD_FILE_SCHEMA,
     SEND_EMAIL_SCHEMA,
+    CREATE_DOCUMENTS_SCHEMA,
 ]
 """
 List of all tool schemas to send to OpenAI API.

@@ -44,11 +44,13 @@ export default function ChatPage() {
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [language, setLanguage] = useState('en-US');
   const [attachments, setAttachments] = useState<File[]>([]);
+  const [isDragging, setIsDragging] = useState(false);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const streamingRef = useRef(false);
   const speakingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const dragCounterRef = useRef(0); // Track drag enter/leave events
 
   const clearSpeakingTimer = useCallback(() => {
     if (speakingTimeoutRef.current) {
@@ -366,9 +368,93 @@ export default function ChatPage() {
     });
   };
 
+  // Drag and drop handlers
+  const handleDragEnter = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current += 1;
+    if (e.dataTransfer.items && e.dataTransfer.items.length > 0) {
+      setIsDragging(true);
+    }
+  };
+
+  const handleDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current -= 1;
+    if (dragCounterRef.current === 0) {
+      setIsDragging(false);
+    }
+  };
+
+  const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+  };
+
+  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+    dragCounterRef.current = 0;
+
+    const files = e.dataTransfer.files;
+    if (!files || files.length === 0) return;
+
+    const validFiles: File[] = [];
+    const maxSize = 10 * 1024 * 1024; // 10MB
+    const acceptedTypes = ['image/', '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.csv', '.txt'];
+
+    Array.from(files).forEach(file => {
+      // Check file size
+      if (file.size > maxSize) {
+        alert(`${file.name} is too large. Max 10MB.`);
+        return;
+      }
+
+      // Check file type
+      const isAccepted = acceptedTypes.some(type =>
+        type.startsWith('.')
+          ? file.name.toLowerCase().endsWith(type)
+          : file.type.startsWith(type.replace('/', ''))
+      );
+
+      if (!isAccepted) {
+        alert(`${file.name} is not a supported file type.`);
+        return;
+      }
+
+      validFiles.push(file);
+    });
+
+    if (validFiles.length > 0) {
+      setAttachments(prev => [...prev, ...validFiles]);
+    }
+  };
+
   return (
     <div className="h-full w-full bg-neutral-100 flex justify-center">
-      <div className="flex h-full w-full max-w-6xl flex-col border-x border-neutral-200 bg-white shadow-sm">
+      <div
+        className="flex h-full w-full max-w-6xl flex-col border-x border-neutral-200 bg-white shadow-sm relative"
+        onDragEnter={handleDragEnter}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+      >
+        {/* Drag and drop overlay */}
+        {isDragging && (
+          <div className="absolute inset-0 z-50 bg-blue-500/10 backdrop-blur-sm border-4 border-dashed border-blue-500 flex items-center justify-center">
+            <div className="bg-white rounded-xl shadow-2xl px-8 py-6 flex flex-col items-center gap-3">
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-16 w-16 text-blue-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="17 8 12 3 7 8" />
+                <line x1="12" y1="3" x2="12" y2="15" />
+              </svg>
+              <div className="text-lg font-semibold text-neutral-900">Drop files to attach</div>
+              <div className="text-sm text-neutral-500">Images, PDFs, documents, spreadsheets (Max 10MB each)</div>
+            </div>
+          </div>
+        )}
         {/* Header */}
         <header className="flex h-12 items-center justify-between border-b bg-white px-4">
           <div className="flex items-center gap-2">

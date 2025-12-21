@@ -37,3 +37,5 @@ ragas>=0.2.0
 datasets>=2.0.0
 pypdf2>=3.0.0
 openpyxl>=3.0.0
+reportlab>=4.4.0
+markdown2>=2.4.0
