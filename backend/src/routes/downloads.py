@@ -2,7 +2,7 @@
 Downloads routes - Serves files downloaded by the download_file tool.
 
 This module handles:
-1. Serving downloaded files to users via /downloads/{user_id}/{filename}
+1. Serving downloaded files to users via /api/downloads/{user_id}/{filename}
 2. Access control - users can only access their own files
 3. Proper content-type headers for different file types
 4. Security - prevents path traversal attacks
@@ -10,7 +10,7 @@ This module handles:
 Architecture:
 =============
     LLM downloads file → Saves to downloads/{user_id}/{filename} →
-    Returns URL /downloads/{user_id}/{filename} →
+    Returns URL /api/downloads/{user_id}/{filename} →
     User clicks link → This route serves the file
 
 TODO Implementation Steps:
@@ -70,9 +70,9 @@ Security Checklist:
 
 Example Request Flow:
 =====================
-1. LLM returns: "👉 [report.pdf](/downloads/user123/20250118_120530_report.pdf)"
+1. LLM returns: "👉 [report.pdf](/api/downloads/user123/20250118_120530_report.pdf)"
 2. Frontend makes link clickable
-3. User clicks → GET /downloads/user123/20250118_120530_report.pdf
+3. User clicks → GET /api/downloads/user123/20250118_120530_report.pdf
 4. This route:
    - Verifies user123 is current user
    - Validates filename

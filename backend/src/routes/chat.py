@@ -1,11 +1,11 @@
 """Chat routes"""
 
+import asyncio
+import base64
 import json
 import logging
 from flask import Blueprint, request, jsonify, Response, g
 from openai import OpenAI
-from redis import asyncio as redis
-import asyncio
 from src.services.query_supervisor import QuerySupervisor
 from src.middleware.auth import require_identity
 from src.services.retrieval import retrieve, build_where, build_prompt
@@ -13,7 +13,7 @@ from src.config.settings import Config
 from src.utils.safety import looks_like_injection, scrub_context
 from src.utils.stream_utils import stream_text_smart
 from src.services.conversation_service import ConversationService
-from src.config.redis_client import get_redis
+from src.services.file_manager import FileManager
 
 logger = logging.getLogger(__name__)
 
@@ -227,31 +227,111 @@ async def chat_agent(collection):
         #     f"[CHAT_AGENT] Conversation history loaded: {conversation_history}"
         # )
 
+        # Save chat attachments to disk + DB and get file IDs for inline processing
         attachments = payload.get("attachments", [])
+        attachment_file_ids = []  # Real file IDs from FileRegistry
 
-        # Attachment persistence: cache in Redis to persist across conversation turns
-        # This solves the problem where user uploads files in turn 1, LLM asks for
-        # confirmation, then in turn 2 user says "yes" but doesn't re-upload files
-        attachments_cache_key = f"attachments:{conversation_id}"
+        if attachments:
+            try:
+                async with FileManager() as fm:
+                    for attachment in attachments:
+                        try:
+                            file_id = await fm.save_chat_attachment(
+                                user_email=user_id,
+                                filename=attachment.get("filename", "unknown"),
+                                content=base64.b64decode(attachment.get("data", "")),
+                                mime_type=attachment.get(
+                                    "mime_type", "application/octet-stream"
+                                ),
+                                conversation_id=conversation_id,
+                                dept_id=dept_id,
+                            )
+                            attachment_file_ids.append(
+                                {
+                                    "file_id": file_id,
+                                    "filename": attachment.get("filename", "unknown"),
+                                    "mime_type": attachment.get(
+                                        "mime_type", "application/octet-stream"
+                                    ),
+                                }
+                            )
+                            logger.info(
+                                f"[CHAT_AGENT] Saved attachment: {file_id} ({attachment.get('filename')})"
+                            )
+                        except Exception as e:
+                            logger.error(f"[CHAT_AGENT] Failed to save attachment: {e}")
+            except Exception as e:
+                logger.error(f"[CHAT_AGENT] Error processing attachments: {e}")
 
-        try:
-            # Create fresh Redis connection
-            redis_client = await redis.from_url(Config.REDIS_URL, decode_responses=True)
-            if attachments:
-                # User uploaded new files - cache them
-                await redis_client.setex(
-                    attachments_cache_key, 3600, json.dumps(attachments)
+        # Fetch user's available files from FileRegistry for LLM context
+        # Smart filtering: only fetch files if query suggests file operations
+        available_files = []
+        file_keywords = {
+            "file",
+            "document",
+            "attach",
+            "email",
+            "send",
+            "download",
+            "upload",
+            "pdf",
+            "doc",
+            "docx",
+            "report",
+            "policy",
+            "invoice",
+            "spreadsheet",
+            "xls",
+            "xlsx",
+            "csv",
+            "presentation",
+            "ppt",
+            "image",
+            "photo",
+            "picture",
+        }
+        query_lower = query.lower()
+        needs_file_discovery = any(keyword in query_lower for keyword in file_keywords)
+
+        if needs_file_discovery:
+            try:
+
+                async def get_user_files():
+                    async with FileManager() as fm:
+                        # Get ALL indexed RAG files (no filtering - ensures 100% RAG file accessibility)
+                        indexed_files = await fm.list_files(
+                            user_email=user_id,
+                            category="uploaded",
+                            limit=Config.FILE_DISCOVERY_INDEXED_LIMIT,
+                        )
+
+                        # Get conversation files (chat attachments, recent downloads, created docs)
+                        conv_files = await fm.list_files(
+                            user_email=user_id,
+                            conversation_id=conversation_id,
+                            limit=Config.FILE_DISCOVERY_CONVERSATION_LIMIT,
+                        )
+
+                        # Combine: all indexed files + conversation files
+                        all_files = {f["id"]: f for f in indexed_files}
+                        for f in conv_files:
+                            all_files[f["id"]] = f
+
+                        return list(all_files.values())
+
+                available_files = await get_user_files()
+                logger.info(
+                    f"[CHAT_AGENT] Loaded {len(available_files)} available files for user {user_id} "
+                    f"(file-related query detected - all indexed RAG files included)"
                 )
-            else:
-                # No new uploads - try to retrieve from cache
-                cached_attachments = await redis_client.get(attachments_cache_key)
-                if cached_attachments:
-                    attachments = json.loads(cached_attachments)
-        except:
-            pass
-        finally:
-            if redis_client:
-                await redis_client.close()
+            except Exception as e:
+                logger.error(f"[CHAT_AGENT] Failed to fetch user files: {e}")
+        else:
+            # Query doesn't mention files - skip file discovery to save tokens
+            logger.info(
+                f"[CHAT_AGENT] Skipping file discovery for user {user_id} "
+                f"(no file-related keywords detected in query)"
+            )
 
         # Build context for agent (all system parameters)
         agent_context = {
@@ -266,7 +346,8 @@ async def chat_agent(collection):
             "openai_client": openai_client,  # For self-reflection LLM calls
             "model": Config.OPENAI_MODEL,
             "temperature": Config.OPENAI_TEMPERATURE,
-            "attachments": attachments,  # Files that uploaded by user in the chat window
+            "available_files": available_files,  # All user's files from FileRegistry (unified approach)
+            "attachment_file_ids": attachment_file_ids,  # Just-uploaded attachments for inline processing
         }
 
         def generate():

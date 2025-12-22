@@ -11,8 +11,9 @@ Each tool has two parts:
 - execute_xxx: The Python function that actually executes the tool
 """
 
-import os, tempfile, base64
+import os
 import re
+import asyncio
 from datetime import datetime
 from typing import Dict, Any
 import logging
@@ -29,6 +30,7 @@ from src.services.query_refiner import QueryRefiner
 from src.services.clarification_helper import ClarificationHelper
 from src.services.web_search import WebSearchService
 from src.utils.send_email import send_email
+from src.services.file_manager import FileManager
 
 logger = logging.getLogger(__name__)
 
@@ -570,7 +572,11 @@ SEND_EMAIL_SCHEMA = {
                 "attachments": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Optional file paths to attach",
+                    "description": (
+                        "Optional file references to attach. ALWAYS use file_id (e.g., 'cmjg8yrab0000xspw5ip79qcb') from tool responses or Available Files list. "
+                        "DO NOT use download URLs like '/api/downloads/...' or '/api/files/...'. "
+                        "Accepted formats: file_id (recommended), category:filename, or just filename"
+                    ),
                     "minItems": 0,
                 },
             },
@@ -717,8 +723,8 @@ def execute_download_file(args: Dict[str, Any], context: Dict[str, Any]) -> str:
 
     Example output:
         "Downloaded 2 files:
-        👉 [南京著名景点简介.pdf](/downloads/user123/20250118_120530_nanjing.pdf)
-        👉 [销售报告.xlsx](/downloads/user123/20250118_120531_sales.xlsx)"
+        👉 [南京著名景点简介.pdf](/api/files/clx_abc123)
+        👉 [销售报告.xlsx](/api/files/clx_def456)"
 
     TODO Implementation Steps:
     ==========================
@@ -772,10 +778,10 @@ def execute_download_file(args: Dict[str, Any], context: Dict[str, Any]) -> str:
                               f.write(chunk)
                 - DO NOT use: f.write(response.content) - loads entire file into memory
 
-            g) Generate download URL
-                - Format: /downloads/{user_id}/{timestamped_filename}
-                - URL-encode filename component for safety
-                - Store in results list: (original_url, download_url, filename)
+            g) Register file in FileRegistry database
+                - Call _register_file_sync() to get file_id and download_url
+                - Format: /api/files/{file_id} (unified for all file types)
+                - Store in results list: (original_url, download_url, filename, file_id)
 
     Step 4: Build response message for LLM
         - Count successful downloads
@@ -815,8 +821,9 @@ def execute_download_file(args: Dict[str, Any], context: Dict[str, Any]) -> str:
     User: "Please download this PDF: https://example.com/report.pdf"
     LLM calls: download_file(file_urls=["https://example.com/report.pdf"])
     Server downloads → Saves to downloads/user123/20250118_120530_report.pdf
-    Returns: "Downloaded 1 file:\\n👉 [report.pdf](/downloads/user123/20250118_120530_report.pdf)"
-    LLM shows: "Downloaded successfully! 👉 [report.pdf](/downloads/user123/20250118_120530_report.pdf)"
+    Server registers in FileRegistry → file_id: clx_abc123, download_url: /api/files/clx_abc123
+    Returns: "Downloaded 1 file:\\n👉 [report.pdf](/api/files/clx_abc123) [file:clx_abc123]"
+    LLM shows: "Downloaded successfully! 👉 [report.pdf](/api/files/clx_abc123)"
     """
     # TODO: Implement download_file logic following the steps above
     # For now, return placeholder
@@ -894,8 +901,33 @@ def execute_download_file(args: Dict[str, Any], context: Dict[str, Any]) -> str:
                     if chunk:  # Filter out keep-alive chunks
                         f.write(chunk)
 
-            download_url = f"/downloads/{user_id}/{urllib.parse.quote(unique_filename)}"
-            results.append(f"[{filename}]({download_url})")
+            # Register file in FileRegistry database
+            file_size = os.path.getsize(download_path)
+            mime_type = res.headers.get("Content-Type", "application/octet-stream")
+
+            result = _register_file_sync(
+                user_email=user_id,
+                category="downloaded",
+                original_name=filename,
+                storage_path=download_path,
+                source_tool="download_file",
+                mime_type=mime_type,
+                size_bytes=file_size,
+                source_url=file_url,
+                conversation_id=context.get("conversation_id"),
+            )
+
+            file_id = result["file_id"]
+            download_url = result[
+                "download_url"
+            ]  # Use unified /api/files/{file_id} URL
+            # Put file_id FIRST and most prominent for attachment operations
+            results.append(
+                f"✅ Downloaded: {filename}\n"
+                f"   File ID: {file_id}\n"
+                f"   Download: [{filename}]({download_url})\n"
+                f"   → Use file ID '{file_id}' for email attachments"
+            )
 
         except requests.RequestException as e:
             errors.append(f"⚠️ Network error: {file_url} - {str(e)}")
@@ -925,7 +957,7 @@ def execute_download_file(args: Dict[str, Any], context: Dict[str, Any]) -> str:
 @traceable
 def execute_send_email(args: Dict[str, Any], context: Dict[str, Any]) -> str:
     """
-    Execute the send_email tool.
+    Execute the send_email tool with unified file resolution.
 
     Args:
         args: Arguments from LLM containing:
@@ -933,40 +965,19 @@ def execute_send_email(args: Dict[str, Any], context: Dict[str, Any]) -> str:
             - subject (str): Email subject
             - body (str): Email body content
             - attachments (list[str], optional): Attachment identifiers
-              Can be: "chat_attachment_0", "chat_attachment_1", etc. to use
-              files uploaded in the current chat message
+              Supports multiple formats:
+                - "file_abc123" or "clx_abc123": File ID from FileRegistry (recommended)
+                - "chat:report.pdf": Category:filename format
+                - "report.pdf": Filename only (searches user's files)
+                - Direct path format (legacy, for backwards compat)
 
         context: System context containing:
-            - attachments (list[dict]): Files uploaded by user in chat, each with:
-                - type: "image" | "file"
-                - filename: Original filename
-                - mime_type: MIME type
-                - data: Base64 encoded content
+            - user_id (str): Current user email
+            - attachments (list[dict]): Legacy chat attachments (base64)
+            - chat_attachment_ids (list[str]): New file IDs for chat attachments
 
-    Attachment Flow:
-    ================
-    1. User uploads file in chat UI → frontend sends as base64 in payload.attachments
-    2. Backend stores in context["attachments"]
-    3. LLM can reference these using "chat_attachment_0", "chat_attachment_1", etc.
-    4. This function resolves references and passes to send_email utility
-
-    TODO Implementation Steps:
-    ==========================
-    Step 1: Parse attachment references from args
-        - Check if attachments list contains "chat_attachment_N" patterns
-        - Map N to context["attachments"][N]
-
-    Step 2: Convert base64 attachments to temp files (if needed by send_email)
-        - Decode base64 data
-        - Save to temp file with original filename
-        - Or pass base64 directly if send_email supports it
-
-    Step 3: Handle mixed attachments
-        - Some might be chat attachments ("chat_attachment_0")
-        - Some might be file paths (existing behavior)
-        - Merge both lists for send_email
-
-    Step 4: Cleanup temp files after send (if created)
+    Returns:
+        Success/error message string
     """
     to_addresses = args.get("to", [])
     subject = args.get("subject", "")
@@ -974,34 +985,37 @@ def execute_send_email(args: Dict[str, Any], context: Dict[str, Any]) -> str:
     if not to_addresses or not subject or not body:
         return "Missing required email fields"
 
+    user_email = context.get("user_id")
+    if not user_email:
+        return "Error: User email not found in context"
+
     # Get attachment references from LLM args
     attachment_refs = args.get("attachments", [])
-    logger.debug(
-        f"!!!!!!!!!!!!!!![SEND_EMAIL] Attachment references: {attachment_refs}"
-    )
-    # Get chat attachments from context (uploaded by user in chat)
-    chat_attachments = context.get("attachments", [])
-    attas = [atta.get("filename", "") for atta in chat_attachments]
-    logger.debug(f"[SEND_EMAIL] Original chat attachments: {attas}")
+    logger.debug(f"[SEND_EMAIL] Attachment references: {attachment_refs}")
 
     real_attachments = []
+    errors = []
+
+    # Resolve each attachment reference using unified file system
+    # All files (chat, uploaded, downloaded, created) are in FileRegistry
     for ref in attachment_refs:
-        if ref.startswith("chat_attachment_"):
-            idx = int(ref.split("_")[-1])
-            if idx < len(chat_attachments):
-                real_atta = chat_attachments[idx]
-                atta_path = _save_attachment_to_temp(real_atta)
-                real_attachments.append(atta_path)
-        else:
-            # Existing file path reference
-            real_attachments.append(ref)
+        try:
+            file_path = _resolve_file_sync(ref, user_email)
+            real_attachments.append(file_path)
+        except FileNotFoundError as e:
+            errors.append(f"⚠️ File not found: {ref}")
+            logger.error(f"[SEND_EMAIL] {e}")
+        except Exception as e:
+            errors.append(f"⚠️ Error resolving {ref}: {str(e)}")
+            logger.error(f"[SEND_EMAIL] Unexpected error resolving {ref}: {e}")
+
+    if errors:
+        return "Failed to send email:\n" + "\n".join(errors)
 
     logger.debug(f"[SEND_EMAIL] Resolved attachments: {real_attachments}")
 
-    # Current implementation: pass attachment refs as-is (file paths only)
+    # Send email with resolved file paths
     result = send_email(to_addresses, subject, body, real_attachments)
-    # Clean up temp files created for attachments
-    _cleanup_temp_attachments(real_attachments)
 
     if result.get("status", "failed") == "failed":
         logger.error(
@@ -1012,63 +1026,158 @@ def execute_send_email(args: Dict[str, Any], context: Dict[str, Any]) -> str:
     return f"Email sent successfully to recipients: {', '.join(to_addresses)} with subject: {subject}"
 
 
-# ============================================================================
-# ATTACHMENT HELPERS (TODO: Implement these)
-# ============================================================================
-
-
-def _save_attachment_to_temp(attachment: Dict[str, Any]) -> str:
+def _resolve_file_sync(file_ref: str, user_email: str) -> str:
     """
-    Save a base64 attachment to a temporary file.
+    Synchronous wrapper to resolve file reference using FileManager.
+    Handles event loop properly by using thread pool when needed.
 
     Args:
-        attachment: Dict with keys:
-            - filename: Original filename
-            - data: Base64 encoded content
-            - mime_type: MIME type
+        file_ref: File reference (file_id, category:name, path, filename, or URL)
+        user_email: User email for security
 
     Returns:
-        Path to temporary file
+        Absolute path to file on disk
 
-    TODO Implementation:
-        import tempfile
-        import base64
-        import os
-
-        # Create temp file with original extension
-        _, ext = os.path.splitext(attachment["filename"])
-        with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as f:
-            f.write(base64.b64decode(attachment["data"]))
-            return f.name
+    Raises:
+        FileNotFoundError: File not found or no access
     """
-    _, ext = os.path.splitext(attachment.get("filename", ""))
-    with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as f:
-        f.write(base64.b64decode(attachment.get("data", "")))
-        return f.name
+    import nest_asyncio
+
+    nest_asyncio.apply()  # Allow nested event loops
+
+    async def _do_resolve():
+        return await _resolve_file_async(file_ref, user_email)
+
+    loop = asyncio.get_event_loop()
+    if loop.is_running():
+        # If loop is running, create task and wait
+        import concurrent.futures
+
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            return pool.submit(lambda: asyncio.run(_do_resolve())).result()
+    else:
+        return asyncio.run(_do_resolve())
 
 
-def _cleanup_temp_attachments(temp_paths: list) -> None:
+async def _resolve_file_async(file_ref: str, user_email: str) -> str:
     """
-    Remove temporary attachment files after email is sent.
+    Async helper to resolve file reference using FileManager.
 
     Args:
-        temp_paths: List of temporary file paths to delete
+        file_ref: File reference (file_id, category:name, path, filename, or URL)
+        user_email: User email for security
 
-    TODO Implementation:
-        import os
-        for path in temp_paths:
-            try:
-                if os.path.exists(path):
-                    os.remove(path)
-            except Exception as e:
-                logger.warning(f"Failed to cleanup temp file {path}: {e}")
+    Returns:
+        Absolute path to file on disk
+
+    Raises:
+        FileNotFoundError: File not found or no access
     """
-    for path in temp_paths:
-        try:
-            if os.path.exists(path):
-                os.remove(path)
-        except Exception as e:
-            logger.warning(f"Failed to cleanup temp file {path}: {str(e)}")
+    # Handle download URLs from LLM
+    # Convert /api/downloads/{user}/{filename} → direct file path
+    # Convert /api/files/{file_id} → file_id
+    if file_ref.startswith("/api/downloads/"):
+        # Extract user and filename from /api/downloads/{user}/{filename}
+        parts = file_ref.replace("/api/downloads/", "").split("/", 1)
+        if len(parts) == 2:
+            user_id, filename = parts
+            # Construct direct file path
+            import urllib.parse
+
+            filename = urllib.parse.unquote(filename)
+            file_path = os.path.join(Config.DOWNLOAD_BASE, user_id, filename)
+            if os.path.exists(file_path):
+                return file_path
+            # Fallback: try to find in FileRegistry
+            file_ref = filename
+    elif file_ref.startswith("/api/files/"):
+        # Extract file_id from /api/files/{file_id}
+        file_ref = file_ref.replace("/api/files/", "")
+
+    async with FileManager() as fm:
+        return await fm.get_file_path(file_ref, user_email)
+
+
+def _register_file_sync(
+    user_email: str,
+    category: str,
+    original_name: str,
+    storage_path: str,
+    source_tool: str,
+    **kwargs,
+) -> str:
+    """
+    Synchronous wrapper to register a file using FileManager.
+    Handles event loop properly by creating fresh async context.
+
+    Args:
+        user_email: User email
+        category: File category
+        original_name: Original filename
+        storage_path: Path to file on disk
+        source_tool: Tool that created the file
+        **kwargs: Additional arguments (mime_type, size_bytes, etc.)
+
+    Returns:
+        file_id: Unique identifier for registered file
+    """
+    import nest_asyncio
+
+    nest_asyncio.apply()  # Allow nested event loops
+
+    async def _do_register():
+        async with FileManager() as fm:
+            return await fm.register_file(
+                user_email=user_email,
+                category=category,
+                original_name=original_name,
+                storage_path=storage_path,
+                source_tool=source_tool,
+                **kwargs,
+            )
+
+    loop = asyncio.get_event_loop()
+    if loop.is_running():
+        # If loop is running, create task and wait
+        import concurrent.futures
+
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            return pool.submit(lambda: asyncio.run(_do_register())).result()
+    else:
+        return asyncio.run(_do_register())
+
+
+async def _register_file_async(
+    user_email: str,
+    category: str,
+    original_name: str,
+    storage_path: str,
+    source_tool: str,
+    **kwargs,
+) -> str:
+    """
+    Async helper to register a file using FileManager.
+
+    Args:
+        user_email: User email
+        category: File category
+        original_name: Original filename
+        storage_path: Path to file on disk
+        source_tool: Tool that created the file
+        **kwargs: Additional arguments (mime_type, size_bytes, etc.)
+
+    Returns:
+        file_id: Unique identifier for registered file
+    """
+    async with FileManager() as fm:
+        return await fm.register_file(
+            user_email=user_email,
+            category=category,
+            original_name=original_name,
+            storage_path=storage_path,
+            source_tool=source_tool,
+            **kwargs,
+        )
 
 
 @traceable
@@ -1162,7 +1271,7 @@ def execute_create_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
 
             # Sanitize filename
             base_filename = custom_filename if custom_filename else title
-            base_filename = re.sub(r'[^\w\-_\. ]', '_', base_filename)
+            base_filename = re.sub(r"[^\w\-_\. ]", "_", base_filename)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
             # Generate file based on format
@@ -1183,6 +1292,7 @@ def execute_create_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
                 filepath = os.path.join(user_dir, filename)
                 try:
                     import markdown2
+
                     html_content = markdown2.markdown(content)
                     full_html = f"""<!DOCTYPE html>
 <html>
@@ -1223,19 +1333,19 @@ def execute_create_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
 
                     # Add title
                     title_style = ParagraphStyle(
-                        'CustomTitle',
-                        parent=styles['Heading1'],
+                        "CustomTitle",
+                        parent=styles["Heading1"],
                         fontSize=24,
-                        textColor='#333333',
+                        textColor="#333333",
                         spaceAfter=30,
                     )
                     story.append(Paragraph(title, title_style))
                     story.append(Spacer(1, 0.2 * inch))
 
                     # Add content (simple paragraph, markdown not fully rendered)
-                    for line in content.split('\n'):
+                    for line in content.split("\n"):
                         if line.strip():
-                            story.append(Paragraph(line, styles['BodyText']))
+                            story.append(Paragraph(line, styles["BodyText"]))
                             story.append(Spacer(1, 0.1 * inch))
 
                     doc_pdf.build(story)
@@ -1255,36 +1365,39 @@ def execute_create_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
                     doc_docx.add_heading(title, 0)
 
                     # Add content (basic paragraph formatting)
-                    for line in content.split('\n'):
+                    for line in content.split("\n"):
                         if line.strip():
                             doc_docx.add_paragraph(line)
 
                     # Set metadata if provided
                     core_props = doc_docx.core_properties
-                    if metadata.get('author'):
-                        core_props.author = metadata['author']
-                    if metadata.get('subject'):
-                        core_props.subject = metadata['subject']
+                    if metadata.get("author"):
+                        core_props.author = metadata["author"]
+                    if metadata.get("subject"):
+                        core_props.subject = metadata["subject"]
 
                     doc_docx.save(filepath)
                 except ImportError:
-                    errors.append(f"⚠️ DOCX format requires python-docx library: {title}")
+                    errors.append(
+                        f"⚠️ DOCX format requires python-docx library: {title}"
+                    )
                     continue
 
             elif format_type == "csv":
                 filename = f"{timestamp}_{base_filename}.csv"
                 filepath = os.path.join(user_dir, filename)
                 import csv
+
                 # Simple CSV: treat each line as a row, split by commas or tabs
-                with open(filepath, "w", encoding="utf-8", newline='') as f:
+                with open(filepath, "w", encoding="utf-8", newline="") as f:
                     writer = csv.writer(f)
-                    for line in content.split('\n'):
+                    for line in content.split("\n"):
                         if line.strip():
                             # Try tab-separated first, then comma-separated
-                            if '\t' in line:
-                                cells = [cell.strip() for cell in line.split('\t')]
+                            if "\t" in line:
+                                cells = [cell.strip() for cell in line.split("\t")]
                             else:
-                                cells = [cell.strip() for cell in line.split(',')]
+                                cells = [cell.strip() for cell in line.split(",")]
                             writer.writerow(cells)
 
             elif format_type == "xlsx":
@@ -1292,18 +1405,19 @@ def execute_create_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
                 filepath = os.path.join(user_dir, filename)
                 try:
                     from openpyxl import Workbook
+
                     wb = Workbook()
                     ws = wb.active
                     ws.title = title[:31]  # Excel sheet name limit
 
                     # Parse content as simple table (comma or tab-separated)
                     row_num = 1
-                    for line in content.split('\n'):
+                    for line in content.split("\n"):
                         if line.strip():
-                            if '\t' in line:
-                                cells = [cell.strip() for cell in line.split('\t')]
+                            if "\t" in line:
+                                cells = [cell.strip() for cell in line.split("\t")]
                             else:
-                                cells = [cell.strip() for cell in line.split(',')]
+                                cells = [cell.strip() for cell in line.split(",")]
                             for col_num, cell_value in enumerate(cells, 1):
                                 ws.cell(row=row_num, column=col_num, value=cell_value)
                             row_num += 1
@@ -1313,13 +1427,53 @@ def execute_create_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
                     errors.append(f"⚠️ XLSX format requires openpyxl library: {title}")
                     continue
 
-            # Generate download URL
-            download_url = f"/downloads/{user_id}/{urllib.parse.quote(filename)}"
-            results.append(f"👉 [{base_filename}.{format_type}]({download_url})")
-            logger.info(f"[CREATE_DOCUMENTS] Created {format_type} document: {filepath}")
+            # Register file in FileRegistry database
+            file_size = os.path.getsize(filepath)
+            mime_type_map = {
+                "pdf": "application/pdf",
+                "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "txt": "text/plain",
+                "md": "text/markdown",
+                "html": "text/html",
+                "csv": "text/csv",
+                "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            }
+
+            result = asyncio.run(
+                _register_file_async(
+                    user_email=user_id,
+                    category="created",
+                    original_name=f"{base_filename}.{format_type}",
+                    storage_path=filepath,
+                    source_tool="create_documents",
+                    mime_type=mime_type_map.get(
+                        format_type, "application/octet-stream"
+                    ),
+                    size_bytes=file_size,
+                    conversation_id=context.get("conversation_id"),
+                    metadata={"title": title, "format": format_type},
+                )
+            )
+
+            file_id = result["file_id"]
+            download_url = result[
+                "download_url"
+            ]  # Use unified /api/files/{file_id} URL
+            # Put file_id FIRST and most prominent for attachment operations
+            results.append(
+                f"✅ Created: {base_filename}.{format_type}\n"
+                f"   File ID: {file_id}\n"
+                f"   Download: [{base_filename}.{format_type}]({download_url})\n"
+                f"   → Use file ID '{file_id}' for email attachments"
+            )
+            logger.info(
+                f"[CREATE_DOCUMENTS] Created {format_type} document: {filepath} | file_id: {file_id}"
+            )
 
         except Exception as e:
-            errors.append(f"⚠️ Failed to create document '{doc.get('title', 'unknown')}': {str(e)}")
+            errors.append(
+                f"⚠️ Failed to create document '{doc.get('title', 'unknown')}': {str(e)}"
+            )
             logger.error(f"[CREATE_DOCUMENTS] Error creating document: {e}")
 
     # Build response message

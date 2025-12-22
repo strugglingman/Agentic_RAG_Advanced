@@ -5,8 +5,13 @@ Handles reading, chunking, and upserting documents to vector database.
 import os
 import json
 import hashlib
+import asyncio
+import logging
 from typing import Optional
 from src.services.document_processor import read_text, make_chunks
+from src.services.file_manager import FileManager
+
+logger = logging.getLogger(__name__)
 
 
 def make_id(text):
@@ -104,5 +109,31 @@ def ingest_one(
     with open(file_path + ".meta.json", "w", encoding="utf-8") as info_f:
         info["ingested"] = True
         json.dump(info, info_f, indent=2)
+
+    # Update FileRegistry to mark file as indexed in ChromaDB and sync metadata
+    registry_file_id = info.get("registry_file_id")
+    if registry_file_id and docs:
+        try:
+            async def update_chromadb_status():
+                async with FileManager() as fm:
+                    # Get the file record
+                    file_record = await fm.db.fileregistry.find_first(
+                        where={"id": registry_file_id}
+                    )
+                    if file_record:
+                        # Update indexed_in_chromadb flag and sync metadata with .meta.json
+                        await fm.db.fileregistry.update(
+                            where={"id": registry_file_id},
+                            data={
+                                "indexed_in_chromadb": True,
+                                "chromadb_collection": collection.name if hasattr(collection, 'name') else "default",
+                                "metadata": json.dumps(info)  # Sync complete file_info including ingested=True
+                            }
+                        )
+                        logger.info(f"[INGESTION] Marked file {registry_file_id} as indexed in ChromaDB and synced metadata")
+
+            asyncio.run(update_chromadb_status())
+        except Exception as e:
+            logger.error(f"[INGESTION] Failed to update FileRegistry indexed status: {e}")
 
     return info.get("file_id", "") if docs else None

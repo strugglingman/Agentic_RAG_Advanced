@@ -21,15 +21,11 @@ export function MarkdownRenderer({ content }: MarkdownRendererProps) {
       components={{
         // Customize link rendering for download links
         a: ({ node, ...props }) => {
-          // Convert backend download paths to frontend API proxy
-          // Backend returns: /downloads/user123/file.pdf
-          // Frontend uses: /api/downloads/user123/file.pdf (proxied through Next.js)
-          let href = props.href || '';
-
-          if (href.startsWith('/downloads/')) {
-            // Convert /downloads/{userId}/{filename} to /api/downloads/{userId}/{filename}
-            href = href.replace('/downloads/', '/api/downloads/');
-          }
+          // Backend now returns unified API format:
+          // - Uploaded files: /api/files/{file_id}
+          // - Other files: /api/downloads/{userId}/{filename}
+          // Both already have /api prefix, no conversion needed
+          const href = props.href || '';
 
           return (
             <a

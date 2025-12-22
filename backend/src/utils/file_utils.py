@@ -31,15 +31,22 @@ def validate_filename(f, allowed_extensions: list, mime_types: list) -> str:
     if not allowed_file(filename, allowed_extensions):
         return ""
 
-    # Check mime type
+    # Check mime type using python-magic-bin
     head = f.stream.read(8192)
     f.stream.seek(0)
-    mime = magic.Magic(mime=True).from_buffer(head) or ""
-    mime = mime.lower()
+    try:
+        # python-magic-bin uses magic.from_buffer() directly
+        mime = magic.from_buffer(head, mime=True) or ""
+        mime = mime.lower()
+    except Exception:
+        # Fallback: if magic detection fails, just check extension
+        mime = ""
 
-    mime_ok = any(mime.startswith(x) for x in mime_types)
-    if not mime_ok:
-        return ""
+    # If we got a mime type, verify it matches allowed types
+    if mime:
+        mime_ok = any(mime.startswith(x) for x in mime_types)
+        if not mime_ok:
+            return ""
 
     f.stream.seek(0)
     return filename

@@ -65,3 +65,28 @@ model QueryLog {
   @@index([created_at])
   @@index([recommendation])
 }
+
+model FileRegistry {
+  id                   String   @id @default(cuid())
+  user_email           String
+  dept_id              String?
+  category             String
+  original_name        String
+  storage_path         String
+  download_url         String?
+  mime_type            String?
+  size_bytes           BigInt?
+  source_tool          String?
+  source_url           String?
+  conversation_id      String?
+  indexed_in_chromadb  Boolean  @default(false)
+  chromadb_collection  String?
+  metadata             Json?
+  created_at           DateTime @default(now())
+  accessed_at          DateTime @default(now()) @updatedAt
+
+  @@index([user_email, category])
+  @@index([user_email, created_at])
+  @@index([conversation_id])
+  @@index([category])
+}

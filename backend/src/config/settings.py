@@ -265,6 +265,14 @@ class Config:
     }
 
     # ==============================================================================
+    # File Discovery Settings
+    # ==============================================================================
+    FILE_DISCOVERY_INDEXED_LIMIT = int(os.getenv("FILE_DISCOVERY_INDEXED_LIMIT", "200"))
+    FILE_DISCOVERY_CONVERSATION_LIMIT = int(
+        os.getenv("FILE_DISCOVERY_CONVERSATION_LIMIT", "20")
+    )
+
+    # ==============================================================================
     # Email Settings
     # ==============================================================================
     SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.outlook.com")

@@ -13,15 +13,11 @@ ReAct Loop:
 
 import json
 import logging
-import base64
 import io
-import copy
+import base64
 from typing import Dict, Any, List, Optional, Tuple
 from openai import OpenAI
 from langsmith import traceable
-from PyPDF2 import PdfReader
-from docx import Document
-import openpyxl
 from src.services.agent_tools import ALL_TOOLS, execute_tool_call
 from src.config.settings import Config
 from src.utils.stream_utils import stream_text_smart
@@ -261,6 +257,7 @@ class AgentService:
                 "\n\n"
                 "Guidelines:\n"
                 "- For questions about INTERNAL company documents, policies, or uploaded files: Use search_documents tool\n"
+                "  IMPORTANT: After using search_documents, ALWAYS check the 'Available Files' section below and include the download link if the source file is listed there\n"
                 "- For questions about CURRENT/EXTERNAL information (weather, news, stock prices, real-time data): Use web_search tool\n"
                 "- For mathematical calculations or numerical operations: Use calculator tool\n"
                 "- For simple factual questions that don't require internal documents: Answer directly\n"
@@ -270,12 +267,12 @@ class AgentService:
                 "- You may use multiple tools if needed to fully answer the question\n"
                 "\n"
                 "CRITICAL - Markdown Link Preservation:\n"
-                "- When tool results contain markdown links like 👉 [filename.pdf](/downloads/user/file.pdf), you MUST copy them EXACTLY as-is\n"
+                "- When tool results contain markdown links like 👉 [filename.pdf](/api/files/abc123), you MUST copy them EXACTLY as-is\n"
                 "- DO NOT translate, reformat, or break them across lines\n"
-                "- DO NOT change them to plain text format like '下载：/downloads/...'\n"
+                "- DO NOT change them to plain text format like '下载：/api/files/...'\n"
                 "- Keep the ENTIRE markdown link [text](url) on ONE line\n"
-                "- Example CORRECT: 'Downloaded：👉 [report.pdf](/downloads/user/report.pdf)'\n"
-                "- Example WRONG: 'Downloaded：[report.pdf]\\n(/downloads/user/report.pdf)' or 'Downloaded：/downloads/user/report.pdf'\n"
+                "- Example CORRECT: 'Downloaded：👉 [report.pdf](/api/files/abc123)'\n"
+                "- Example WRONG: 'Downloaded：[report.pdf]\\n(/api/files/abc123)' or 'Downloaded：/api/files/abc123'\n"
                 "\n"
                 "Examples:\n"
                 "- 'Tell me something about the man called Ove, also about the temperature of nanjing tomorrow, check internal docs if you can find the answer first'\n"
@@ -302,89 +299,349 @@ class AgentService:
                 "- NEVER include internal documents or private data unless the user explicitly requests it\n"
                 "- Before calling send_email, restate the email details and ask the user to confirm\n"
                 "- Better to have: you can make a template for user to confirm the email details\n"
-                "- To attach files uploaded by the user in chat, use 'chat_attachment_0', 'chat_attachment_1', etc.\n"
                 "\n"
             ),
         }
 
-        # Add attached images info to system prompt if any, use LLM multimodal features
-        attachments = context.get("attachments", [])
-        attached_images = [
-            atta for atta in attachments if atta.get("type", "") == "image"
-        ]
-        # Image attachments processing
-        images_content = []
-        if attached_images:
-            images_content = [
-                {
-                    "type": "image_url",
-                    "image_url": {
-                        "url": f"data:{image.get('mime_type', 'image/png')};base64,{image.get('data', '')}"
-                    },
-                }
-                for image in attached_images
-            ]
+        # Simple user message (no inline processing needed)
+        # All files are handled through available_files in FileRegistry
         user_msg = {
             "role": "user",
-            "content": (
-                [{"type": "text", "text": query}] + images_content
-                if images_content
-                else [{"type": "text", "text": query}]
-            ),
+            "content": [{"type": "text", "text": query}],
         }
 
-        # Notify LLM about attachments in system message
-        if attachments:
-            att_list = "\n".join(
-                [
-                    f"   - chat_attachment_{idx}: {atta.get('filename', 'unknown')} ({atta.get('type', 'unknown')})"
-                    for idx, atta in enumerate(attachments)
-                ]
-            )
-            all_attachment_refs = [
-                f"chat_attachment_{idx}" for idx in range(len(attachments))
-            ]
-            system_msg["content"] += (
-                "\n\nThe user has attached the following files in the chat:\n"
-                f"{att_list}\n"
-                "IMPORTANT: When using send_email tool:\n"
-                "- If the user specifies which files to attach (e.g., 'send file 2 and 3', 'attach the PDF only'), "
-                "use ONLY those specific files they mentioned\n"
-                "- If the user does NOT specify which files, attach ALL uploaded files by default: "
-                f"{all_attachment_refs}\n"
-                "- Use the reference names 'chat_attachment_0', 'chat_attachment_1', etc. in the attachments parameter\n"
-                "- Pay careful attention to file selection keywords like 'only', 'just', 'except', etc.\n"
-            )
+        # Notify LLM about available files from FileRegistry (includes all file types)
+        available_files = context.get("available_files", [])
+        logger.debug(
+            f"--------------------Available files from FileRegistry: {available_files}"
+        )
+        if available_files:
+            # Group files by category for better readability
+            files_by_category = {
+                "chat": [],
+                "uploaded": [],
+                "downloaded": [],
+                "created": [],
+            }
+            for file_info in available_files:
+                category = file_info.get("category", "unknown")
+                if category in files_by_category:
+                    files_by_category[category].append(file_info)
 
-        if images_content:
-            system_msg[
-                "content"
-            ] += "\n\nNote: The user has attached images. Analyze the images carefully and answer questions about them."
+            file_list_parts = []
 
-        # File attachments processing
-        attached_docs = [atta for atta in attachments if atta.get("type", "") == "file"]
-        doc_msg_texts = ""
-        if attached_docs:
-            doc_msg_texts = "\n\n--Attached Documents--\n"
-            for doc in attached_docs:
-                error, text = _extract_text_from_attachment(doc)
-                if error == "OK":
-                    doc_msg_texts += f"\nFilename: {doc.get('filename', 'unknown')}\nContent:\n{text}\n"
-            user_msg["content"][0]["text"] += doc_msg_texts
-
-        # Make a deep copy for logging (to avoid modifying the original)
-        user_msg_log = copy.deepcopy(user_msg)
-        user_msg_log["content"][0]["text"] = user_msg_log["content"][0]["text"][:500]
-        if len(user_msg_log["content"]) > 1:
-            for i in range(1, len(user_msg_log["content"])):
-                user_msg_log["content"][i]["image_url"]["url"] = (
-                    user_msg_log["content"][i]["image_url"]["url"][:100] + "..."
+            # Chat attachments from current and recent conversations
+            if files_by_category["chat"]:
+                chat_files = "\n".join(
+                    [
+                        f"   - {f['original_name']} (file_id: {f['id']}, uploaded {self._format_time_ago(f.get('created_at'))})"
+                        for f in files_by_category["chat"][
+                            :10
+                        ]  # Limit to 10 most recent
+                    ]
                 )
+                file_list_parts.append(f"Chat Attachments:\n{chat_files}")
+
+            # Uploaded documents (RAG indexed)
+            if files_by_category["uploaded"]:
+                uploaded_files = "\n".join(
+                    [
+                        f"   - {f['original_name']} (file_id: {f['id']}, uploaded {self._format_time_ago(f.get('created_at'))})"
+                        + (" - indexed in RAG" if f.get("indexed_in_chromadb") else "")
+                        + (
+                            f", download: [{f['original_name']}]({f['download_url']})"
+                            if f.get("download_url")
+                            else ""
+                        )
+                        for f in files_by_category["uploaded"][
+                            :15
+                        ]  # Limit to 15 most recent
+                    ]
+                )
+
+                file_list_parts.append(f"Uploaded Documents:\n{uploaded_files}")
+
+            # Downloaded files
+            if files_by_category["downloaded"]:
+                downloaded_files = "\n".join(
+                    [
+                        f"   - {f['original_name']}\n"
+                        f"     File ID: {f['id']}\n"
+                        + (
+                            f"     Download: [{f['original_name']}]({f['download_url']})"
+                            if f.get("download_url")
+                            else ""
+                        )
+                        for f in files_by_category["downloaded"][:10]
+                    ]
+                )
+                file_list_parts.append(f"Downloaded Files:\n{downloaded_files}")
+
+            # Created documents
+            if files_by_category["created"]:
+                created_files = "\n".join(
+                    [
+                        f"   - {f['original_name']}\n"
+                        f"     File ID: {f['id']}\n"
+                        + (
+                            f"     Download: [{f['original_name']}]({f['download_url']})"
+                            if f.get("download_url")
+                            else ""
+                        )
+                        for f in files_by_category["created"][:10]
+                    ]
+                )
+                file_list_parts.append(f"Created Documents:\n{created_files}")
+
+            if file_list_parts:
+                system_msg["content"] += (
+                    "\n\n## Available Files\n\n"
+                    "The user has access to the following files that you can reference:\n\n"
+                    + "\n\n".join(file_list_parts)
+                    + "\n\nIMPORTANT - File Operations:\n"
+                    "- When user asks to 'email the policy' or 'send that file', check the Available Files list above\n"
+                    "- CRITICAL: When you use search_documents and find content from a source file, ALWAYS check if that file is in the Available Files list above\n"
+                    "- If the source file has a download link shown (e.g., 'download: [filename.pdf](/api/files/...)'), you MUST include that link in your response\n"
+                    "- When user asks 'give me the link' or 'return me the link' for a document you found via RAG search, copy the download markdown link from Available Files\n"
+                    "- CRITICAL - For send_email attachments: ALWAYS use the full file_id exactly as shown\n"
+                    "  • When you download/create a file, look for 'File ID: cmjg...' in the tool response\n"
+                    "  • Copy the ENTIRE file_id (e.g., 'cmjg8yrab0000xspw5ip79qcb') - it's a long alphanumeric string\n"
+                    "  • ✅ CORRECT: attachments=['cmjg984710000layjyzdkyc9i']  (full file_id)\n"
+                    "  • ❌ WRONG: attachments=['7132106021010130.shtm']  (filename)\n"
+                    "  • ❌ WRONG: attachments=['/api/downloads/user/file.pdf']  (URL)\n"
+                    "- Each file_id starts with letters like 'cm' or 'cl' followed by many characters (20-25 chars total)\n"
+                    "- If you cannot find file_id, use category:filename format like 'downloaded:report.pdf'\n"
+                    "- Example: User asks 'What's our vacation policy?' → You search and find info from 'company_policy.pdf' → "
+                    "Check Available Files → If it shows 'download: [company_policy.pdf](/api/files/abc123)' → Include that link in your response\n"
+                )
+
+        # Process just-uploaded chat attachments for inline content analysis
+        # Read files from disk using real file IDs and append to user message
+        attachment_file_ids = context.get("attachment_file_ids", [])
+        if attachment_file_ids:
+            attachment_texts = []
+            for att in attachment_file_ids:
+                try:
+                    # Read file from disk (already saved in FileRegistry)
+                    file_path = self._get_file_path_sync(
+                        att["file_id"], context.get("user_id")
+                    )
+
+                    # Extract text based on file type
+                    content = self._extract_file_content(file_path, att["mime_type"])
+                    if content:
+                        attachment_texts.append(
+                            f"\n\n--Attached File: {att['filename']} (file_id: {att['file_id']})--\n{content}"
+                        )
+                except Exception as e:
+                    logger.error(
+                        f"[AGENT] Failed to read attachment {att['file_id']}: {e}"
+                    )
+
+            if attachment_texts:
+                # Append to user message
+                user_msg["content"][0]["text"] += "".join(attachment_texts)
 
         if messages_history:
             return [system_msg] + messages_history + [user_msg]
         else:
             return [system_msg, user_msg]
+
+    def _get_file_path_sync(self, file_id: str, user_email: str) -> str:
+        """
+        Synchronous wrapper to get file path from FileManager.
+        Handles event loop properly by using thread pool execution.
+
+        Args:
+            file_id: File ID from FileRegistry
+            user_email: User's email address
+
+        Returns:
+            Absolute file path on disk
+
+        Raises:
+            FileNotFoundError: If file not found
+            PermissionError: If user doesn't have access
+        """
+        import asyncio
+        import nest_asyncio
+        import concurrent.futures
+        from src.services.file_manager import FileManager
+
+        nest_asyncio.apply()  # Allow nested event loops
+
+        async def _get_path():
+            async with FileManager() as fm:
+                return await fm.get_file_path(file_id, user_email)
+
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            # If loop is running, use thread pool to avoid event loop conflict
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                return pool.submit(lambda: asyncio.run(_get_path())).result()
+        else:
+            return asyncio.run(_get_path())
+
+    def _extract_file_content(self, file_path: str, mime_type: str) -> str:
+        """
+        Extract text content from file based on MIME type.
+
+        Args:
+            file_path: Absolute path to file on disk
+            mime_type: MIME type of the file
+
+        Returns:
+            Extracted text content (truncated if too long)
+
+        Supported formats:
+            - PDF: application/pdf
+            - DOCX: application/vnd.openxmlformats-officedocument.wordprocessingml.document
+            - Excel: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+            - Text: text/plain, text/markdown, text/csv
+        """
+        try:
+            max_chars = 50000  # Limit to prevent overwhelming context
+
+            # PDF files
+            if mime_type == "application/pdf":
+                try:
+                    import PyPDF2
+
+                    with open(file_path, "rb") as f:
+                        reader = PyPDF2.PdfReader(f)
+                        text_parts = []
+                        for page in reader.pages[:50]:  # Limit to first 50 pages
+                            text_parts.append(page.extract_text())
+                        content = "\n".join(text_parts)
+                        return content[:max_chars] + (
+                            "..." if len(content) > max_chars else ""
+                        )
+                except Exception as e:
+                    logger.error(f"[AGENT] Failed to extract PDF content: {e}")
+                    return f"[PDF file - {len(open(file_path, 'rb').read())} bytes - text extraction failed]"
+
+            # DOCX files
+            elif (
+                mime_type
+                == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            ):
+                try:
+                    import docx
+
+                    doc = docx.Document(file_path)
+                    text_parts = [paragraph.text for paragraph in doc.paragraphs]
+                    content = "\n".join(text_parts)
+                    return content[:max_chars] + (
+                        "..." if len(content) > max_chars else ""
+                    )
+                except Exception as e:
+                    logger.error(f"[AGENT] Failed to extract DOCX content: {e}")
+                    return f"[DOCX file - text extraction failed]"
+
+            # Excel files
+            elif mime_type in [
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "application/vnd.ms-excel",
+            ]:
+                try:
+                    import openpyxl
+
+                    wb = openpyxl.load_workbook(file_path, data_only=True)
+                    text_parts = []
+                    for sheet in wb.worksheets[:5]:  # Limit to first 5 sheets
+                        text_parts.append(f"Sheet: {sheet.title}")
+                        for row in list(sheet.iter_rows(values_only=True))[
+                            :100
+                        ]:  # Limit to 100 rows
+                            row_text = "\t".join(
+                                str(cell) if cell is not None else "" for cell in row
+                            )
+                            if row_text.strip():
+                                text_parts.append(row_text)
+                    content = "\n".join(text_parts)
+                    return content[:max_chars] + (
+                        "..." if len(content) > max_chars else ""
+                    )
+                except Exception as e:
+                    logger.error(f"[AGENT] Failed to extract Excel content: {e}")
+                    return f"[Excel file - text extraction failed]"
+
+            # Text files (plain text, markdown, CSV, etc.)
+            elif mime_type.startswith("text/"):
+                try:
+                    with open(file_path, "r", encoding="utf-8") as f:
+                        content = f.read()
+                        return content[:max_chars] + (
+                            "..." if len(content) > max_chars else ""
+                        )
+                except UnicodeDecodeError:
+                    # Try with different encoding
+                    try:
+                        with open(file_path, "r", encoding="latin-1") as f:
+                            content = f.read()
+                            return content[:max_chars] + (
+                                "..." if len(content) > max_chars else ""
+                            )
+                    except Exception as e:
+                        logger.error(f"[AGENT] Failed to read text file: {e}")
+                        return f"[Text file - encoding error]"
+
+            # Unsupported file type
+            else:
+                import os
+
+                file_size = os.path.getsize(file_path)
+                return f"[File type {mime_type} not supported for inline content extraction - {file_size} bytes]"
+
+        except Exception as e:
+            logger.error(f"[AGENT] Unexpected error extracting file content: {e}")
+            return f"[Error reading file: {str(e)}]"
+
+    def _format_time_ago(self, created_at: Optional[str]) -> str:
+        """
+        Format timestamp as relative time (e.g., '2 hours ago', 'yesterday').
+
+        Args:
+            created_at: ISO format timestamp string
+
+        Returns:
+            Human-readable relative time string
+        """
+        if not created_at:
+            return "unknown time"
+
+        try:
+            from datetime import datetime, timezone
+
+            # Parse ISO timestamp
+            if isinstance(created_at, str):
+                created_time = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+            else:
+                return "unknown time"
+
+            # Get current time in UTC
+            now = datetime.now(timezone.utc)
+
+            # Calculate difference
+            delta = now - created_time
+            seconds = delta.total_seconds()
+
+            if seconds < 60:
+                return "just now"
+            elif seconds < 3600:
+                minutes = int(seconds / 60)
+                return f"{minutes} minute{'s' if minutes != 1 else ''} ago"
+            elif seconds < 86400:
+                hours = int(seconds / 3600)
+                return f"{hours} hour{'s' if hours != 1 else ''} ago"
+            elif seconds < 604800:
+                days = int(seconds / 86400)
+                return f"{days} day{'s' if days != 1 else ''} ago"
+            else:
+                weeks = int(seconds / 604800)
+                return f"{weeks} week{'s' if weeks != 1 else ''} ago"
+        except Exception:
+            return "unknown time"
 
     def _get_final_answer(self, response: Any) -> str:
         """
@@ -464,60 +721,3 @@ def format_tool_call_for_logging(tool_call) -> str:
     args = json.loads(tool_call.function.arguments)
     args_str = ", ".join(f"{k}='{v}'" for k, v in args.items())
     return f"{name}({args_str})"
-
-
-def _extract_text_from_attachment(
-    attachment: Dict[str, Any],
-) -> Tuple[str, Optional[str]]:
-    """
-    Extract text content from an attachment based on its type.
-
-    Args:
-        attachment: Attachment dictionary with keys like 'filename', 'data', 'type'
-    Returns:
-        Extracted text content or None if unsupported type
-    """
-
-    filetype = attachment.get("filename", "").split(".")[-1].lower()
-    data = attachment.get("data", "")
-    if not data:
-        return "NODATA", f"[No data in file: {attachment.get('filename', '')}]"
-
-    if filetype == "pdf":
-        pdf_bytes_data = base64.b64decode(data)
-        reader = PdfReader(io.BytesIO(pdf_bytes_data))
-        text = "\n".join(
-            [page.extract_text() for page in reader.pages if page.extract_text()]
-        )
-        return "OK", text
-    if filetype == "docx":
-        docx_types_data = base64.b64decode(data)
-        reader = Document(io.BytesIO(docx_types_data))
-        text = "\n".join([p.text for p in reader.paragraphs])
-        return "OK", text
-    if filetype in ["xlsx", "xls"]:
-        try:
-            excel_bytes_data = base64.b64decode(data)
-            workbook = openpyxl.load_workbook(
-                io.BytesIO(excel_bytes_data), read_only=True, data_only=True
-            )
-            text_parts = []
-            for sheet_name in workbook.sheetnames:
-                sheet = workbook[sheet_name]
-                text_parts.append(f"\n--- Sheet: {sheet_name} ---")
-                for row in sheet.iter_rows(values_only=True):
-                    row_text = "\t".join(
-                        [str(cell) if cell is not None else "" for cell in row]
-                    )
-                    if row_text.strip():
-                        text_parts.append(row_text)
-            workbook.close()
-            text = "\n".join(text_parts)
-            return "OK", text
-        except Exception as e:
-            return "ERROR", f"[Error extracting spreadsheet: {str(e)}]"
-    if filetype in ["txt", "csv", "md"]:
-        text = base64.b64decode(data).decode("utf-8", errors="ignore")
-        return "OK", text
-
-    return "UNSUPPORTED", f"[Unsupported file type: {filetype}]"
