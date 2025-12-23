@@ -2,9 +2,10 @@
 Conversation Entity - A chat session between user and AI.
 """
 
+from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
-
+from uuid import uuid4
 from src.domain.value_objects.conversation_id import ConversationId
 from src.domain.value_objects.user_email import UserEmail
 
@@ -16,6 +17,17 @@ class Conversation:
     title: str
     created_at: datetime
     updated_at: datetime
+
+    @classmethod
+    def create(cls, user_email: UserEmail, title: str) -> Conversation:
+        conversation_id = ConversationId(str(uuid4()))
+        return cls(
+            id=conversation_id,
+            user_email=user_email,
+            title=title,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
 
     def update_title(self, new_title: str) -> None:
         if len(new_title) > 50:

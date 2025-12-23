@@ -1,10 +1,5 @@
-"""
-Chat DTOs.
+"""Chat DTOs for API request/response."""
 
-TODO: Implement
-
-Example:
-```python
 from pydantic import BaseModel
 from typing import Optional
 
@@ -18,5 +13,3 @@ class ChatResponse(BaseModel):
     conversation_id: str
     tokens_used: Optional[int] = None
     latency_ms: Optional[int] = None
-```
-"""

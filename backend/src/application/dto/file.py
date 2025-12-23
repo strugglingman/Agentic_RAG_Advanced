@@ -1,12 +1,9 @@
-"""
-File DTOs.
+"""File DTOs for API request/response."""
 
-TODO: Implement
-
-Example:
-```python
 from pydantic import BaseModel
 from datetime import datetime
+from typing import Optional
+
 
 class FileDTO(BaseModel):
     id: str
@@ -16,5 +13,3 @@ class FileDTO(BaseModel):
     mime_type: Optional[str] = None
     size_bytes: Optional[int] = None
     created_at: datetime
-```
-"""
