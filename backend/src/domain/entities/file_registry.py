@@ -1,0 +1,49 @@
+"""
+FileRegistry Entity - A registered file in the system.
+"""
+
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Optional, Dict, Any
+
+from src.domain.value_objects.user_email import UserEmail
+from src.domain.value_objects.dept_id import DeptId
+from src.domain.value_objects.file_path import FilePath
+from src.domain.value_objects.conversation_id import ConversationId
+
+
+@dataclass
+class FileRegistry:
+    id: str  # cuid
+    user_email: UserEmail
+    category: str  # "uploaded" | "downloaded" | "generated"
+    original_name: str
+    storage_path: FilePath
+    created_at: datetime
+    accessed_at: datetime
+    dept_id: Optional[DeptId] = None
+    download_url: Optional[str] = None
+    mime_type: Optional[str] = None
+    size_bytes: Optional[int] = None
+    source_tool: Optional[str] = None
+    source_url: Optional[str] = None
+    conversation_id: Optional[ConversationId] = None
+    indexed_in_chromadb: bool = False
+    chromadb_collection: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+    def __post_init__(self):
+        valid_categories = ["uploaded", "downloaded", "created", "chat"]
+        if self.category not in valid_categories:
+            raise ValueError(
+                f"Invalid category: {self.category}. Must be one of {valid_categories}."
+            )
+
+    def mark_indexed(self, collection: str) -> None:
+        """Mark file as indexed in ChromaDB."""
+        self.indexed_in_chromadb = True
+        self.chromadb_collection = collection
+
+    def touch(self) -> None:
+        """Update accessed_at timestamp."""
+        self.accessed_at = datetime.now(timezone.utc)
