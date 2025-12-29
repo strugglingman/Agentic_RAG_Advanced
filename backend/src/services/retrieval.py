@@ -387,7 +387,7 @@ def retrieve(
                 return [], "No candidates to rerank."
 
             try:
-                count = min(len(ctx_candidates), max(top_k * 3, 12))
+                count = min(len(ctx_candidates), Config.CANDIDATES)
                 ctx_for_rerank = ctx_candidates[:count]
                 rerank_inputs = [(query, item["chunk"]) for item in ctx_for_rerank]
                 rerank_scores = reranker.predict(rerank_inputs)

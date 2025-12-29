@@ -120,7 +120,7 @@ class Config:
         "on",
     }
     TOP_K = int(os.getenv("TOP_K", "5"))
-    CANDIDATES = int(os.getenv("CANDIDATES", "20"))
+    CANDIDATES = int(os.getenv("CANDIDATES", "50"))
     FUSE_ALPHA = float(os.getenv("FUSE_ALPHA", "0.5"))
 
     # Quality thresholds for hybrid search and reranking
@@ -140,9 +140,9 @@ class Config:
     # ==============================================================================
     # Document Processing & Chunking
     # ==============================================================================
-    SENT_TARGET = int(os.getenv("SENT_TARGET", "400"))
-    SENT_OVERLAP = int(os.getenv("SENT_OVERLAP", "90"))
-    TEXT_MAX = int(os.getenv("TEXT_MAX", "400000"))
+    SENT_TARGET = int(os.getenv("SENT_TARGET", "1600"))
+    SENT_OVERLAP = int(os.getenv("SENT_OVERLAP", "250"))
+    TEXT_MAX = int(os.getenv("TEXT_MAX", "-1"))
 
     # ==============================================================================
     # Chat Settings

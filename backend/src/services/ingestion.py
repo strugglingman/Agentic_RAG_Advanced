@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from src.services.document_processor import read_text, make_chunks
 from src.services.file_manager import FileManager
 from src.domain.entities.file_registry import FileRegistry
+from src.config.settings import Config
 
 logger = logging.getLogger(__name__)
 
@@ -68,12 +69,12 @@ def ingest_one(
     if not os.path.exists(file_path):
         return None
 
-    pages_text = read_text(file_path)
+    pages_text = read_text(file_path, text_max=Config.TEXT_MAX)
     if not pages_text:
         return None
 
     # Chunking - now returns list of (page_num, chunk_text) tuples
-    chunks_with_pages = make_chunks(pages_text)
+    chunks_with_pages = make_chunks(pages_text, target=Config.SENT_TARGET, overlap=Config.SENT_OVERLAP)
     filename = info.get("filename", os.path.basename(file_path))
 
     # Upsert to chroma
@@ -224,7 +225,7 @@ def ingest_file(
 
     # Read file content
     try:
-        pages_text = read_text(file_path)
+        pages_text = read_text(file_path, text_max=Config.TEXT_MAX)
     except Exception as e:
         return IngestResult(
             file_id=file_id,
