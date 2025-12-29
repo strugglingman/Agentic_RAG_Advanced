@@ -12,14 +12,16 @@ from src.domain.value_objects.user_email import UserEmail
 
 @dataclass
 class User:
+    # Required fields (no defaults) - must come first
     id: UserId
     email: UserEmail
-    dept: Optional[DeptId] = None
     password_hash: str
-    name: Optional[str] = None
     role: str
     created_at: datetime
     updated_at: datetime
+    # Optional fields (with defaults) - must come last
+    dept: Optional[DeptId] = None
+    name: Optional[str] = None
 
     def __post_init__(self):
         valid_roles = ["staff", "admin", "manager"]

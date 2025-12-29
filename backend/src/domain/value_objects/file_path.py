@@ -18,6 +18,10 @@ class FilePath:
         return self.value
 
     @property
+    def path(self) -> Path:
+        return Path(self.value)
+
+    @property
     def filename(self) -> str:
         return Path(self.value).name
 

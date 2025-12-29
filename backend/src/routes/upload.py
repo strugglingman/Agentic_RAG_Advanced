@@ -118,7 +118,7 @@ def upload():
                     size_bytes=file_size_bytes,
                     dept_id=dept_id,
                     indexed_in_chromadb=False,  # Will be set to True after ingestion
-                    metadata=file_info  # Store complete file_info from .meta.json
+                    metadata=file_info,  # Store complete file_info from .meta.json
                 )
 
         result = asyncio.run(register_uploaded_file())
@@ -130,6 +130,7 @@ def upload():
     except Exception as e:
         # Log error but don't fail the upload
         import logging
+
         logger = logging.getLogger(__name__)
         logger.error(f"[UPLOAD] Failed to register file in FileRegistry: {e}")
 

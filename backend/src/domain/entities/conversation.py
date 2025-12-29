@@ -17,6 +17,7 @@ class Conversation:
     title: str
     created_at: datetime
     updated_at: datetime
+    last_message: str | None = None
 
     @classmethod
     def create(cls, user_email: UserEmail, title: str) -> Conversation:

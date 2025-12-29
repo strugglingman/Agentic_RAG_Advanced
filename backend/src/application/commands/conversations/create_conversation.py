@@ -25,19 +25,22 @@ from src.domain.value_objects.conversation_id import ConversationId
 from src.domain.value_objects.user_email import UserEmail
 from src.application.common.interfaces import Command, CommandHandler
 
+
 @dataclass(frozen=True)
 class CreateConversationCommand(Command[ConversationId]):
-    user_email: str
+    user_email: UserEmail
     title: str
+
 
 class CreateConversationHandler(CommandHandler[ConversationId]):
     _conversation_repository: ConversationRepository
 
     def __init__(self, conversation_repository: ConversationRepository):
         self._conversation_repository = conversation_repository
-    
-    def execute(self, command: CreateConversationCommand) -> ConversationId:
-        user_email = UserEmail(command.user_email)
-        conversation = Conversation.create(user_email=user_email, title=command.title)
-        self._conversation_repository.save(conversation)
+
+    async def execute(self, command: CreateConversationCommand) -> ConversationId:
+        conversation = Conversation.create(
+            user_email=command.user_email, title=command.title
+        )
+        await self._conversation_repository.save(conversation)
         return conversation.id

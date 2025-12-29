@@ -915,6 +915,10 @@ def execute_download_file(args: Dict[str, Any], context: Dict[str, Any]) -> str:
                 size_bytes=file_size,
                 source_url=file_url,
                 conversation_id=context.get("conversation_id"),
+                dept_id=context.get("dept_id"),
+                metadata={
+                    "file_for_user": True
+                },  # Downloaded files are private to user
             )
 
             file_id = result["file_id"]
@@ -986,6 +990,7 @@ def execute_send_email(args: Dict[str, Any], context: Dict[str, Any]) -> str:
         return "Missing required email fields"
 
     user_email = context.get("user_id")
+    dept_id = context.get("dept_id")
     if not user_email:
         return "Error: User email not found in context"
 
@@ -998,9 +1003,10 @@ def execute_send_email(args: Dict[str, Any], context: Dict[str, Any]) -> str:
 
     # Resolve each attachment reference using unified file system
     # All files (chat, uploaded, downloaded, created) are in FileRegistry
+    # Include dept_id to allow access to shared files in same department
     for ref in attachment_refs:
         try:
-            file_path = _resolve_file_sync(ref, user_email)
+            file_path = _resolve_file_sync(ref, user_email, dept_id=dept_id)
             real_attachments.append(file_path)
         except FileNotFoundError as e:
             errors.append(f"⚠️ File not found: {ref}")
@@ -1026,7 +1032,7 @@ def execute_send_email(args: Dict[str, Any], context: Dict[str, Any]) -> str:
     return f"Email sent successfully to recipients: {', '.join(to_addresses)} with subject: {subject}"
 
 
-def _resolve_file_sync(file_ref: str, user_email: str) -> str:
+def _resolve_file_sync(file_ref: str, user_email: str, dept_id: str = None) -> str:
     """
     Synchronous wrapper to resolve file reference using FileManager.
     Handles event loop properly by using thread pool when needed.
@@ -1034,6 +1040,7 @@ def _resolve_file_sync(file_ref: str, user_email: str) -> str:
     Args:
         file_ref: File reference (file_id, category:name, path, filename, or URL)
         user_email: User email for security
+        dept_id: Department ID for shared file access (optional)
 
     Returns:
         Absolute path to file on disk
@@ -1046,7 +1053,7 @@ def _resolve_file_sync(file_ref: str, user_email: str) -> str:
     nest_asyncio.apply()  # Allow nested event loops
 
     async def _do_resolve():
-        return await _resolve_file_async(file_ref, user_email)
+        return await _resolve_file_async(file_ref, user_email, dept_id=dept_id)
 
     loop = asyncio.get_event_loop()
     if loop.is_running():
@@ -1059,13 +1066,16 @@ def _resolve_file_sync(file_ref: str, user_email: str) -> str:
         return asyncio.run(_do_resolve())
 
 
-async def _resolve_file_async(file_ref: str, user_email: str) -> str:
+async def _resolve_file_async(
+    file_ref: str, user_email: str, dept_id: str = None
+) -> str:
     """
     Async helper to resolve file reference using FileManager.
 
     Args:
         file_ref: File reference (file_id, category:name, path, filename, or URL)
         user_email: User email for security
+        dept_id: Department ID for shared file access (optional)
 
     Returns:
         Absolute path to file on disk
@@ -1095,7 +1105,7 @@ async def _resolve_file_async(file_ref: str, user_email: str) -> str:
         file_ref = file_ref.replace("/api/files/", "")
 
     async with FileManager() as fm:
-        return await fm.get_file_path(file_ref, user_email)
+        return await fm.get_file_path(file_ref, user_email, dept_id=dept_id)
 
 
 def _register_file_sync(
@@ -1451,7 +1461,12 @@ def execute_create_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
                     ),
                     size_bytes=file_size,
                     conversation_id=context.get("conversation_id"),
-                    metadata={"title": title, "format": format_type},
+                    dept_id=context.get("dept_id"),
+                    metadata={
+                        "title": title,
+                        "format": format_type,
+                        "file_for_user": True,  # Created files are private to user
+                    },
                 )
             )
 

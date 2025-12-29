@@ -29,6 +29,12 @@ class Config:
     # OpenAI API Settings
     # ==============================================================================
     OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.2")
+    OPENAI_SIMPLE_MODEL = os.getenv(
+        "OPENAI_SIMPLE_MODEL", "gpt-4o-mini"
+    )  # Fast and cheap for simple, classification questions.
+    OPENAI_VISION_MODEL = os.getenv(
+        "OPENAI_VISION_MODEL", "gpt-4o-mini"
+    )  # Vision-capable model for image analysis.
     OPENAI_TEMPERATURE = float(os.getenv("OPENAI_TEMPERATURE", "0.1"))
     OPENAI_KEY = os.getenv("OPENAI_API_KEY", "")
     AGENT_MAX_ITERATIONS = int(os.getenv("AGENT_MAX_ITERATIONS", "20"))

@@ -5,7 +5,6 @@ Handles organization structure endpoint.
 
 import json
 from flask import Blueprint, jsonify
-from flask_limiter.util import get_remote_address
 from src.config.settings import Config
 
 org_bp = Blueprint("org", __name__)

@@ -200,7 +200,7 @@ export default function UploadPage() {
                 </div>
                 <div className="text-sm">
                   {f.tags && f.tags.length > 0 && (
-                    <span className="ml-2">Tags: {f.tags}</span>
+                    <span className="ml-2">Tags: {f.tags.join(', ')}</span>
                   )}
                 </div>
                 <div className="text-sm">{f.upload_at}</div>

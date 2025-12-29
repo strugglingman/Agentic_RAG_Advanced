@@ -33,11 +33,44 @@ class FileManager:
     CATEGORY_DOWNLOADED = "downloaded"
     CATEGORY_CREATED = "created"
 
-    VALID_CATEGORIES = {CATEGORY_CHAT, CATEGORY_UPLOADED, CATEGORY_DOWNLOADED, CATEGORY_CREATED}
+    VALID_CATEGORIES = {
+        CATEGORY_CHAT,
+        CATEGORY_UPLOADED,
+        CATEGORY_DOWNLOADED,
+        CATEGORY_CREATED,
+    }
 
     def __init__(self):
         """Initialize FileManager. Prisma client created lazily on first connect."""
         self.db = None  # Created lazily in __aenter__ to avoid event loop issues
+
+    def _find_accessible_shared_file(self, candidates: list) -> Optional[any]:
+        """
+        Find first shared file (file_for_user=False) from candidates.
+
+        Args:
+            candidates: List of file records to check
+
+        Returns:
+            First shared file record, or None if none found
+        """
+        import json
+
+        for record in candidates:
+            metadata = {}
+            if record.metadata:
+                try:
+                    metadata = (
+                        json.loads(record.metadata)
+                        if isinstance(record.metadata, str)
+                        else record.metadata
+                    )
+                except (json.JSONDecodeError, TypeError):
+                    metadata = {}
+            # Shared file = file_for_user is False or not set
+            if not metadata.get("file_for_user", False):
+                return record
+        return None
 
     async def __aenter__(self):
         """Async context manager entry - create fresh database connection."""
@@ -115,23 +148,18 @@ class FileManager:
                 "conversation_id": conversation_id,
                 "indexed_in_chromadb": indexed_in_chromadb,
                 "chromadb_collection": chromadb_collection,
-                "metadata": json_lib.dumps(metadata) if metadata else json_lib.dumps({}),
+                "metadata": (
+                    json_lib.dumps(metadata) if metadata else json_lib.dumps({})
+                ),
             }
         )
 
-        # Generate download URL based on category
-        filename = os.path.basename(storage_path)
-        if category == "uploaded":
-            # Uploaded files use the secure /api/files/{file_id} endpoint
-            download_url = f"/api/files/{file_record.id}"
-        else:
-            # Downloaded, created, chat files use /api/downloads/ path (unified API pattern)
-            download_url = f"/api/downloads/{user_email}/{filename}"
+        # Generate unified download URL - all files use /api/files/{file_id}
+        download_url = f"/api/files/{file_record.id}"
 
         # Update the record with the correct download_url
         file_record = await self.db.fileregistry.update(
-            where={"id": file_record.id},
-            data={"download_url": download_url}
+            where={"id": file_record.id}, data={"download_url": download_url}
         )
 
         logger.info(
@@ -141,12 +169,11 @@ class FileManager:
         )
 
         # Return both file_id and download_url for tool use
-        return {
-            "file_id": file_record.id,
-            "download_url": download_url
-        }
+        return {"file_id": file_record.id, "download_url": download_url}
 
-    async def get_file_path(self, file_ref: str, user_email: str) -> str:
+    async def get_file_path(
+        self, file_ref: str, user_email: str, dept_id: Optional[str] = None
+    ) -> str:
         """
         Resolve file reference to absolute storage path.
 
@@ -155,9 +182,14 @@ class FileManager:
         - Category:name: "chat:report.pdf", "created:summary.pdf"
         - Just filename: "report.pdf" (searches all categories, most recent)
 
+        Access control:
+        - User owns the file (user_email matches), OR
+        - File is shared (file_for_user=False in metadata) AND same dept_id
+
         Args:
             file_ref: File reference string
             user_email: User email for security check
+            dept_id: Department ID for shared file access (optional)
 
         Returns:
             Absolute path to file on disk
@@ -170,33 +202,74 @@ class FileManager:
 
         # Case 1: File ID lookup (e.g., "file_abc123")
         if file_ref.startswith("file_") or len(file_ref) == 25:  # cuid length
+            # First try user's own file
             file_record = await self.db.fileregistry.find_first(
                 where={"id": file_ref, "user_email": user_email}
             )
+            # If not found, check for shared file in same dept
+            if not file_record and dept_id:
+                file_record = await self.db.fileregistry.find_first(
+                    where={"id": file_ref, "dept_id": dept_id}
+                )
+                # Verify it's actually shared (not user-specific)
+                if file_record:
+                    import json
+
+                    metadata = {}
+                    if file_record.metadata:
+                        try:
+                            metadata = (
+                                json.loads(file_record.metadata)
+                                if isinstance(file_record.metadata, str)
+                                else file_record.metadata
+                            )
+                        except (json.JSONDecodeError, TypeError):
+                            metadata = {}
+                    # If file_for_user=True, only owner can access
+                    if metadata.get("file_for_user", False):
+                        file_record = None
 
         # Case 2: Category:name lookup (e.g., "chat:report.pdf")
         elif ":" in file_ref:
             category, name = file_ref.split(":", 1)
+            # First try user's own file
             file_record = await self.db.fileregistry.find_first(
                 where={
                     "user_email": user_email,
                     "category": category,
                     "original_name": name,
                 },
-                order={"created_at": "desc"},  # Most recent first
+                order={"created_at": "desc"},
             )
+            # If not found, check for shared file in same dept
+            if not file_record and dept_id:
+                candidates = await self.db.fileregistry.find_many(
+                    where={
+                        "dept_id": dept_id,
+                        "category": category,
+                        "original_name": name,
+                    },
+                    order={"created_at": "desc"},
+                )
+                file_record = self._find_accessible_shared_file(candidates)
 
         # Case 3: Just filename (e.g., "report.pdf")
         else:
+            # First try user's own file
             file_record = await self.db.fileregistry.find_first(
                 where={"user_email": user_email, "original_name": file_ref},
-                order={"created_at": "desc"},  # Most recent first
+                order={"created_at": "desc"},
             )
+            # If not found, check for shared file in same dept
+            if not file_record and dept_id:
+                candidates = await self.db.fileregistry.find_many(
+                    where={"dept_id": dept_id, "original_name": file_ref},
+                    order={"created_at": "desc"},
+                )
+                file_record = self._find_accessible_shared_file(candidates)
 
         if not file_record:
-            raise FileNotFoundError(
-                f"File not found: {file_ref} for user {user_email}"
-            )
+            raise FileNotFoundError(f"File not found: {file_ref} for user {user_email}")
 
         # Verify file exists on disk
         if not os.path.exists(file_record.storage_path):
@@ -219,32 +292,77 @@ class FileManager:
         user_email: str,
         category: Optional[str] = None,
         conversation_id: Optional[str] = None,
+        dept_id: Optional[str] = None,
         limit: int = 50,
     ) -> List[Dict]:
         """
         List files available to user.
         Used to populate LLM context about available files.
 
+        Access control:
+        - User's own files, AND
+        - Shared files in same dept (file_for_user=False in metadata)
+
         Args:
             user_email: User email
             category: Filter by category (optional)
             conversation_id: Filter by conversation (optional)
+            dept_id: Department ID for shared file access (optional)
             limit: Maximum number of files to return
 
         Returns:
             List of file records as dictionaries
         """
-        where_clause = {"user_email": user_email}
+        import json
 
+        result_files = []
+
+        # Get user's own files
+        user_where = {"user_email": user_email}
         if category:
-            where_clause["category"] = category
-
+            user_where["category"] = category
         if conversation_id:
-            where_clause["conversation_id"] = conversation_id
+            user_where["conversation_id"] = conversation_id
 
-        files = await self.db.fileregistry.find_many(
-            where=where_clause, order={"created_at": "desc"}, take=limit
+        user_files = await self.db.fileregistry.find_many(
+            where=user_where, order={"created_at": "desc"}, take=limit
         )
+        result_files.extend(user_files)
+
+        # Get shared files from same dept (if dept_id provided)
+        if dept_id:
+            dept_where: Dict[str, any] = {"dept_id": dept_id}
+            if category:
+                dept_where["category"] = category
+            if conversation_id:
+                dept_where["conversation_id"] = conversation_id
+
+            dept_files = await self.db.fileregistry.find_many(
+                where=dept_where, order={"created_at": "desc"}, take=limit
+            )
+
+            # Filter to only shared files (file_for_user=False) not already in result
+            user_file_ids = {f.id for f in user_files}
+            for f in dept_files:
+                if f.id in user_file_ids:
+                    continue  # Already included
+                metadata = {}
+                if f.metadata:
+                    try:
+                        metadata = (
+                            json.loads(f.metadata)
+                            if isinstance(f.metadata, str)
+                            else f.metadata
+                        )
+                    except (json.JSONDecodeError, TypeError):
+                        metadata = {}
+                # Only include shared files (file_for_user=False or not set)
+                if not metadata.get("file_for_user", False):
+                    result_files.append(f)
+
+        # Sort by created_at desc and limit
+        result_files.sort(key=lambda x: x.created_at or datetime.min, reverse=True)
+        result_files = result_files[:limit]
 
         # Convert to dicts for easier handling
         return [
@@ -258,7 +376,7 @@ class FileManager:
                 "created_at": f.created_at.isoformat() if f.created_at else None,
                 "source_tool": f.source_tool,
             }
-            for f in files
+            for f in result_files
         ]
 
     async def save_chat_attachment(
@@ -310,6 +428,7 @@ class FileManager:
             size_bytes=len(content),
             conversation_id=conversation_id,
             dept_id=dept_id,
+            metadata={"file_for_user": True},  # Chat attachments are private to user
         )
 
         file_id = result["file_id"]
@@ -348,7 +467,9 @@ class FileManager:
         if os.path.exists(file_record.storage_path):
             try:
                 os.remove(file_record.storage_path)
-                logger.info(f"[FILE_MANAGER] Deleted file from disk: {file_record.storage_path}")
+                logger.info(
+                    f"[FILE_MANAGER] Deleted file from disk: {file_record.storage_path}"
+                )
             except Exception as e:
                 logger.error(f"[FILE_MANAGER] Failed to delete file from disk: {e}")
 
@@ -358,20 +479,51 @@ class FileManager:
 
         return True
 
-    async def get_file_by_id(self, file_id: str, user_email: str) -> Optional[Dict]:
+    async def get_file_by_id(
+        self, file_id: str, user_email: str, dept_id: Optional[str] = None
+    ) -> Optional[Dict]:
         """
         Get file metadata by ID.
+
+        Access control:
+        - User owns the file (user_email matches), OR
+        - File is shared (file_for_user=False in metadata) AND same dept_id
 
         Args:
             file_id: File ID
             user_email: User email for security check
+            dept_id: Department ID for shared file access (optional)
 
         Returns:
             File metadata dict or None if not found
         """
+        # First try user's own file
         file_record = await self.db.fileregistry.find_first(
             where={"id": file_id, "user_email": user_email}
         )
+
+        # If not found, check for shared file in same dept
+        if not file_record and dept_id:
+            file_record = await self.db.fileregistry.find_first(
+                where={"id": file_id, "dept_id": dept_id}
+            )
+            # Verify it's actually shared (not user-specific)
+            if file_record:
+                import json
+
+                metadata = {}
+                if file_record.metadata:
+                    try:
+                        metadata = (
+                            json.loads(file_record.metadata)
+                            if isinstance(file_record.metadata, str)
+                            else file_record.metadata
+                        )
+                    except (json.JSONDecodeError, TypeError):
+                        metadata = {}
+                # If file_for_user=True, only owner can access
+                if metadata.get("file_for_user", False):
+                    file_record = None
 
         if not file_record:
             return None
@@ -384,9 +536,9 @@ class FileManager:
             "download_url": file_record.download_url,
             "mime_type": file_record.mime_type,
             "size_bytes": file_record.size_bytes,
-            "created_at": file_record.created_at.isoformat()
-            if file_record.created_at
-            else None,
+            "created_at": (
+                file_record.created_at.isoformat() if file_record.created_at else None
+            ),
             "source_tool": file_record.source_tool,
             "conversation_id": file_record.conversation_id,
         }

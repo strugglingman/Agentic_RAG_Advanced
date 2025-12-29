@@ -57,6 +57,50 @@ def allowed_file(filename: str, allowed_extensions: list) -> bool:
     return "." in filename and filename.rsplit(".", 1)[1].lower() in allowed_extensions
 
 
+def validate_filename_str(
+    filename: str,
+    allowed_extensions: list,
+    content: bytes = None,
+    mime_types: list = None,
+) -> str:
+    """
+    Validate filename string (for FastAPI UploadFile).
+
+    Args:
+        filename: Original filename
+        allowed_extensions: List of allowed extensions (e.g., ["pdf", "docx"])
+        content: Optional file content bytes for MIME type validation
+        mime_types: Optional list of allowed MIME types
+
+    Returns:
+        Sanitized filename if valid, empty string if invalid
+    """
+    # Sanitize filename
+    sanitized = secure_filename(filename)
+    if not sanitized:
+        return ""
+
+    # Check extension
+    if not allowed_file(sanitized, allowed_extensions):
+        return ""
+
+    # Optional: Check MIME type from content
+    if content and mime_types:
+        try:
+            head = content[:8192]
+            mime = magic.from_buffer(head, mime=True) or ""
+            mime = mime.lower()
+            if mime:
+                mime_ok = any(mime.startswith(x) for x in mime_types)
+                if not mime_ok:
+                    return ""
+        except Exception:
+            # If magic detection fails, just use extension check
+            pass
+
+    return sanitized
+
+
 def create_upload_dir(
     base_path: str, dept_id: str, user_id: str, dept_split: str = "|"
 ) -> str:

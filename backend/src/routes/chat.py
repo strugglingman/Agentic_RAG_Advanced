@@ -299,9 +299,11 @@ async def chat_agent(collection):
                 async def get_user_files():
                     async with FileManager() as fm:
                         # Get ALL indexed RAG files (no filtering - ensures 100% RAG file accessibility)
+                        # Include dept_id to also get shared files in the department
                         indexed_files = await fm.list_files(
                             user_email=user_id,
                             category="uploaded",
+                            dept_id=dept_id,
                             limit=Config.FILE_DISCOVERY_INDEXED_LIMIT,
                         )
 
@@ -309,6 +311,7 @@ async def chat_agent(collection):
                         conv_files = await fm.list_files(
                             user_email=user_id,
                             conversation_id=conversation_id,
+                            dept_id=dept_id,
                             limit=Config.FILE_DISCOVERY_CONVERSATION_LIMIT,
                         )
 
@@ -320,10 +323,6 @@ async def chat_agent(collection):
                         return list(all_files.values())
 
                 available_files = await get_user_files()
-                logger.info(
-                    f"[CHAT_AGENT] Loaded {len(available_files)} available files for user {user_id} "
-                    f"(file-related query detected - all indexed RAG files included)"
-                )
             except Exception as e:
                 logger.error(f"[CHAT_AGENT] Failed to fetch user files: {e}")
         else:

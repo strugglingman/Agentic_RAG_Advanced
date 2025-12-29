@@ -78,16 +78,19 @@ def download_file(file_id):
     """
     Download a file by its FileRegistry ID.
     Serves files from any location (uploads, downloads, chat) securely.
+    Supports shared files (file_for_user=False) within same department.
     """
     user_email = g.identity.get("user_id", "")
+    dept_id = g.identity.get("dept_id", "")
     if not user_email:
         return jsonify({"error": "No user ID provided"}), 400
 
     try:
         # Get file path from FileManager (includes security check)
+        # Include dept_id to allow access to shared files in same department
         async def get_file():
             async with FileManager() as fm:
-                return await fm.get_file_path(file_id, user_email)
+                return await fm.get_file_path(file_id, user_email, dept_id=dept_id)
 
         file_path = asyncio.run(get_file())
 
@@ -97,9 +100,7 @@ def download_file(file_id):
 
         # Serve the file
         return send_file(
-            file_path,
-            as_attachment=True,
-            download_name=os.path.basename(file_path)
+            file_path, as_attachment=True, download_name=os.path.basename(file_path)
         )
 
     except FileNotFoundError as e:

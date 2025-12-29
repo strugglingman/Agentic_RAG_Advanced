@@ -17,7 +17,7 @@ class MessageRepository(ABC):
 
     @abstractmethod
     async def get_by_conversation(
-        self, conversation_id: ConversationId, limit: int = 20
+        self, conversation_id: ConversationId, limit: int = 200
     ) -> list[Message]: ...
 
     @abstractmethod
