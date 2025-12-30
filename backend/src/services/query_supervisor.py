@@ -112,7 +112,7 @@ class QuerySupervisor:
 
         Args:
             query: User's question
-            context: Execution context (collection, dept_id, user_id, etc.)
+            context: Execution context (vector_db, dept_id, user_id, etc.)
 
         Returns:
             Tuple of (answer, contexts)
@@ -251,7 +251,7 @@ class QuerySupervisor:
         """
         # Create runtime context with non-serializable objects
         runtime = create_runtime_context(
-            collection=context.get("collection"),
+            vector_db=context.get("vector_db"),
             openai_client=self.openai_client,
             dept_id=context.get("dept_id", ""),
             user_id=context.get("user_id", ""),

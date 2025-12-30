@@ -3,14 +3,18 @@ Retrieval service for RAG system.
 Handles semantic search, hybrid search (BM25 + semantic), and reranking.
 """
 
+from __future__ import annotations
 import os
 import logging
+from typing import TYPE_CHECKING, Optional
 import numpy as np
 from rank_bm25 import BM25Okapi
 from sentence_transformers import CrossEncoder
-from typing import Optional
 from src.utils.safety import coverage_ok
 from src.config.settings import Config
+
+if TYPE_CHECKING:
+    from src.services.vector_db import VectorDB
 
 # Global state for BM25 index (cached per user/dept)
 _bm25 = None
@@ -59,14 +63,14 @@ def get_reranker():
     return _reranker
 
 
-def build_bm25(collection, dept_id: str, user_id: str):
+def build_bm25(vector_db: VectorDB, dept_id: str, user_id: str):
     """
     Build BM25 index for the given user and department.
     Filters documents by dept_id and user_id (includes shared documents).
     """
     global _bm25, _bm25_ids, _bm25_docs, _bm25_metas
     try:
-        res = collection.get(include=["documents", "metadatas"])
+        res = vector_db.get(include=["documents", "metadatas"])
         docs = res["documents"] if res and "documents" in res else []
         metas = res["metadatas"] if res and "metadatas" in res else []
         ids = res.get("ids", []) or []
@@ -159,7 +163,7 @@ def build_prompt(query, ctx, use_ctx=False):
 
 
 def retrieve(
-    collection=None,
+    vector_db: Optional[VectorDB] = None,
     query="",
     dept_id="",
     user_id="",
@@ -172,7 +176,7 @@ def retrieve(
     Retrieve relevant documents for a query.
 
     Args:
-        collection: ChromaDB collection
+        vector_db: VectorDB instance
         query: User's question
         dept_id: Department ID for filtering
         user_id: User ID for filtering
@@ -184,8 +188,8 @@ def retrieve(
     Returns:
         Tuple of (context_list, error_message)
     """
-    if collection is None:
-        return [], "No collection provided"
+    if vector_db is None:
+        return [], "No vector database provided"
     if not query:
         return [], "Empty query"
 
@@ -195,7 +199,7 @@ def retrieve(
     global dept_previous, user_previous
 
     try:
-        res = collection.query(
+        res = vector_db.query(
             query_texts=[query],
             n_results=max(Config.CANDIDATES, top_k),
             where=where,
@@ -244,7 +248,7 @@ def retrieve(
         if use_hybrid:
             if not _bm25 or user_id != user_previous or dept_id != dept_previous:
                 print("BM25 index not built, building now...")
-                build_bm25(collection, dept_id, user_id)
+                build_bm25(vector_db, dept_id, user_id)
                 dept_previous = dept_id
                 user_previous = user_id
 

@@ -78,11 +78,22 @@ class Config:
     # ==============================================================================
     # Embedding & Reranking Models
     # ==============================================================================
+    # Embedding provider: "local" (SentenceTransformer) or "openai"
+    EMBEDDING_PROVIDER = os.getenv("EMBEDDING_PROVIDER", "openai")
+
+    # For local provider: SentenceTransformer model name
     EMBEDDING_MODEL_NAME = os.getenv(
         "EMBEDDING_MODEL_NAME", "sentence-transformers/all-MiniLM-L6-v2"
     )
+    # For openai provider: OpenAI embedding model
+    # Options: text-embedding-3-small (1536-dim), text-embedding-3-large (3072-dim)
+    OPENAI_EMBEDDING_MODEL = os.getenv(
+        "OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"
+    )
     RERANKER_MODEL_NAME = os.getenv(
-        "RERANKER_MODEL_NAME", "cross-encoder/ms-marco-MiniLM-L-6-v2"
+        # "RERANKER_MODEL_NAME", "cross-encoder/ms-marco-MiniLM-L-6-v2"
+        "RERANKER_MODEL_NAME",
+        "BAAI/bge-reranker-base",
     )
 
     # ==============================================================================
@@ -130,7 +141,7 @@ class Config:
     AVG_SEM_SIM = float(os.getenv("AVG_SEM_SIM", "0.2"))
     MIN_RERANK = float(os.getenv("MIN_RERANK", "0.5"))
     AVG_RERANK = float(os.getenv("AVG_RERANK", "0.3"))
-    ENFORCE_CITATIONS = os.getenv("ENFORCE_CITATIONS", "false").lower() in {
+    ENFORCE_CITATIONS = os.getenv("ENFORCE_CITATIONS", "true").lower() in {
         "1",
         "true",
         "yes",

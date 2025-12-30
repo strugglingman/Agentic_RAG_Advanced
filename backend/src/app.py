@@ -13,8 +13,7 @@ from flask import Flask, jsonify, g
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from werkzeug.exceptions import RequestEntityTooLarge, TooManyRequests
-import chromadb
-from chromadb.utils.embedding_functions import sentence_transformer_embedding_function
+from src.services.vector_db import VectorDB
 
 # pylint: disable=ungrouped-imports
 from src.middleware.auth import load_identity
@@ -42,7 +41,7 @@ def create_app(config_name="development"):
         config_name: Environment name ('development', 'production', 'testing')
 
     Returns:
-        Tuple of (app, limiter, collection)
+        Tuple of (app, limiter, vector_db)
     """
     app = Flask(__name__)
 
@@ -53,21 +52,14 @@ def create_app(config_name="development"):
     # Set maximum upload size
     app.config["MAX_CONTENT_LENGTH"] = int(config.MAX_UPLOAD_MB * 1024 * 1024)
 
-    # Initialize ChromaDB
-    embedding_model_name = config.EMBEDDING_MODEL_NAME
-    chroma_path = config.CHROMA_PATH
-    embedding_fun = (
-        sentence_transformer_embedding_function.SentenceTransformerEmbeddingFunction(
-            model_name=embedding_model_name
-        )
-    )
-    chroma_client = chromadb.PersistentClient(path=chroma_path)
-    collection = chroma_client.get_or_create_collection(
-        name="docs", metadata={"hnsw:space": "cosine"}, embedding_function=embedding_fun
+    # Initialize VectorDB (wraps ChromaDB with configurable embedding provider)
+    vector_db = VectorDB(
+        path=config.CHROMA_PATH,
+        embedding_provider=config.EMBEDDING_PROVIDER,
     )
 
-    # Store collection in app context for dependency injection
-    app.collection = collection
+    # Store vector_db in app context for dependency injection
+    app.vector_db = vector_db
 
     # Initialize rate limiter
     limiter = Limiter(
@@ -102,19 +94,19 @@ def create_app(config_name="development"):
             config.SERVICE_AUTH_AUDIENCE,
         )
 
-    # Dependency injection wrapper for routes that need collection
-    def inject_collection(f):
-        """Decorator to inject collection into route handlers (supports async)."""
+    # Dependency injection wrapper for routes that need vector_db
+    def inject_vector_db(f):
+        """Decorator to inject vector_db into route handlers (supports async)."""
         from functools import wraps
         import asyncio
 
         @wraps(f)
         async def async_wrapper(*args, **kwargs):
-            return await f(collection, *args, **kwargs)
+            return await f(vector_db, *args, **kwargs)
 
         @wraps(f)
         def sync_wrapper(*args, **kwargs):
-            return f(collection, *args, **kwargs)
+            return f(vector_db, *args, **kwargs)
 
         # Return appropriate wrapper based on function type
         if asyncio.iscoroutinefunction(f):
@@ -131,24 +123,24 @@ def create_app(config_name="development"):
     app.register_blueprint(org_bp)
     app.register_blueprint(downloads_bp)
 
-    # Register blueprints that need collection dependency
-    # We need to wrap the route functions to inject collection
+    # Register blueprints that need vector_db dependency
+    # We need to wrap the route functions to inject vector_db
     from src.routes import chat, ingest, org
 
-    # Monkey-patch the route functions to inject collection
+    # Monkey-patch the route functions to inject vector_db
     chat_endpoint = f"{chat_bp.name}.chat"
     chat_route = app.view_functions[chat_endpoint]
-    inject_collection(chat_route)
-    app.view_functions[chat_endpoint] = inject_collection(chat_route)
+    inject_vector_db(chat_route)
+    app.view_functions[chat_endpoint] = inject_vector_db(chat_route)
 
-    # Inject collection into chat_agent endpoint
+    # Inject vector_db into chat_agent endpoint
     chat_agent_endpoint = f"{chat_bp.name}.chat_agent"
     chat_agent_route = app.view_functions[chat_agent_endpoint]
-    app.view_functions[chat_agent_endpoint] = inject_collection(chat_agent_route)
+    app.view_functions[chat_agent_endpoint] = inject_vector_db(chat_agent_route)
 
     ingest_endpoint = f"{ingest_bp.name}.ingest"
     ingest_route = app.view_functions[ingest_endpoint]
-    app.view_functions[ingest_endpoint] = inject_collection(ingest_route)
+    app.view_functions[ingest_endpoint] = inject_vector_db(ingest_route)
 
     # Apply rate limiting to org-structure endpoint
     limiter.limit("1 per minute; 10 per day", key_func=get_remote_address)(
@@ -172,4 +164,4 @@ def create_app(config_name="development"):
     def health():
         return jsonify({"status": "healthy"}), 200
 
-    return app, limiter, collection
+    return app, limiter, vector_db

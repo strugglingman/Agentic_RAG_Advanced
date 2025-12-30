@@ -13,7 +13,6 @@ ReAct Loop:
 
 import json
 import logging
-import io
 import base64
 from typing import Dict, Any, List, Optional, Tuple
 from openai import OpenAI
@@ -21,6 +20,7 @@ from langsmith import traceable
 from src.services.agent_tools import ALL_TOOLS, execute_tool_call
 from src.config.settings import Config
 from src.utils.stream_utils import stream_text_smart
+from src.utils.safety import enforce_citations
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +73,7 @@ class AgentService:
 
         Args:
             query: User's question
-            context: System context (collection, dept_id, user_id, etc.)
+            context: System context (vector_db, dept_id, user_id, etc.)
             messages_history: Previous conversation messages
 
         Returns:
@@ -98,8 +98,17 @@ class AgentService:
                 answer = self._get_final_answer(res)
                 contexts = context.get("_retrieved_contexts", [])
 
-                # Optional: Enforce citations in the answer here if needed
-                # enforce_citations
+                # Enforce citations: drop sentences without valid citations
+                if contexts and Config.ENFORCE_CITATIONS:
+                    valid_ids = list(range(1, len(contexts) + 1))
+                    logger.info(f"[AGENT] Raw answer before enforce_citations: {answer!r}")
+                    answer, all_supported = enforce_citations(answer, valid_ids)
+                    logger.info(f"[AGENT] Answer after enforce_citations: {answer!r}")
+                    if not all_supported:
+                        logger.warning(
+                            "[AGENT] Some sentences dropped due to missing citations"
+                        )
+
                 return answer, contexts
             else:
                 break
@@ -113,7 +122,7 @@ class AgentService:
 
         Args:
             query: User's question
-            context: System context (collection, dept_id, user_id, etc.)
+            context: System context (vector_db, dept_id, user_id, etc.)
 
         Yields:
             Text chunks and final contexts

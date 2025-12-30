@@ -55,8 +55,12 @@ from src.application.queries.files import (
 from src.application.dto.file import FileInfoDTO
 from src.domain.value_objects.file_id import FileId
 from src.presentation.dependencies.auth import AuthUser, get_current_user
+from src.config.settings import Config
 
 logger = logging.getLogger(__name__)
+
+# Maximum upload size in bytes (from Config)
+MAX_UPLOAD_BYTES = int(Config.MAX_UPLOAD_MB * 1024 * 1024)
 
 
 # ==================== RESPONSE MODELS ====================
@@ -96,6 +100,8 @@ async def upload_file(
     - file: binary file data (required)
     - tags: JSON string array, e.g. '["tag1", "tag2"]' (optional)
     - file_for_user: "1" for user-specific, "0" for shared (optional)
+
+    Max file size: {MAX_UPLOAD_MB} MB (from Config.MAX_UPLOAD_MB)
     """
     # Parse tags from JSON string
     tags_list: list[str] = []
@@ -110,6 +116,13 @@ async def upload_file(
 
     # Read file content
     content = await file.read()
+
+    # Validate file size (matches Flask MAX_CONTENT_LENGTH)
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"File too large. Maximum upload size is {Config.MAX_UPLOAD_MB} MB.",
+        )
 
     # Create command
     command = UploadFileCommand(

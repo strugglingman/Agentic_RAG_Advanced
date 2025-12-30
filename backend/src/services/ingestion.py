@@ -3,17 +3,21 @@ Ingestion service for document processing and ChromaDB storage.
 Handles reading, chunking, and upserting documents to vector database.
 """
 
+from __future__ import annotations
 import os
 import json
 import hashlib
 import asyncio
 import logging
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 from dataclasses import dataclass
 from src.services.document_processor import read_text, make_chunks
 from src.services.file_manager import FileManager
 from src.domain.entities.file_registry import FileRegistry
 from src.config.settings import Config
+
+if TYPE_CHECKING:
+    from src.services.vector_db import VectorDB
 
 logger = logging.getLogger(__name__)
 
@@ -35,13 +39,13 @@ def make_id(text):
 
 
 def ingest_one(
-    collection, info: Optional[dict], app_user_id: str, app_dept_id: str
+    vector_db: VectorDB, info: Optional[dict], app_user_id: str, app_dept_id: str
 ) -> Optional[str]:
     """
     Ingest a single document into the vector database.
 
     Args:
-        collection: ChromaDB collection
+        vector_db: VectorDB instance
         info: File metadata dictionary from .meta.json
         app_user_id: Current user ID (from auth)
         app_dept_id: Current department ID (from auth)
@@ -74,7 +78,9 @@ def ingest_one(
         return None
 
     # Chunking - now returns list of (page_num, chunk_text) tuples
-    chunks_with_pages = make_chunks(pages_text, target=Config.SENT_TARGET, overlap=Config.SENT_OVERLAP)
+    chunks_with_pages = make_chunks(
+        pages_text, target=Config.SENT_TARGET, overlap=Config.SENT_OVERLAP
+    )
     filename = info.get("filename", os.path.basename(file_path))
 
     # Upsert to chroma
@@ -115,7 +121,7 @@ def ingest_one(
             seen.add(chunk_id)
 
     if docs:
-        collection.upsert(ids=ids, documents=docs, metadatas=metas)
+        vector_db.upsert(ids=ids, documents=docs, metadatas=metas)
 
     # Set ingested flag
     with open(file_path + ".meta.json", "w", encoding="utf-8") as info_f:
@@ -140,8 +146,8 @@ def ingest_one(
                             data={
                                 "indexed_in_chromadb": True,
                                 "chromadb_collection": (
-                                    collection.name
-                                    if hasattr(collection, "name")
+                                    vector_db.collection.name
+                                    if hasattr(vector_db.collection, "name")
                                     else "default"
                                 ),
                                 "metadata": json.dumps(
@@ -163,7 +169,7 @@ def ingest_one(
 
 
 def ingest_file(
-    collection,
+    vector_db: VectorDB,
     file: FileRegistry,
     user_email: str,
     dept_id: str,
@@ -174,7 +180,7 @@ def ingest_file(
     This is the new version that uses FileRegistry directly instead of .meta.json files.
 
     Args:
-        collection: ChromaDB collection
+        vector_db: VectorDB instance for vector storage
         file: FileRegistry entity with file metadata
         user_email: Current user email (for access control)
         dept_id: Current department ID (for access control)
@@ -185,7 +191,9 @@ def ingest_file(
     file_id = file.id
     filename = file.original_name
     file_path = file.storage_path.value
-    file_for_user = file.metadata.get("file_for_user", False) if file.metadata else False
+    file_for_user = (
+        file.metadata.get("file_for_user", False) if file.metadata else False
+    )
     file_dept_id = file.dept_id.value if file.dept_id else ""
     file_user_email = file.user_email.value
     tags = file.metadata.get("tags", "") if file.metadata else ""
@@ -270,25 +278,27 @@ def ingest_file(
         seen.add(chunk_id)
         ids.append(chunk_id)
         docs.append(chunk)
-        metas.append({
-            "dept_id": file_dept_id,
-            "user_id": file_user_email,
-            "file_for_user": file_for_user,
-            "chunk_id": chunk_id,
-            "source": filename,
-            "ext": filename.split(".")[-1].lower() if "." in filename else "",
-            "file_id": file_id,  # This is now the FileRegistry.id (cuid)
-            "size_kb": size_kb,
-            "tags": tags.lower() if tags else "",
-            "upload_at": created_at,
-            "uploaded_at_ts": created_at_ts,
-            "page": page_num,
-        })
+        metas.append(
+            {
+                "dept_id": file_dept_id,
+                "user_id": file_user_email,
+                "file_for_user": file_for_user,
+                "chunk_id": chunk_id,
+                "source": filename,
+                "ext": filename.split(".")[-1].lower() if "." in filename else "",
+                "file_id": file_id,  # This is now the FileRegistry.id (cuid)
+                "size_kb": size_kb,
+                "tags": tags.lower() if tags else "",
+                "upload_at": created_at,
+                "uploaded_at_ts": created_at_ts,
+                "page": page_num,
+            }
+        )
 
     # Upsert to ChromaDB
     if docs:
         try:
-            collection.upsert(ids=ids, documents=docs, metadatas=metas)
+            vector_db.upsert(ids=ids, documents=docs, metadatas=metas)
             logger.info(
                 f"[INGESTION] Indexed {len(docs)} chunks for file {file_id} ({filename})"
             )

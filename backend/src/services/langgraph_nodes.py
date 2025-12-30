@@ -4,7 +4,7 @@ LangGraph agent node implementations.
 Each node is created via a factory function that binds RuntimeContext.
 Pattern: create_xxx_node(runtime) -> node_function(state) -> updated_state
 
-This allows nodes to access non-serializable objects (collection, openai_client)
+This allows nodes to access non-serializable objects (vector_db, openai_client)
 without storing them in the checkpointable AgentState.
 """
 
@@ -176,7 +176,7 @@ def create_retrieve_node(
     Factory function to create retrieve_node with runtime context bound.
 
     Args:
-        runtime: RuntimeContext with collection, dept_id, user_id, request_data
+        runtime: RuntimeContext with vector_db, dept_id, user_id, request_data
 
     Returns:
         retrieve_node function
@@ -227,19 +227,19 @@ def create_retrieve_node(
             }
 
         # Get runtime context
-        collection = runtime.get("collection")
+        vector_db = runtime.get("vector_db")
         dept_id = runtime.get("dept_id", "")
         user_id = runtime.get("user_id", "")
         request_data = runtime.get("request_data")
 
-        if not collection:
+        if not vector_db:
             return {
                 "retrieved_docs": state.get("retrieved_docs", []),
                 "current_step": current_step,
                 "iteration_count": state.get("iteration_count", 0) + 1,
                 "messages": state.get("messages", [])
                 + [
-                    AIMessage(content="No document collection available for retrieval.")
+                    AIMessage(content="No vector database available for retrieval.")
                 ],
             }
         if not dept_id or not user_id:
@@ -275,7 +275,7 @@ def create_retrieve_node(
             where = build_where(request_data, dept_id, user_id)
             ctx, err = retrieve(
                 query=query,
-                collection=collection,
+                vector_db=vector_db,
                 dept_id=dept_id,
                 user_id=user_id,
                 top_k=Config.TOP_K,
@@ -451,7 +451,7 @@ def create_tool_calculator_node(
     Factory function to create tool_calculator_node with runtime context bound.
 
     Args:
-        runtime: RuntimeContext with openai_client, collection, dept_id, user_id
+        runtime: RuntimeContext with openai_client, vector_db, dept_id, user_id
 
     Returns:
         tool_calculator_node function
@@ -549,7 +549,7 @@ def create_tool_calculator_node(
 
             # Build context for tool execution from runtime
             context = {
-                "collection": runtime.get("collection"),
+                "vector_db": runtime.get("vector_db"),
                 "dept_id": runtime.get("dept_id"),
                 "user_id": runtime.get("user_id"),
                 "openai_client": client,
@@ -637,7 +637,7 @@ def create_tool_web_search_node(
     Factory function to create tool_web_search_node with runtime context bound.
 
     Args:
-        runtime: RuntimeContext with openai_client, collection, dept_id, user_id
+        runtime: RuntimeContext with openai_client, vector_db, dept_id, user_id
 
     Returns:
         tool_web_search_node function
@@ -722,7 +722,7 @@ def create_tool_web_search_node(
 
             # Build context for tool execution from runtime
             context = {
-                "collection": runtime.get("collection"),
+                "vector_db": runtime.get("vector_db"),
                 "dept_id": runtime.get("dept_id"),
                 "user_id": runtime.get("user_id"),
                 "openai_client": client,

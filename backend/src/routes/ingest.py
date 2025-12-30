@@ -20,7 +20,7 @@ FOLDER_SHARED = Config.FOLDER_SHARED
 
 @ingest_bp.route("/ingest", methods=["POST"])
 @require_identity
-def ingest(collection):
+def ingest(vector_db):
     """
     Ingest documents into the vector database.
     Can ingest a single file or all files (when file_id="ALL").
@@ -73,19 +73,19 @@ def ingest(collection):
     ingested_info = ""
     if file_id == "ALL":
         for info in meta_data_all:
-            fid = ingest_one(collection, info, app_user_id=user_id, app_dept_id=dept_id)
+            fid = ingest_one(vector_db, info, app_user_id=user_id, app_dept_id=dept_id)
             if fid:
                 ingested_info += f"{fid}\n"
     else:
         info = next((m for m in meta_data_all if m.get("file_id") == file_id), None)
-        fid = ingest_one(collection, info, app_user_id=user_id, app_dept_id=dept_id)
+        fid = ingest_one(vector_db, info, app_user_id=user_id, app_dept_id=dept_id)
         if fid:
             ingested_info = f"{fid}\n"
 
     # Rebuild BM25 index
-    build_bm25(collection, dept_id, user_id)
+    build_bm25(vector_db, dept_id, user_id)
 
-    docs = collection.get(include=["documents"])["documents"]
+    docs = vector_db.get(include=["documents"])["documents"]
     count = len(docs) if docs else 0
     ingested_info = f"{ingested_info}\n and the count of chunks is: {count}"
 

@@ -144,22 +144,96 @@ def coverage_ok(
 # --- 4) Simple post-check: require citations per sentence ---
 SENT_SPLIT = re.compile(r"(?<=[.!?])\s+")
 CIT_RE = re.compile(r"\[(\d+)\]")
+# Pattern to detect "Sources:" line at the end
+SOURCES_LINE = re.compile(r"\n*\s*Sources?:.*$", re.IGNORECASE | re.DOTALL)
 
 
 def enforce_citations(answer: str, valid_ids: List[int]) -> Tuple[str, bool]:
-    """Return (clean_answer, all_sentences_supported). Drops sentences w/o a valid [n] citation."""
+    """
+    Return (clean_answer, all_sentences_supported).
+
+    Groups sentences with their following citations. A sentence is supported if:
+    - It contains a citation inline, OR
+    - The next segment starts with citations that apply to it
+
+    This handles patterns like:
+    - "His wife's name is Sonja. [1]" → kept (citation follows)
+    - "His wife's name is Sonja [1]." → kept (citation inline)
+    - "His wife's name is Sonja." → dropped (no citation)
+    """
     if not answer:
         return "", False
-    supported = True
-    keep: List[str] = []
+
     valid = set(valid_ids)
-    for sent in SENT_SPLIT.split(answer.strip()):
-        if not sent:
+
+    # Extract and preserve "Sources:" line at the end
+    sources_match = SOURCES_LINE.search(answer)
+    sources_line = sources_match.group(0).strip() if sources_match else ""
+    main_answer = SOURCES_LINE.sub("", answer).strip() if sources_match else answer.strip()
+
+    # Split into segments (sentences + citation-only fragments)
+    segments = SENT_SPLIT.split(main_answer)
+    segments = [s.strip() for s in segments if s and s.strip()]
+
+    if not segments:
+        return sources_line, False  # Return just sources if no valid content
+
+    # Process segments: group content with following citations
+    keep: List[str] = []
+    all_supported = True
+    i = 0
+
+    while i < len(segments):
+        seg = segments[i]
+        seg_cites = {int(m.group(1)) for m in CIT_RE.finditer(seg)}
+
+        # Check if this segment is citation-only (like "[1]" or "[1][2]")
+        text_without_cites = CIT_RE.sub("", seg).strip()
+        is_cite_only = len(text_without_cites) == 0
+
+        if is_cite_only:
+            # Skip standalone citations - they should have been attached to previous
+            i += 1
             continue
-        cites = {int(m.group(1)) for m in CIT_RE.finditer(sent)}
-        if not cites or not (cites & valid):
-            # sentence has no usable citation; drop it
-            supported = False
+
+        # This is a content sentence - check if it has citations
+        if seg_cites and (seg_cites & valid):
+            # Has valid inline citation
+            keep.append(seg)
+            i += 1
             continue
-        keep.append(sent)
-    return (" ".join(keep)).strip(), supported
+
+        # No inline citation - check if next segment STARTS with citations
+        if i + 1 < len(segments):
+            next_seg = segments[i + 1]
+            # Check if next segment starts with citation(s)
+            next_cites = {int(m.group(1)) for m in CIT_RE.finditer(next_seg)}
+
+            if next_cites and (next_cites & valid):
+                # Next segment has citations - check if it starts with them
+                next_text_before_cite = CIT_RE.split(next_seg)[0].strip()
+                if len(next_text_before_cite) == 0:
+                    # Next segment starts with citation - attach the citation part to current sentence
+                    # Find leading citations
+                    cite_match = re.match(r"^(\s*\[\d+\]\s*)+", next_seg)
+                    if cite_match:
+                        leading_cites = cite_match.group(0).strip()
+                        remaining = next_seg[cite_match.end():].strip()
+                        keep.append(f"{seg} {leading_cites}")
+                        # Put remaining text back for next iteration if non-empty
+                        if remaining:
+                            segments[i + 1] = remaining
+                        else:
+                            i += 1  # Skip the now-consumed segment
+                        i += 1
+                        continue
+
+        # No citation found - drop this sentence
+        all_supported = False
+        i += 1
+
+    result = " ".join(keep)
+    if sources_line:
+        result = f"{result}\n\n{sources_line}" if result else sources_line
+
+    return result, all_supported

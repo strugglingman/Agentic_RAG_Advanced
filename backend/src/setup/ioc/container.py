@@ -25,12 +25,10 @@ Flow:
                             uses ConversationRepository interface
 """
 
-import chromadb
-from chromadb.api.models.Collection import Collection
-from chromadb.utils.embedding_functions import sentence_transformer_embedding_function
 from dishka import Provider, Scope, make_async_container, provide, AsyncContainer
 from prisma import Prisma
 from openai import OpenAI
+from src.services.vector_db import VectorDB
 from src.services.query_supervisor import QuerySupervisor
 from src.domain.ports.repositories import (
     ConversationRepository,
@@ -78,22 +76,13 @@ class AppProvider(Provider):
 
     """
 
-    # ==================== CHROMA COLLECTION ====================
+    # ==================== VECTOR DATABASE ====================
     @provide(scope=Scope.APP)
-    def get_collection(self) -> Collection:
-        embedding_model_name = Config.EMBEDDING_MODEL_NAME
-        chroma_path = Config.CHROMA_PATH
-        embedding_fun = sentence_transformer_embedding_function.SentenceTransformerEmbeddingFunction(
-            model_name=embedding_model_name
+    def get_vector_db(self) -> VectorDB:
+        return VectorDB(
+            path=Config.CHROMA_PATH,
+            embedding_provider=Config.EMBEDDING_PROVIDER,
         )
-        chroma_client = chromadb.PersistentClient(path=chroma_path)
-        collection = chroma_client.get_or_create_collection(
-            name="docs",
-            metadata={"hnsw:space": "cosine"},
-            embedding_function=embedding_fun,
-        )
-
-        return collection
 
     # ==================== OPENAI CLIENT ====================
     @provide(scope=Scope.APP)
@@ -184,14 +173,14 @@ class AppProvider(Provider):
         conversation_repository: ConversationRepository,
         message_repository: MessageRepository,
         query_supervisor: QuerySupervisor,
-        collection: Collection,
+        vector_db: VectorDB,
         openai_client: OpenAI,
     ) -> SendMessageHandler:
         return SendMessageHandler(
             conv_repo=conversation_repository,
             msg_repo=message_repository,
             query_supervisor=query_supervisor,
-            collection=collection,
+            vector_db=vector_db,
             openai_client=openai_client,
         )
 
@@ -244,10 +233,10 @@ class AppProvider(Provider):
     def get_ingest_document_handler(
         self,
         file_registry_repository: FileRegistryRepository,
-        collection: Collection,
+        vector_db: VectorDB,
     ) -> IngestDocumentHandler:
         """Provide IngestDocumentHandler."""
-        return IngestDocumentHandler(file_registry_repository, collection)
+        return IngestDocumentHandler(file_registry_repository, vector_db)
 
 
 async def create_container() -> AsyncContainer:

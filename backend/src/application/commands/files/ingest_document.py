@@ -15,7 +15,6 @@ Maps from: src/routes/ingest.py and src/services/ingestion.py
 
 from dataclasses import dataclass, field
 from typing import Optional
-from chromadb.api.models.Collection import Collection
 from src.application.common.interfaces import Command, CommandHandler
 from src.domain.ports.repositories import FileRegistryRepository
 from src.domain.value_objects.file_id import FileId
@@ -23,6 +22,7 @@ from src.domain.value_objects.user_email import UserEmail
 from src.domain.value_objects.dept_id import DeptId
 from src.services.ingestion import ingest_file, IngestResult
 from src.services.retrieval import build_bm25
+from src.services.vector_db import VectorDB
 from logging import getLogger
 
 logger = getLogger(__name__)
@@ -71,10 +71,10 @@ class IngestDocumentHandler(CommandHandler[IngestDocumentResult]):
     def __init__(
         self,
         file_repo: FileRegistryRepository,
-        collection: Collection,
+        vector_db: VectorDB,
     ):
         self._file_repo = file_repo
-        self._collection = collection
+        self._vector_db = vector_db
 
     async def execute(self, command: IngestDocumentCommand) -> IngestDocumentResult:
         """
@@ -113,7 +113,7 @@ class IngestDocumentHandler(CommandHandler[IngestDocumentResult]):
         for file in uningested_files:
             # Call the new ingest_file function (no .meta.json)
             result: IngestResult = ingest_file(
-                collection=self._collection,
+                vector_db=self._vector_db,
                 file=file,
                 user_email=user_email,
                 dept_id=dept_id,
@@ -130,8 +130,8 @@ class IngestDocumentHandler(CommandHandler[IngestDocumentResult]):
             if result.success and result.chunks_count > 0:
                 # 3. Mark file as indexed in FileRegistry
                 collection_name = (
-                    self._collection.name
-                    if hasattr(self._collection, "name")
+                    self._vector_db.collection.name
+                    if hasattr(self._vector_db.collection, "name")
                     else "docs"
                 )
                 await self._file_repo.mark_indexed(
@@ -152,7 +152,7 @@ class IngestDocumentHandler(CommandHandler[IngestDocumentResult]):
 
         # 4. Rebuild BM25 index
         try:
-            build_bm25(self._collection, dept_id, user_email)
+            build_bm25(self._vector_db, dept_id, user_email)
             logger.info(f"[INGEST] Rebuilt BM25 index for dept={dept_id}, user={user_email}")
         except Exception as e:
             logger.error(f"[INGEST] Failed to rebuild BM25 index: {e}")

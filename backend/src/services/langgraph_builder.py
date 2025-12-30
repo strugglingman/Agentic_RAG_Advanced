@@ -67,7 +67,7 @@ def build_langgraph_agent(
     Build and compile the LangGraph agent.
 
     Args:
-        runtime: Runtime context with non-serializable objects (collection, openai_client, etc.)
+        runtime: Runtime context with non-serializable objects (vector_db, openai_client, etc.)
         checkpointer: Optional checkpointer for state persistence. If None, uses default MemorySaver.
 
     Returns:

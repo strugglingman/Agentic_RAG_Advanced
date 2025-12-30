@@ -84,7 +84,7 @@ def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
             - top_k (int, optional): Number of results to return
 
         context: System context containing:
-            - collection: ChromaDB collection
+            - vector_db: VectorDB instance
             - dept_id: Department ID from auth
             - user_id: User ID from auth
             - request: Flask request object (for filters)
@@ -104,7 +104,7 @@ def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
     """
     query = args.get("query", "")
     top_k = args.get("top_k", 5)
-    collection = context.get("collection", None)
+    vector_db = context.get("vector_db", None)
     dept_id = context.get("dept_id", "")
     user_id = context.get("user_id", "")
     use_hybrid = context.get("use_hybrid", Config.USE_HYBRID)
@@ -112,8 +112,8 @@ def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
     request_data = context.get("request_data", {})
     if not dept_id or not user_id:
         return "Error: No organization ID or user ID provided"
-    if not collection:
-        return "Error: No document collection available"
+    if not vector_db:
+        return "Error: No vector database available"
     try:
         # Build where clause
         where = build_where(request_data, dept_id, user_id)
@@ -121,7 +121,7 @@ def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
         # Initial retrieval
         current_query = query
         ctx, _ = retrieve(
-            collection=collection,
+            vector_db=vector_db,
             query=current_query,
             dept_id=dept_id,
             user_id=user_id,
@@ -244,7 +244,7 @@ def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
 
                     # Retrieve with refined query
                     ctx, _ = retrieve(
-                        collection=collection,
+                        vector_db=vector_db,
                         query=current_query,
                         dept_id=dept_id,
                         user_id=user_id,
@@ -319,11 +319,13 @@ def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
             c["chunk"] = scrub_context(c.get("chunk", ""))
 
         # Format contexts for LLM using the same high-quality formatting as build_prompt()
-        # This creates detailed context headers with source, page, and scores
+        # This creates detailed context headers with source, page, file_id, and scores
+        # file_id is included for accurate matching with available_files but should not appear in final answers
         context_str = "\n\n".join(
             (
                 f"Context {i+1} (Source: {c.get('source', 'unknown')}"
                 + (f", Page: {c['page']}" if c.get("page", 0) > 0 else "")
+                + (f", file_id: {c['file_id']}" if c.get("file_id") else "")
                 + f"):\n{c.get('chunk', '')}\n"
                 + (
                     f"Hybrid score: {c['hybrid']:.2f}"
@@ -352,6 +354,7 @@ def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
             f"from the contexts you referenced (look at the 'Page:' information in each context header). "
             f"Format: 'Sources: filename1.pdf (pages 15, 23), filename2.pdf (page 7)'\n"
             f"- If you also have web_search results in other tool responses, answer those naturally WITHOUT citations\n"
+            f"- IMPORTANT: The 'file_id' in context headers is for INTERNAL matching only. NEVER show file_id values in your response to users.\n"
         )
 
         # Prepend external search suggestion if recommended
@@ -1574,7 +1577,7 @@ def execute_tool_call(
     Args:
         tool_name: Name of the tool to execute
         tool_args: Arguments from LLM (parsed from JSON)
-        context: System context (collection, auth, etc.)
+        context: System context (vector_db, auth, etc.)
 
     Returns:
         String result from tool execution

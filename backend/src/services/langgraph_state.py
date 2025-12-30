@@ -20,7 +20,7 @@ class RuntimeContext(TypedDict):
     Nodes should treat these as read-only.
     """
 
-    collection: Optional[Any]  # ChromaDB collection
+    vector_db: Optional[Any]  # VectorDB instance for retrieval
     openai_client: Optional[Any]  # OpenAI client instance
     dept_id: Optional[str]  # Department ID for filtering
     user_id: Optional[str]  # User ID for filtering
@@ -74,7 +74,7 @@ class AgentState(TypedDict):
 
 
 def create_runtime_context(
-    collection: Optional[Any] = None,
+    vector_db: Optional[Any] = None,
     openai_client: Optional[Any] = None,
     dept_id: Optional[str] = None,
     user_id: Optional[str] = None,
@@ -85,7 +85,7 @@ def create_runtime_context(
     Factory function to create runtime context.
 
     Args:
-        collection: ChromaDB collection for retrieval
+        vector_db: VectorDB instance for retrieval
         openai_client: OpenAI client instance
         dept_id: Department ID for filtering
         user_id: User ID for filtering
@@ -96,7 +96,7 @@ def create_runtime_context(
         RuntimeContext with non-serializable objects
     """
     return RuntimeContext(
-        collection=collection,
+        vector_db=vector_db,
         openai_client=openai_client,
         dept_id=dept_id,
         user_id=user_id,
@@ -148,7 +148,7 @@ def create_initial_state(query: str) -> AgentState:
 
 def create_initial_state_with_context(
     query: str,
-    collection: Optional[Any] = None,
+    vector_db: Optional[Any] = None,
     openai_client: Optional[Any] = None,
     dept_id: Optional[str] = None,
     user_id: Optional[str] = None,
@@ -162,7 +162,7 @@ def create_initial_state_with_context(
 
     Args:
         query: User's question
-        collection: ChromaDB collection for retrieval
+        vector_db: VectorDB instance for retrieval
         openai_client: OpenAI client instance
         dept_id: Department ID for filtering
         user_id: User ID for filtering
@@ -174,7 +174,7 @@ def create_initial_state_with_context(
     """
     state = create_initial_state(query)
     runtime = create_runtime_context(
-        collection=collection,
+        vector_db=vector_db,
         openai_client=openai_client,
         dept_id=dept_id,
         user_id=user_id,

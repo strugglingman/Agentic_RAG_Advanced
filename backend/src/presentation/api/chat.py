@@ -18,10 +18,12 @@ Maps from: src/routes/chat.py
 
 import json
 from typing import Optional, Any
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from fastapi.responses import StreamingResponse
 from dishka.integrations.fastapi import FromDishka, inject
 from pydantic import BaseModel
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 from src.application.commands.chat.send_message import (
     SendMessageCommand,
@@ -34,6 +36,9 @@ from src.utils.stream_utils import stream_text_smart
 from logging import getLogger
 
 logger = getLogger(__name__)
+
+# Get limiter from app state (will be set in fastapi_app.py)
+limiter = Limiter(key_func=get_remote_address)
 
 
 # ==================== REQUEST/RESPONSE MODELS ====================
@@ -82,14 +87,18 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 
 
 @router.post("/agent")
+@limiter.limit("30/minute;1000/day")
 @inject
 async def chat_agent(
-    request: ChatMessageRequest,
+    request: Request,
+    body: ChatMessageRequest,
     handler: FromDishka[SendMessageHandler],
     current_user: AuthUser = Depends(get_current_user),
 ):
     """
     Agentic chat endpoint with streaming response.
+
+    Rate limited: 30/minute, 1000/day (matches Flask)
 
     Returns a streaming response that:
     1. Streams the answer text in chunks (mimics LLM streaming)
@@ -99,7 +108,7 @@ async def chat_agent(
     """
     try:
         # Extract latest user message
-        msgs = request.messages
+        msgs = body.messages
         latest_user_msg = None
         if msgs and msgs[-1].role == "user":
             latest_user_msg = msgs[-1]
@@ -118,19 +127,19 @@ async def chat_agent(
         # Build payload dict for filters (matches Flask request_data)
         filters = (
             {
-                "filters": request.filters,
+                "filters": body.filters,
             }
-            if request.filters
+            if body.filters
             else None
         )
 
-        # Build command from request
+        # Build command from body
         command = SendMessageCommand(
-            conversation_id=ConversationId(request.conversation_id or ""),
+            conversation_id=ConversationId(body.conversation_id or ""),
             user_email=current_user.email,
             dept_id=current_user.dept,
             content=latest_user_msg.content.strip(),
-            attachments=request.attachments,
+            attachments=body.attachments,
             filters=filters,
         )
 
@@ -169,14 +178,18 @@ async def chat_agent(
 
 
 @router.post("", response_model=ChatMessageResponse)
+@limiter.limit("30/minute;1000/day")
 @inject
 async def chat_simple(
-    request: ChatMessageRequest,
+    request: Request,
+    body: ChatMessageRequest,
     handler: FromDishka[SendMessageHandler],
     current_user: AuthUser = Depends(get_current_user),
 ):
     """
     Simple chat endpoint (non-streaming).
+
+    Rate limited: 30/minute, 1000/day (matches Flask)
 
     Returns full response as JSON. Use /chat/agent for streaming.
 
@@ -184,7 +197,7 @@ async def chat_simple(
     """
     try:
         # Extract latest user message
-        msgs = request.messages
+        msgs = body.messages
         latest_user_msg = None
         if msgs and msgs[-1].role == "user":
             latest_user_msg = msgs[-1]
@@ -203,18 +216,18 @@ async def chat_simple(
         # Build payload dict for filters
         filters = (
             {
-                "filters": request.filters,
+                "filters": body.filters,
             }
-            if request.filters
+            if body.filters
             else None
         )
 
         command = SendMessageCommand(
-            conversation_id=ConversationId(request.conversation_id or ""),
+            conversation_id=ConversationId(body.conversation_id or ""),
             user_email=current_user.email,
             dept_id=current_user.dept,
             content=latest_user_msg.content.strip(),
-            attachments=request.attachments,
+            attachments=body.attachments,
             filters=filters,
         )
 

@@ -1,8 +1,6 @@
 """
 SendMessage Command - Process user message and get AI response.
 
-TODO: Implement
-
 Command data:
 - conversation_id: ConversationId
 - user_email: UserEmail
@@ -66,7 +64,6 @@ import base64
 import logging
 from dataclasses import dataclass
 from typing import Optional, Any
-from chromadb.api.models.Collection import Collection
 from openai import OpenAI
 from src.utils.sanitizer import sanitize_text
 from src.domain.value_objects.conversation_id import ConversationId
@@ -78,6 +75,7 @@ from src.domain.ports.repositories.conversation_repository import ConversationRe
 from src.domain.ports.repositories.message_repository import MessageRepository
 from src.application.common.interfaces import Command, CommandHandler
 from src.services.query_supervisor import QuerySupervisor
+from src.services.vector_db import VectorDB
 from src.services.file_manager import FileManager
 from src.utils.safety import looks_like_injection
 from src.config.settings import Config
@@ -108,13 +106,13 @@ class SendMessageHandler(CommandHandler[SendMessageResult]):
         conv_repo: ConversationRepository,
         msg_repo: MessageRepository,
         query_supervisor: QuerySupervisor,
-        collection: Optional[Collection] = None,
+        vector_db: Optional[VectorDB] = None,
         openai_client: Optional[OpenAI] = None,
     ):
         self.conv_repo = conv_repo
         self.msg_repo = msg_repo
         self.query_supervisor = query_supervisor
-        self.collection = collection
+        self.vector_db = vector_db
         self.openai_client = openai_client
 
     async def execute(self, command: SendMessageCommand) -> SendMessageResult:
@@ -173,7 +171,7 @@ class SendMessageHandler(CommandHandler[SendMessageResult]):
         )
 
         agent_context = {
-            "collection": self.collection,
+            "vector_db": self.vector_db,
             "dept_id": dept_id,
             "user_id": user_email,
             "conversation_id": conversation_id,

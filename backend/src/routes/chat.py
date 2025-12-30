@@ -29,7 +29,7 @@ supervisor = QuerySupervisor(openai_client=openai_client)
 
 @chat_bp.post("/chat")
 @require_identity
-async def chat(collection):
+async def chat(vector_db):
     """Chat endpoint with RAG retrieval."""
     dept_id = g.identity.get("dept_id", "")
     user_id = g.identity.get("user_id", "")
@@ -70,7 +70,7 @@ async def chat(collection):
 
         # Retrieve relevant documents
         ctx, _ = retrieve(
-            collection=collection,
+            vector_db=vector_db,
             query=query,
             dept_id=dept_id,
             user_id=user_id,
@@ -181,7 +181,7 @@ async def chat(collection):
 
 @chat_bp.post("/chat/agent")
 @require_identity
-async def chat_agent(collection):
+async def chat_agent(vector_db):
     """Agentic chat endpoint with tool calling and streaming."""
     # EXACT same validation as /chat
     dept_id = g.identity.get("dept_id", "")
@@ -334,7 +334,7 @@ async def chat_agent(collection):
 
         # Build context for agent (all system parameters)
         agent_context = {
-            "collection": collection,
+            "vector_db": vector_db,
             "dept_id": dept_id,
             "user_id": user_id,
             "conversation_id": conversation_id,  # For langGraph checkpointing

@@ -15,6 +15,9 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 from dishka import make_async_container
 from dishka.integrations.fastapi import setup_dishka
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 from src.config.logging_config import setup_logging, correlation_id_var
 from src.config.settings import Config
@@ -30,6 +33,40 @@ from src.presentation.api import (
 
 # Setup logging
 setup_logging(Config.LOG_LEVEL, Config.LOG_PATH)
+
+
+# ==============================================================================
+# Rate Limiter Setup
+# ==============================================================================
+def get_user_identifier(request: Request) -> str:
+    """
+    Get rate limit key from auth header or IP address.
+    Matches Flask behavior: dept_id-user_id if authenticated, else IP.
+    """
+    # Try to get user info from auth header (JWT)
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        try:
+            import jwt
+            token = auth_header[7:]
+            # Decode without verification just to get claims for rate limiting
+            payload = jwt.decode(token, options={"verify_signature": False})
+            dept_id = payload.get("dept_id", "")
+            user_id = payload.get("user_id", "") or payload.get("email", "")
+            if dept_id and user_id:
+                return f"{dept_id}-{user_id}"
+        except Exception:
+            pass
+    # Fallback to IP address
+    return get_remote_address(request)
+
+
+# Create limiter instance (matches Flask-Limiter configuration)
+limiter = Limiter(
+    key_func=get_user_identifier,
+    storage_uri=Config.RATELIMIT_STORAGE_URI,
+    default_limits=Config.DEFAULT_RATE_LIMITS,
+)
 
 
 class CorrelationIdMiddleware(BaseHTTPMiddleware):
@@ -49,6 +86,36 @@ class CorrelationIdMiddleware(BaseHTTPMiddleware):
         response.headers["X-Correlation-ID"] = correlation_id
 
         return response
+
+
+class MaxBodySizeMiddleware(BaseHTTPMiddleware):
+    """
+    Middleware to limit request body size (matches Flask MAX_CONTENT_LENGTH).
+
+    This rejects requests with Content-Length exceeding the limit BEFORE
+    reading the body, which is more efficient than reading then checking.
+    """
+
+    def __init__(self, app, max_body_size: int):
+        super().__init__(app)
+        self.max_body_size = max_body_size
+
+    async def dispatch(self, request: Request, call_next):
+        # Check Content-Length header if present
+        content_length = request.headers.get("content-length")
+        if content_length:
+            try:
+                if int(content_length) > self.max_body_size:
+                    return JSONResponse(
+                        status_code=413,
+                        content={
+                            "error": f"Request body too large. Maximum size is {Config.MAX_UPLOAD_MB} MB."
+                        },
+                    )
+            except ValueError:
+                pass  # Invalid content-length, let the request proceed
+
+        return await call_next(request)
 
 
 # Create container at module level (before app starts)
@@ -90,8 +157,15 @@ def create_fastapi_app() -> FastAPI:
     # Setup Dishka BEFORE app starts (must add middleware before startup)
     setup_dishka(container, app)
 
+    # Setup rate limiter
+    app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
     # Correlation ID middleware (must be added before CORS)
     app.add_middleware(CorrelationIdMiddleware)
+
+    # Max body size middleware (matches Flask MAX_CONTENT_LENGTH)
+    app.add_middleware(MaxBodySizeMiddleware, max_body_size=Config.MAX_CONTENT_LENGTH)
 
     # CORS middleware
     app.add_middleware(
