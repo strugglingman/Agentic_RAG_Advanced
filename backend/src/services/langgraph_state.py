@@ -26,6 +26,7 @@ class RuntimeContext(TypedDict):
     user_id: Optional[str]  # User ID for filtering
     request_data: Optional[dict]  # Original request payload
     conversation_history: Optional[List[dict]]  # Pre-loaded conversation history
+    file_service: Optional[Any]  # FileService for file operations (async)
 
 
 class AgentState(TypedDict):
@@ -80,6 +81,7 @@ def create_runtime_context(
     user_id: Optional[str] = None,
     request_data: Optional[dict] = None,
     conversation_history: Optional[List[dict]] = None,
+    file_service: Optional[Any] = None,
 ) -> RuntimeContext:
     """
     Factory function to create runtime context.
@@ -91,6 +93,7 @@ def create_runtime_context(
         user_id: User ID for filtering
         request_data: Original request payload
         conversation_history: Pre-loaded conversation history
+        file_service: FileService for file operations (async)
 
     Returns:
         RuntimeContext with non-serializable objects
@@ -102,6 +105,7 @@ def create_runtime_context(
         user_id=user_id,
         request_data=request_data,
         conversation_history=conversation_history or [],
+        file_service=file_service,
     )
 
 
@@ -154,6 +158,7 @@ def create_initial_state_with_context(
     user_id: Optional[str] = None,
     request_data: Optional[dict] = None,
     conversation_history: Optional[List[dict]] = None,
+    file_service: Optional[Any] = None,
 ) -> Tuple[AgentState, RuntimeContext]:
     """
     Factory function to create both initial state and runtime context.
@@ -168,6 +173,7 @@ def create_initial_state_with_context(
         user_id: User ID for filtering
         request_data: Original request payload
         conversation_history: Pre-loaded conversation history
+        file_service: FileService for file operations (async)
 
     Returns:
         Tuple of (AgentState, RuntimeContext)
@@ -180,5 +186,6 @@ def create_initial_state_with_context(
         user_id=user_id,
         request_data=request_data,
         conversation_history=conversation_history,
+        file_service=file_service,
     )
     return state, runtime

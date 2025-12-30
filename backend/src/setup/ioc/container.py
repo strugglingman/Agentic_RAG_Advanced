@@ -40,6 +40,8 @@ from src.infrastructure.persistence import (
     PrismaMessageRepository,
     PrismaFileRegistryRepository,
 )
+from src.infrastructure.storage import FileStorageService
+from src.application.services import FileService
 from src.application.commands.conversations import (
     CreateConversationHandler,
     DeleteConversationHandler,
@@ -108,6 +110,30 @@ class AppProvider(Provider):
     def get_query_supervisor(self, openai_client: OpenAI) -> QuerySupervisor:
         return QuerySupervisor(openai_client=openai_client)
 
+    @provide(scope=Scope.APP)
+    def get_file_storage_service(self) -> FileStorageService:
+        """
+        Provide FileStorageService (singleton).
+
+        - Scope.APP = created ONCE when app starts
+        - No state, just disk operations
+        """
+        return FileStorageService()
+
+    @provide(scope=Scope.REQUEST)
+    def get_file_service(
+        self,
+        storage: FileStorageService,
+        file_registry_repository: FileRegistryRepository,
+    ) -> FileService:
+        """
+        Provide FileService (per-request).
+
+        - Coordinates disk I/O (FileStorageService) with DB (FileRegistryRepository)
+        - Replaces old FileManager
+        """
+        return FileService(storage=storage, repository=file_registry_repository)
+
     # ==================== REPOSITORIES ====================
 
     @provide(scope=Scope.REQUEST)
@@ -173,6 +199,7 @@ class AppProvider(Provider):
         conversation_repository: ConversationRepository,
         message_repository: MessageRepository,
         query_supervisor: QuerySupervisor,
+        file_service: FileService,
         vector_db: VectorDB,
         openai_client: OpenAI,
     ) -> SendMessageHandler:
@@ -180,6 +207,7 @@ class AppProvider(Provider):
             conv_repo=conversation_repository,
             msg_repo=message_repository,
             query_supervisor=query_supervisor,
+            file_service=file_service,
             vector_db=vector_db,
             openai_client=openai_client,
         )

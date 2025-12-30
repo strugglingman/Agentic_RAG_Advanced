@@ -2,13 +2,15 @@
 LangGraph agent node implementations.
 
 Each node is created via a factory function that binds RuntimeContext.
-Pattern: create_xxx_node(runtime) -> node_function(state) -> updated_state
+Pattern: create_xxx_node(runtime) -> async node_function(state) -> updated_state
 
 This allows nodes to access non-serializable objects (vector_db, openai_client)
 without storing them in the checkpointable AgentState.
+
+All nodes are ASYNC to support async tool execution and file operations.
 """
 
-from typing import Dict, Any, Callable
+from typing import Dict, Any, Callable, Coroutine
 import json
 import logging
 from langchain_core.messages import AIMessage
@@ -63,7 +65,9 @@ def dict_to_evaluation_result(d: dict) -> EvaluationResult:
 # ==================== PLANNING NODE ====================
 
 
-def create_plan_node(runtime: RuntimeContext) -> Callable[[AgentState], Dict[str, Any]]:
+def create_plan_node(
+    runtime: RuntimeContext,
+) -> Callable[[AgentState], Coroutine[Any, Any, Dict[str, Any]]]:
     """
     Factory function to create plan_node with runtime context bound.
 
@@ -71,10 +75,10 @@ def create_plan_node(runtime: RuntimeContext) -> Callable[[AgentState], Dict[str
         runtime: RuntimeContext with openai_client
 
     Returns:
-        plan_node function
+        Async plan_node function
     """
 
-    def plan_node(state: AgentState) -> Dict[str, Any]:
+    async def plan_node(state: AgentState) -> Dict[str, Any]:
         """
         Create execution plan before taking action.
 
@@ -171,7 +175,7 @@ def create_plan_node(runtime: RuntimeContext) -> Callable[[AgentState], Dict[str
 
 def create_retrieve_node(
     runtime: RuntimeContext,
-) -> Callable[[AgentState], Dict[str, Any]]:
+) -> Callable[[AgentState], Coroutine[Any, Any, Dict[str, Any]]]:
     """
     Factory function to create retrieve_node with runtime context bound.
 
@@ -179,10 +183,10 @@ def create_retrieve_node(
         runtime: RuntimeContext with vector_db, dept_id, user_id, request_data
 
     Returns:
-        retrieve_node function
+        Async retrieve_node function
     """
 
-    def retrieve_node(state: AgentState) -> Dict[str, Any]:
+    async def retrieve_node(state: AgentState) -> Dict[str, Any]:
         """
         Retrieve documents from ChromaDB.
 
@@ -238,9 +242,7 @@ def create_retrieve_node(
                 "current_step": current_step,
                 "iteration_count": state.get("iteration_count", 0) + 1,
                 "messages": state.get("messages", [])
-                + [
-                    AIMessage(content="No vector database available for retrieval.")
-                ],
+                + [AIMessage(content="No vector database available for retrieval.")],
             }
         if not dept_id or not user_id:
             return {
@@ -340,7 +342,7 @@ def create_retrieve_node(
 
 def create_reflect_node(
     runtime: RuntimeContext,
-) -> Callable[[AgentState], Dict[str, Any]]:
+) -> Callable[[AgentState], Coroutine[Any, Any, Dict[str, Any]]]:
     """
     Factory function to create reflect_node with runtime context bound.
 
@@ -348,10 +350,10 @@ def create_reflect_node(
         runtime: RuntimeContext with openai_client
 
     Returns:
-        reflect_node function
+        Async reflect_node function
     """
 
-    def reflect_node(state: AgentState) -> Dict[str, Any]:
+    async def reflect_node(state: AgentState) -> Dict[str, Any]:
         """
         Evaluate retrieval quality (self-reflection).
 
@@ -446,7 +448,7 @@ def create_reflect_node(
 
 def create_tool_calculator_node(
     runtime: RuntimeContext,
-) -> Callable[[AgentState], Dict[str, Any]]:
+) -> Callable[[AgentState], Coroutine[Any, Any, Dict[str, Any]]]:
     """
     Factory function to create tool_calculator_node with runtime context bound.
 
@@ -454,10 +456,10 @@ def create_tool_calculator_node(
         runtime: RuntimeContext with openai_client, vector_db, dept_id, user_id
 
     Returns:
-        tool_calculator_node function
+        Async tool_calculator_node function
     """
 
-    def tool_calculator_node(state: AgentState) -> Dict[str, Any]:
+    async def tool_calculator_node(state: AgentState) -> Dict[str, Any]:
         """
         Execute non-retrieval tools (calculator) using LLM function calling.
 
@@ -554,10 +556,11 @@ def create_tool_calculator_node(
                 "user_id": runtime.get("user_id"),
                 "openai_client": client,
                 "request_data": runtime.get("request_data", {}),
+                "file_service": runtime.get("file_service"),
             }
 
-            # Execute the tool
-            result = execute_tool_call(tool_name, tool_args, context)
+            # Execute the tool (async)
+            result = await execute_tool_call(tool_name, tool_args, context)
 
             # Update tool results
             tool_results = state.get("tool_results", {})
@@ -632,7 +635,7 @@ def create_tool_calculator_node(
 
 def create_tool_web_search_node(
     runtime: RuntimeContext,
-) -> Callable[[AgentState], Dict[str, Any]]:
+) -> Callable[[AgentState], Coroutine[Any, Any, Dict[str, Any]]]:
     """
     Factory function to create tool_web_search_node with runtime context bound.
 
@@ -640,10 +643,10 @@ def create_tool_web_search_node(
         runtime: RuntimeContext with openai_client, vector_db, dept_id, user_id
 
     Returns:
-        tool_web_search_node function
+        Async tool_web_search_node function
     """
 
-    def tool_web_search_node(state: AgentState) -> Dict[str, Any]:
+    async def tool_web_search_node(state: AgentState) -> Dict[str, Any]:
         """
         Execute web search tool using LLM function calling.
 
@@ -727,9 +730,10 @@ def create_tool_web_search_node(
                 "user_id": runtime.get("user_id"),
                 "openai_client": client,
                 "request_data": runtime.get("request_data", {}),
+                "file_service": runtime.get("file_service"),
             }
 
-            result = execute_tool_call(tool_name, tool_args, context)
+            result = await execute_tool_call(tool_name, tool_args, context)
 
             tool_results = state.get("tool_results", {})
             tool_key = f"{tool_name}_step_{current_step}"
@@ -802,12 +806,12 @@ def create_tool_web_search_node(
 # ==================== DIRECT ANSWER NODE ====================
 def create_direct_answer_node(
     runtime: RuntimeContext,
-) -> Callable[[AgentState], Dict[str, Any]]:
+) -> Callable[[AgentState], Coroutine[Any, Any, Dict[str, Any]]]:
     """
     Factory function to create direct_answer_node with runtime context bound.
     """
 
-    def direct_answer_node(state: AgentState) -> Dict[str, Any]:
+    async def direct_answer_node(state: AgentState) -> Dict[str, Any]:
         # - Get OpenAI client from runtime
         # - Extract question from plan[current_step]
         # - Call LLM with simple prompt (no tools, no retrieval)
@@ -842,7 +846,10 @@ def create_direct_answer_node(
                 for h in conversation_history:
                     sanitized_msg = {
                         "role": h.get("role", "user"),
-                        "content": sanitize_text(h.get("content", ""), max_length=Config.ONE_HISTORY_MAX_TOKENS),
+                        "content": sanitize_text(
+                            h.get("content", ""),
+                            max_length=Config.ONE_HISTORY_MAX_TOKENS,
+                        ),
                     }
                     openai_messages.append(sanitized_msg)
             user_message = GenerationPrompts.build_user_message(step_query)
@@ -903,7 +910,7 @@ def create_direct_answer_node(
 # ==================== REFINEMENT NODE ====================
 def create_refine_node(
     runtime: RuntimeContext,
-) -> Callable[[AgentState], Dict[str, Any]]:
+) -> Callable[[AgentState], Coroutine[Any, Any, Dict[str, Any]]]:
     """
     Factory function to create refine_node with runtime context bound.
 
@@ -911,10 +918,10 @@ def create_refine_node(
         runtime: RuntimeContext with openai_client
 
     Returns:
-        refine_node function
+        Async refine_node function
     """
 
-    def refine_node(state: AgentState) -> Dict[str, Any]:
+    async def refine_node(state: AgentState) -> Dict[str, Any]:
         """
         Refine query based on reflection feedback.
 
@@ -989,7 +996,7 @@ def create_refine_node(
 
 def create_generate_node(
     runtime: RuntimeContext,
-) -> Callable[[AgentState], Dict[str, Any]]:
+) -> Callable[[AgentState], Coroutine[Any, Any, Dict[str, Any]]]:
     """
     Factory function to create generate_node with runtime context.
 
@@ -997,10 +1004,10 @@ def create_generate_node(
         runtime: Runtime context with non-serializable objects
 
     Returns:
-        generate_node function with runtime bound via closure
+        Async generate_node function with runtime bound via closure
     """
 
-    def generate_node(state: AgentState) -> Dict[str, Any]:
+    async def generate_node(state: AgentState) -> Dict[str, Any]:
         """
         Generate answer from retrieved documents.
 
@@ -1153,7 +1160,10 @@ def create_generate_node(
                 for h in conversation_history:
                     sanitized_msg = {
                         "role": h.get("role", "user"),
-                        "content": sanitize_text(h.get("content", ""), max_length=Config.ONE_HISTORY_MAX_TOKENS),
+                        "content": sanitize_text(
+                            h.get("content", ""),
+                            max_length=Config.ONE_HISTORY_MAX_TOKENS,
+                        ),
                     }
                     openai_messages.append(sanitized_msg)
 
@@ -1195,7 +1205,7 @@ def create_generate_node(
 
 def create_verify_node(
     runtime: RuntimeContext,
-) -> Callable[[AgentState], Dict[str, Any]]:
+) -> Callable[[AgentState], Coroutine[Any, Any, Dict[str, Any]]]:
     """
     Factory function to create verify_node with runtime context.
 
@@ -1203,10 +1213,10 @@ def create_verify_node(
         runtime: Runtime context with non-serializable objects
 
     Returns:
-        verify_node function with runtime bound via closure
+        Async verify_node function with runtime bound via closure
     """
 
-    def verify_node(state: AgentState) -> Dict[str, Any]:
+    async def verify_node(state: AgentState) -> Dict[str, Any]:
         """
         Verify citations and route to next step or finalize answer.
 
@@ -1401,7 +1411,7 @@ def create_verify_node(
 
 
 # ==================== ERROR HANDLER NODE ====================
-def error_handler_node(state: AgentState) -> Dict[str, Any]:
+async def error_handler_node(state: AgentState) -> Dict[str, Any]:
     """
     Handle errors gracefully.
 

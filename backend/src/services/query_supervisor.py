@@ -223,14 +223,14 @@ class QuerySupervisor:
 
         Args:
             query: User's question
-            context: Execution context (must include pre-loaded conversation_history)
+            context: Execution context (must include pre-loaded conversation_history and file_service)
 
         Returns:
             Tuple of (answer, contexts)
         """
         # Use pre-loaded history from context (loaded in chat.py, avoids async issues)
         messages_history = context.get("conversation_history", [])
-        final_answer, retrieved_contexts = self.agent_service.run(
+        final_answer, retrieved_contexts = await self.agent_service.run(
             query, context, messages_history=messages_history
         )
 
@@ -257,6 +257,7 @@ class QuerySupervisor:
             user_id=context.get("user_id", ""),
             request_data=context.get("request_data", {}),
             conversation_history=context.get("conversation_history", []),
+            file_service=context.get("file_service"),
         )
 
         # Build graph with runtime context bound to nodes, using cached checkpointer
@@ -274,7 +275,8 @@ class QuerySupervisor:
         config = {"configurable": {"thread_id": thread_id}}
 
         try:
-            final_state = langgraph_agent.invoke(agent_state, config=config)
+            # Use ainvoke() for async graph execution (nodes are async)
+            final_state = await langgraph_agent.ainvoke(agent_state, config=config)
             return self._extract_langgraph_results(final_state)
         except (ValueError, EOFError) as e:
             # Handle checkpoint corruption - likely pickle deserialization error
@@ -288,7 +290,7 @@ class QuerySupervisor:
 
                 new_thread_id = str(uuid.uuid4())
                 config = {"configurable": {"thread_id": new_thread_id}}
-                final_state = langgraph_agent.invoke(agent_state, config=config)
+                final_state = await langgraph_agent.ainvoke(agent_state, config=config)
                 return self._extract_langgraph_results(final_state)
             else:
                 raise

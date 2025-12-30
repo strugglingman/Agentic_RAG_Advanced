@@ -74,9 +74,9 @@ from src.domain.entities.message import Message
 from src.domain.ports.repositories.conversation_repository import ConversationRepository
 from src.domain.ports.repositories.message_repository import MessageRepository
 from src.application.common.interfaces import Command, CommandHandler
+from src.application.services import FileService
 from src.services.query_supervisor import QuerySupervisor
 from src.services.vector_db import VectorDB
-from src.services.file_manager import FileManager
 from src.utils.safety import looks_like_injection
 from src.config.settings import Config
 
@@ -106,12 +106,14 @@ class SendMessageHandler(CommandHandler[SendMessageResult]):
         conv_repo: ConversationRepository,
         msg_repo: MessageRepository,
         query_supervisor: QuerySupervisor,
+        file_service: FileService,
         vector_db: Optional[VectorDB] = None,
         openai_client: Optional[OpenAI] = None,
     ):
         self.conv_repo = conv_repo
         self.msg_repo = msg_repo
         self.query_supervisor = query_supervisor
+        self.file_service = file_service
         self.vector_db = vector_db
         self.openai_client = openai_client
 
@@ -184,6 +186,7 @@ class SendMessageHandler(CommandHandler[SendMessageResult]):
             "temperature": Config.OPENAI_TEMPERATURE,
             "available_files": available_files,
             "attachment_file_ids": attachment_file_ids,
+            "file_service": self.file_service,
         }
         final_answer, contexts = await self.query_supervisor.process_query(
             query, agent_context
@@ -214,36 +217,32 @@ class SendMessageHandler(CommandHandler[SendMessageResult]):
         if not attachments:
             return attachment_file_ids
 
-        try:
-            async with FileManager() as fm:
-                for attachment in attachments:
-                    try:
-                        file_id = await fm.save_chat_attachment(
-                            user_email=user_email,
-                            filename=attachment.get("filename", "unknown"),
-                            content=base64.b64decode(attachment.get("data", "")),
-                            mime_type=attachment.get(
-                                "mime_type", "application/octet-stream"
-                            ),
-                            conversation_id=conversation_id,
-                            dept_id=dept_id,
-                        )
-                        attachment_file_ids.append(
-                            {
-                                "file_id": file_id,
-                                "filename": attachment.get("filename", "unknown"),
-                                "mime_type": attachment.get(
-                                    "mime_type", "application/octet-stream"
-                                ),
-                            }
-                        )
-                        logger.info(
-                            f"Saved attachment: {file_id} ({attachment.get('filename')})"
-                        )
-                    except Exception as e:
-                        logger.error(f"Failed to save attachment: {e}")
-        except Exception as e:
-            logger.error(f"Error processing attachments: {e}")
+        for attachment in attachments:
+            try:
+                file_id = await self.file_service.save_chat_attachment(
+                    user_email=user_email,
+                    filename=attachment.get("filename", "unknown"),
+                    content=base64.b64decode(attachment.get("data", "")),
+                    mime_type=attachment.get(
+                        "mime_type", "application/octet-stream"
+                    ),
+                    conversation_id=conversation_id,
+                    dept_id=dept_id,
+                )
+                attachment_file_ids.append(
+                    {
+                        "file_id": file_id,
+                        "filename": attachment.get("filename", "unknown"),
+                        "mime_type": attachment.get(
+                            "mime_type", "application/octet-stream"
+                        ),
+                    }
+                )
+                logger.info(
+                    f"Saved attachment: {file_id} ({attachment.get('filename')})"
+                )
+            except Exception as e:
+                logger.error(f"Failed to save attachment: {e}")
 
         return attachment_file_ids
 
@@ -341,28 +340,27 @@ CRITICAL! Answer ONLY with: yes or no"""
 
         available_files = []
         try:
-            async with FileManager() as fm:
-                # Get ALL indexed RAG files
-                # Include dept_id to also get shared files in the department
-                indexed_files = await fm.list_files(
-                    user_email=user_email,
-                    category="uploaded",
-                    dept_id=dept_id,
-                    limit=Config.FILE_DISCOVERY_INDEXED_LIMIT,
-                )
+            # Get ALL indexed RAG files
+            # Include dept_id to also get shared files in the department
+            indexed_files = await self.file_service.list_files(
+                user_email=user_email,
+                category="uploaded",
+                dept_id=dept_id,
+                limit=Config.FILE_DISCOVERY_INDEXED_LIMIT,
+            )
 
-                # Get conversation files (chat attachments, recent downloads, created docs)
-                conv_files = await fm.list_files(
-                    user_email=user_email,
-                    conversation_id=conversation_id,
-                    dept_id=dept_id,
-                    limit=Config.FILE_DISCOVERY_CONVERSATION_LIMIT,
-                )
-                # Combine: all indexed files + conversation files
-                all_files = {f["id"]: f for f in indexed_files}
-                for f in conv_files:
-                    all_files[f["id"]] = f
-                available_files = list(all_files.values())
+            # Get conversation files (chat attachments, recent downloads, created docs)
+            conv_files = await self.file_service.list_files(
+                user_email=user_email,
+                conversation_id=conversation_id,
+                dept_id=dept_id,
+                limit=Config.FILE_DISCOVERY_CONVERSATION_LIMIT,
+            )
+            # Combine: all indexed files + conversation files
+            all_files = {f["id"]: f for f in indexed_files}
+            for f in conv_files:
+                all_files[f["id"]] = f
+            available_files = list(all_files.values())
         except Exception as e:
             logger.error(f"Failed to fetch user files: {e}")
 

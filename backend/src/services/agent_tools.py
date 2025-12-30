@@ -13,10 +13,12 @@ Each tool has two parts:
 
 import os
 import re
-import asyncio
+import inspect
 from datetime import datetime
 from typing import Dict, Any
 import logging
+
+from src.application.services import FileService
 from urllib.parse import urlparse
 import urllib.parse
 import requests
@@ -30,7 +32,6 @@ from src.services.query_refiner import QueryRefiner
 from src.services.clarification_helper import ClarificationHelper
 from src.services.web_search import WebSearchService
 from src.utils.send_email import send_email
-from src.services.file_manager import FileManager
 
 logger = logging.getLogger(__name__)
 
@@ -703,7 +704,7 @@ def execute_web_search(args: Dict[str, Any], context: Dict[str, Any]) -> str:
 
 
 @traceable
-def execute_download_file(args: Dict[str, Any], context: Dict[str, Any]) -> str:
+async def execute_download_file(args: Dict[str, Any], context: Dict[str, Any]) -> str:
     """
     Execute the download_file tool - Downloads files from URLs to server and returns download links.
 
@@ -720,6 +721,7 @@ def execute_download_file(args: Dict[str, Any], context: Dict[str, Any]) -> str:
         context: System context containing:
             - user_id (str): Current user ID for directory organization
             - dept_id (str): Department ID (optional, for multi-tenancy)
+            - file_service (FileService): Injected file service for registration
 
     Returns:
         str: Success message with download links OR error message
@@ -782,7 +784,7 @@ def execute_download_file(args: Dict[str, Any], context: Dict[str, Any]) -> str:
                 - DO NOT use: f.write(response.content) - loads entire file into memory
 
             g) Register file in FileRegistry database
-                - Call _register_file_sync() to get file_id and download_url
+                - Call file_service.register_file() to get file_id and download_url
                 - Format: /api/files/{file_id} (unified for all file types)
                 - Store in results list: (original_url, download_url, filename, file_id)
 
@@ -904,11 +906,15 @@ def execute_download_file(args: Dict[str, Any], context: Dict[str, Any]) -> str:
                     if chunk:  # Filter out keep-alive chunks
                         f.write(chunk)
 
-            # Register file in FileRegistry database
+            # Register file in FileRegistry database using FileService
             file_size = os.path.getsize(download_path)
             mime_type = res.headers.get("Content-Type", "application/octet-stream")
 
-            result = _register_file_sync(
+            file_service: FileService = context.get("file_service")
+            if not file_service:
+                raise ValueError("FileService not provided in context")
+
+            result = await file_service.register_file(
                 user_email=user_id,
                 category="downloaded",
                 original_name=filename,
@@ -919,15 +925,11 @@ def execute_download_file(args: Dict[str, Any], context: Dict[str, Any]) -> str:
                 source_url=file_url,
                 conversation_id=context.get("conversation_id"),
                 dept_id=context.get("dept_id"),
-                metadata={
-                    "file_for_user": True
-                },  # Downloaded files are private to user
+                metadata={"file_for_user": True},
             )
 
             file_id = result["file_id"]
-            download_url = result[
-                "download_url"
-            ]  # Use unified /api/files/{file_id} URL
+            download_url = result["download_url"]
             # Put file_id FIRST and most prominent for attachment operations
             results.append(
                 f"✅ Downloaded: {filename}\n"
@@ -962,7 +964,7 @@ def execute_download_file(args: Dict[str, Any], context: Dict[str, Any]) -> str:
 
 
 @traceable
-def execute_send_email(args: Dict[str, Any], context: Dict[str, Any]) -> str:
+async def execute_send_email(args: Dict[str, Any], context: Dict[str, Any]) -> str:
     """
     Execute the send_email tool with unified file resolution.
 
@@ -976,12 +978,11 @@ def execute_send_email(args: Dict[str, Any], context: Dict[str, Any]) -> str:
                 - "file_abc123" or "clx_abc123": File ID from FileRegistry (recommended)
                 - "chat:report.pdf": Category:filename format
                 - "report.pdf": Filename only (searches user's files)
-                - Direct path format (legacy, for backwards compat)
 
         context: System context containing:
             - user_id (str): Current user email
-            - attachments (list[dict]): Legacy chat attachments (base64)
-            - chat_attachment_ids (list[str]): New file IDs for chat attachments
+            - dept_id (str): Department ID for shared file access
+            - file_service (FileService): Injected file service
 
     Returns:
         Success/error message string
@@ -997,6 +998,10 @@ def execute_send_email(args: Dict[str, Any], context: Dict[str, Any]) -> str:
     if not user_email:
         return "Error: User email not found in context"
 
+    file_service: FileService = context.get("file_service")
+    if not file_service:
+        return "Error: FileService not provided in context"
+
     # Get attachment references from LLM args
     attachment_refs = args.get("attachments", [])
     logger.debug(f"[SEND_EMAIL] Attachment references: {attachment_refs}")
@@ -1004,16 +1009,16 @@ def execute_send_email(args: Dict[str, Any], context: Dict[str, Any]) -> str:
     real_attachments = []
     errors = []
 
-    # Resolve each attachment reference using unified file system
-    # All files (chat, uploaded, downloaded, created) are in FileRegistry
-    # Include dept_id to allow access to shared files in same department
+    # Resolve each attachment reference using FileService
     for ref in attachment_refs:
         try:
-            file_path = _resolve_file_sync(ref, user_email, dept_id=dept_id)
+            file_path = await file_service.get_file_path(
+                ref, user_email, dept_id=dept_id
+            )
             real_attachments.append(file_path)
-        except FileNotFoundError as e:
+        except FileNotFoundError:
             errors.append(f"⚠️ File not found: {ref}")
-            logger.error(f"[SEND_EMAIL] {e}")
+            logger.error(f"[SEND_EMAIL] File not found: {ref}")
         except Exception as e:
             errors.append(f"⚠️ Error resolving {ref}: {str(e)}")
             logger.error(f"[SEND_EMAIL] Unexpected error resolving {ref}: {e}")
@@ -1035,166 +1040,10 @@ def execute_send_email(args: Dict[str, Any], context: Dict[str, Any]) -> str:
     return f"Email sent successfully to recipients: {', '.join(to_addresses)} with subject: {subject}"
 
 
-def _resolve_file_sync(file_ref: str, user_email: str, dept_id: str = None) -> str:
-    """
-    Synchronous wrapper to resolve file reference using FileManager.
-    Handles event loop properly by using thread pool when needed.
-
-    Args:
-        file_ref: File reference (file_id, category:name, path, filename, or URL)
-        user_email: User email for security
-        dept_id: Department ID for shared file access (optional)
-
-    Returns:
-        Absolute path to file on disk
-
-    Raises:
-        FileNotFoundError: File not found or no access
-    """
-    import nest_asyncio
-
-    nest_asyncio.apply()  # Allow nested event loops
-
-    async def _do_resolve():
-        return await _resolve_file_async(file_ref, user_email, dept_id=dept_id)
-
-    loop = asyncio.get_event_loop()
-    if loop.is_running():
-        # If loop is running, create task and wait
-        import concurrent.futures
-
-        with concurrent.futures.ThreadPoolExecutor() as pool:
-            return pool.submit(lambda: asyncio.run(_do_resolve())).result()
-    else:
-        return asyncio.run(_do_resolve())
-
-
-async def _resolve_file_async(
-    file_ref: str, user_email: str, dept_id: str = None
-) -> str:
-    """
-    Async helper to resolve file reference using FileManager.
-
-    Args:
-        file_ref: File reference (file_id, category:name, path, filename, or URL)
-        user_email: User email for security
-        dept_id: Department ID for shared file access (optional)
-
-    Returns:
-        Absolute path to file on disk
-
-    Raises:
-        FileNotFoundError: File not found or no access
-    """
-    # Handle download URLs from LLM
-    # Convert /api/downloads/{user}/{filename} → direct file path
-    # Convert /api/files/{file_id} → file_id
-    if file_ref.startswith("/api/downloads/"):
-        # Extract user and filename from /api/downloads/{user}/{filename}
-        parts = file_ref.replace("/api/downloads/", "").split("/", 1)
-        if len(parts) == 2:
-            user_id, filename = parts
-            # Construct direct file path
-            import urllib.parse
-
-            filename = urllib.parse.unquote(filename)
-            file_path = os.path.join(Config.DOWNLOAD_BASE, user_id, filename)
-            if os.path.exists(file_path):
-                return file_path
-            # Fallback: try to find in FileRegistry
-            file_ref = filename
-    elif file_ref.startswith("/api/files/"):
-        # Extract file_id from /api/files/{file_id}
-        file_ref = file_ref.replace("/api/files/", "")
-
-    async with FileManager() as fm:
-        return await fm.get_file_path(file_ref, user_email, dept_id=dept_id)
-
-
-def _register_file_sync(
-    user_email: str,
-    category: str,
-    original_name: str,
-    storage_path: str,
-    source_tool: str,
-    **kwargs,
-) -> str:
-    """
-    Synchronous wrapper to register a file using FileManager.
-    Handles event loop properly by creating fresh async context.
-
-    Args:
-        user_email: User email
-        category: File category
-        original_name: Original filename
-        storage_path: Path to file on disk
-        source_tool: Tool that created the file
-        **kwargs: Additional arguments (mime_type, size_bytes, etc.)
-
-    Returns:
-        file_id: Unique identifier for registered file
-    """
-    import nest_asyncio
-
-    nest_asyncio.apply()  # Allow nested event loops
-
-    async def _do_register():
-        async with FileManager() as fm:
-            return await fm.register_file(
-                user_email=user_email,
-                category=category,
-                original_name=original_name,
-                storage_path=storage_path,
-                source_tool=source_tool,
-                **kwargs,
-            )
-
-    loop = asyncio.get_event_loop()
-    if loop.is_running():
-        # If loop is running, create task and wait
-        import concurrent.futures
-
-        with concurrent.futures.ThreadPoolExecutor() as pool:
-            return pool.submit(lambda: asyncio.run(_do_register())).result()
-    else:
-        return asyncio.run(_do_register())
-
-
-async def _register_file_async(
-    user_email: str,
-    category: str,
-    original_name: str,
-    storage_path: str,
-    source_tool: str,
-    **kwargs,
-) -> str:
-    """
-    Async helper to register a file using FileManager.
-
-    Args:
-        user_email: User email
-        category: File category
-        original_name: Original filename
-        storage_path: Path to file on disk
-        source_tool: Tool that created the file
-        **kwargs: Additional arguments (mime_type, size_bytes, etc.)
-
-    Returns:
-        file_id: Unique identifier for registered file
-    """
-    async with FileManager() as fm:
-        return await fm.register_file(
-            user_email=user_email,
-            category=category,
-            original_name=original_name,
-            storage_path=storage_path,
-            source_tool=source_tool,
-            **kwargs,
-        )
-
-
 @traceable
-def execute_create_documents(args: Dict[str, Any], context: Dict[str, Any]) -> str:
+async def execute_create_documents(
+    args: Dict[str, Any], context: Dict[str, Any]
+) -> str:
     """
     Execute the create_documents tool - supports creating multiple documents in one call.
 
@@ -1208,6 +1057,7 @@ def execute_create_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
 
         context: System context containing:
             - user_id (str): User ID for file ownership
+            - file_service (FileService): Injected file service
 
     Returns:
         Formatted string with download links for all created documents
@@ -1262,6 +1112,10 @@ def execute_create_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
     user_id = context.get("user_id")
     if not user_id:
         return "Error: User ID not found in context"
+
+    file_service: FileService = context.get("file_service")
+    if not file_service:
+        return "Error: FileService not provided in context"
 
     # Create user downloads directory
     user_dir = os.path.join(Config.DOWNLOAD_BASE, user_id)
@@ -1440,7 +1294,7 @@ def execute_create_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
                     errors.append(f"⚠️ XLSX format requires openpyxl library: {title}")
                     continue
 
-            # Register file in FileRegistry database
+            # Register file using FileService
             file_size = os.path.getsize(filepath)
             mime_type_map = {
                 "pdf": "application/pdf",
@@ -1452,31 +1306,25 @@ def execute_create_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
                 "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             }
 
-            result = asyncio.run(
-                _register_file_async(
-                    user_email=user_id,
-                    category="created",
-                    original_name=f"{base_filename}.{format_type}",
-                    storage_path=filepath,
-                    source_tool="create_documents",
-                    mime_type=mime_type_map.get(
-                        format_type, "application/octet-stream"
-                    ),
-                    size_bytes=file_size,
-                    conversation_id=context.get("conversation_id"),
-                    dept_id=context.get("dept_id"),
-                    metadata={
-                        "title": title,
-                        "format": format_type,
-                        "file_for_user": True,  # Created files are private to user
-                    },
-                )
+            result = await file_service.register_file(
+                user_email=user_id,
+                category="created",
+                original_name=f"{base_filename}.{format_type}",
+                storage_path=filepath,
+                source_tool="create_documents",
+                mime_type=mime_type_map.get(format_type, "application/octet-stream"),
+                size_bytes=file_size,
+                conversation_id=context.get("conversation_id"),
+                dept_id=context.get("dept_id"),
+                metadata={
+                    "title": title,
+                    "format": format_type,
+                    "file_for_user": True,
+                },
             )
 
             file_id = result["file_id"]
-            download_url = result[
-                "download_url"
-            ]  # Use unified /api/files/{file_id} URL
+            download_url = result["download_url"]
             # Put file_id FIRST and most prominent for attachment operations
             results.append(
                 f"✅ Created: {base_filename}.{format_type}\n"
@@ -1568,7 +1416,7 @@ def get_tool_executor(tool_name: str):
 
 
 @traceable
-def execute_tool_call(
+async def execute_tool_call(
     tool_name: str, tool_args: Dict[str, Any], context: Dict[str, Any]
 ) -> str:
     """
@@ -1577,7 +1425,7 @@ def execute_tool_call(
     Args:
         tool_name: Name of the tool to execute
         tool_args: Arguments from LLM (parsed from JSON)
-        context: System context (vector_db, auth, etc.)
+        context: System context (vector_db, auth, file_service, etc.)
 
     Returns:
         String result from tool execution
@@ -1597,8 +1445,11 @@ def execute_tool_call(
     executor_args = tool_args if tool_args else {}
 
     try:
-        # Execute the tool
-        result = executor(executor_args, context)
+        # Execute the tool (await if async, call if sync)
+        if inspect.iscoroutinefunction(executor):
+            result = await executor(executor_args, context)
+        else:
+            result = executor(executor_args, context)
         return result
     except Exception as e:
         # Log error and return error message

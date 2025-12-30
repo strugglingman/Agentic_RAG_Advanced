@@ -62,7 +62,7 @@ class AgentService:
         self.temperature = temperature
         self.tools = ALL_TOOLS  # Tool schemas from agent_tools.py
 
-    def run(
+    async def run(
         self,
         query: str,
         context: Dict[str, Any],
@@ -73,7 +73,7 @@ class AgentService:
 
         Args:
             query: User's question
-            context: System context (vector_db, dept_id, user_id, etc.)
+            context: System context (vector_db, dept_id, user_id, file_service, etc.)
             messages_history: Previous conversation messages
 
         Returns:
@@ -82,7 +82,7 @@ class AgentService:
         # Initialize context tracking
         context["_retrieved_contexts"] = []
 
-        messages = self._build_initial_messages(query, context, messages_history)
+        messages = await self._build_initial_messages(query, context, messages_history)
         for _ in range(self.max_iterations):
             res = self._call_llm(messages)
             logger.debug(
@@ -90,7 +90,7 @@ class AgentService:
             )
             if self._has_tool_calls(res):
                 assistant_message = res.choices[0].message
-                tool_results = self._execute_tools(res, context)
+                tool_results = await self._execute_tools(res, context)
                 messages = self._append_tool_results(
                     messages, assistant_message, tool_results
                 )
@@ -196,7 +196,7 @@ class AgentService:
         has_tool_calls = response.choices[0].message.tool_calls is not None
         return has_tool_calls
 
-    def _execute_tools(
+    async def _execute_tools(
         self, response: Any, context: Dict[str, Any]
     ) -> List[Dict[str, str]]:
         """
@@ -209,7 +209,6 @@ class AgentService:
         Returns:
             List of tool result messages in OpenAI format
 
-        TODO: Implement this method
         Steps:
         1. Extract tool_calls from response.choices[0].message
         2. For each tool_call:
@@ -233,14 +232,14 @@ class AgentService:
         for tool_call in tool_calls:
             tool_name = tool_call.function.name
             tool_args = json.loads(tool_call.function.arguments)
-            result = execute_tool_call(tool_name, tool_args, context)
+            result = await execute_tool_call(tool_name, tool_args, context)
             tool_responses.append(
                 {"role": "tool", "tool_call_id": tool_call.id, "content": result}
             )
 
         return tool_responses
 
-    def _build_initial_messages(
+    async def _build_initial_messages(
         self,
         query: str,
         context: Dict[str, Any],
@@ -251,6 +250,7 @@ class AgentService:
 
         Args:
             query: User's question
+            context: System context (includes file_service for file operations)
             messages_history: Previous conversation messages
 
         Returns:
@@ -427,13 +427,14 @@ class AgentService:
         # Process just-uploaded chat attachments for inline content analysis
         # Read files from disk using real file IDs and append to user message
         attachment_file_ids = context.get("attachment_file_ids", [])
-        if attachment_file_ids:
+        file_service = context.get("file_service")
+        if attachment_file_ids and file_service:
             attachment_texts = []
             for att in attachment_file_ids:
                 try:
                     # Read file from disk (already saved in FileRegistry)
                     # Include dept_id to allow access to shared files in same department
-                    file_path = self._get_file_path_sync(
+                    file_path = await file_service.get_file_path(
                         att["file_id"],
                         context.get("user_id"),
                         dept_id=context.get("dept_id"),
@@ -458,44 +459,6 @@ class AgentService:
             return [system_msg] + messages_history + [user_msg]
         else:
             return [system_msg, user_msg]
-
-    def _get_file_path_sync(
-        self, file_id: str, user_email: str, dept_id: str = None
-    ) -> str:
-        """
-        Synchronous wrapper to get file path from FileManager.
-        Handles event loop properly by using thread pool execution.
-
-        Args:
-            file_id: File ID from FileRegistry
-            user_email: User's email address
-            dept_id: Department ID for shared file access (optional)
-
-        Returns:
-            Absolute file path on disk
-
-        Raises:
-            FileNotFoundError: If file not found
-            PermissionError: If user doesn't have access
-        """
-        import asyncio
-        import nest_asyncio
-        import concurrent.futures
-        from src.services.file_manager import FileManager
-
-        nest_asyncio.apply()  # Allow nested event loops
-
-        async def _get_path():
-            async with FileManager() as fm:
-                return await fm.get_file_path(file_id, user_email, dept_id=dept_id)
-
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            # If loop is running, use thread pool to avoid event loop conflict
-            with concurrent.futures.ThreadPoolExecutor() as pool:
-                return pool.submit(lambda: asyncio.run(_get_path())).result()
-        else:
-            return asyncio.run(_get_path())
 
     def _extract_file_content(self, file_path: str, mime_type: str) -> str:
         """
