@@ -116,6 +116,12 @@ class Config:
     # ==============================================================================
     # Redis Cache
     # ==============================================================================
+    REDIS_ENABLED: bool = os.getenv("REDIS_ENABLED", "true").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
     REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379")
     REDIS_CACHE_TTL: int = int(os.getenv("REDIS_CACHE_TTL", "3600"))
     REDIS_CACHE_LIMIT: int = int(os.getenv("REDIS_CACHE_LIMIT", "15"))

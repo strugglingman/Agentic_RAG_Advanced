@@ -25,9 +25,12 @@ Flow:
                             uses ConversationRepository interface
 """
 
+import logging
+from typing import Optional
 from dishka import Provider, Scope, make_async_container, provide, AsyncContainer
 from prisma import Prisma
 from openai import OpenAI
+from redis.asyncio import Redis
 from src.services.vector_db import VectorDB
 from src.services.query_supervisor import QuerySupervisor
 from src.domain.ports.repositories import (
@@ -40,7 +43,10 @@ from src.infrastructure.persistence import (
     PrismaMessageRepository,
     PrismaFileRegistryRepository,
 )
+from src.infrastructure.cache import create_redis_client, CachedMessageRepository
 from src.infrastructure.storage import FileStorageService
+
+logger = logging.getLogger(__name__)
 from src.application.services import FileService
 from src.application.commands.conversations import (
     CreateConversationHandler,
@@ -90,6 +96,27 @@ class AppProvider(Provider):
     @provide(scope=Scope.APP)
     def get_openai_client(self) -> OpenAI:
         return OpenAI(api_key=Config.OPENAI_KEY)
+
+    # ==================== REDIS CACHE ====================
+
+    @provide(scope=Scope.APP)
+    async def get_redis_client(self) -> Optional[Redis]:
+        """
+        Provide Redis client (singleton, app-scoped, optional).
+
+        - Scope.APP = created ONCE when app starts, shared across all requests
+        - Returns None if Redis is disabled or unavailable (graceful degradation)
+        - async because connect and ping are async
+        """
+        if not Config.REDIS_ENABLED:
+            logger.info("[Redis] Caching disabled by config")
+            return None
+        try:
+            client = await create_redis_client()
+            return client
+        except Exception as e:
+            logger.warning(f"[Redis] Unavailable, caching disabled: {e}")
+            return None
 
     # ==================== DATABASE ====================
 
@@ -149,16 +176,22 @@ class AppProvider(Provider):
         return PrismaConversationRepository(prisma)
 
     @provide(scope=Scope.REQUEST)
-    def get_message_repository(self, prisma: Prisma) -> MessageRepository:
+    def get_message_repository(
+        self, prisma: Prisma, redis_client: Optional[Redis]
+    ) -> MessageRepository:
         """
-        Provide MessageRepository implementation.
+        Provide MessageRepository implementation with optional caching.
 
         - Return type is ABSTRACT (MessageRepository)
-        - Implementation is CONCRETE (PrismaMessageRepository)
-        - Dishka sees: "when someone asks for MessageRepository, give them this"
+        - Implementation is CONCRETE (PrismaMessageRepository or CachedMessageRepository)
+        - If Redis available: wraps with CachedMessageRepository (decorator pattern)
+        - If Redis unavailable: returns plain PrismaMessageRepository
         - Scope.REQUEST = new instance per HTTP request
         """
-        return PrismaMessageRepository(prisma)
+        base_repo = PrismaMessageRepository(prisma)
+        if redis_client:
+            return CachedMessageRepository(base_repo, redis_client)
+        return base_repo
 
     # ==================== HANDLERS ====================
 
