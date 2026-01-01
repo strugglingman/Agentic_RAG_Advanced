@@ -1125,12 +1125,22 @@ async def execute_create_documents(
     errors = []
 
     for doc in documents:
+        # Skip None or invalid document entries
+        if doc is None or not isinstance(doc, dict):
+            errors.append("⚠️ Skipped invalid document entry (None or non-dict)")
+            continue
+
         try:
             content = doc.get("content", "")
             title = doc.get("title", "untitled")
             custom_filename = doc.get("filename", "")
             format_type = doc.get("format", "pdf").lower()
             metadata = doc.get("metadata", {})
+
+            # Validate required fields
+            if not content or not content.strip():
+                errors.append(f"⚠️ Skipped document '{title}': no content provided")
+                continue
 
             if format_type not in ("pdf", "docx", "txt", "md", "html", "csv", "xlsx"):
                 errors.append(f"⚠️ Unsupported format: {format_type} for {title}")
@@ -1189,35 +1199,100 @@ async def execute_create_documents(
                 filename = f"{timestamp}_{base_filename}.pdf"
                 filepath = os.path.join(user_dir, filename)
                 try:
-                    from reportlab.lib.pagesizes import letter
-                    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-                    from reportlab.lib.units import inch
-                    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+                    from fpdf import FPDF
 
-                    doc_pdf = SimpleDocTemplate(filepath, pagesize=letter)
-                    styles = getSampleStyleSheet()
-                    story = []
+                    # Create PDF with Unicode support
+                    pdf = FPDF(orientation='P', unit='mm', format='A4')
+                    pdf.set_margins(left=20, top=20, right=20)
+                    pdf.set_auto_page_break(auto=True, margin=20)
+
+                    # Try to add Unicode font for CJK support
+                    unicode_font = None
+                    font_paths = [
+                        # Windows - use .ttf not .ttc for better compatibility
+                        ("C:/Windows/Fonts/simhei.ttf", "SimHei"),
+                        ("C:/Windows/Fonts/msyh.ttc", "MSYH"),
+                        ("C:/Windows/Fonts/simsun.ttc", "SimSun"),
+                        # Linux
+                        ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "DejaVu"),
+                        # macOS
+                        ("/Library/Fonts/Arial Unicode.ttf", "ArialUnicode"),
+                    ]
+                    for font_path, font_name in font_paths:
+                        if os.path.exists(font_path):
+                            try:
+                                pdf.add_font(font_name, fname=font_path)
+                                unicode_font = font_name
+                                logger.info(f"[PDF] Loaded font: {font_name}")
+                                break
+                            except Exception as fe:
+                                logger.warning(f"[PDF] Font {font_name} failed: {fe}")
+                                continue
+
+                    pdf.add_page()
+
+                    # Calculate usable width
+                    usable_width = pdf.w - pdf.l_margin - pdf.r_margin
+
+                    # Use unicode font or fallback
+                    def set_font_safe(size, style=""):
+                        if unicode_font:
+                            pdf.set_font(unicode_font, size=size)
+                        else:
+                            pdf.set_font("Helvetica", style=style, size=size)
 
                     # Add title
-                    title_style = ParagraphStyle(
-                        "CustomTitle",
-                        parent=styles["Heading1"],
-                        fontSize=24,
-                        textColor="#333333",
-                        spaceAfter=30,
-                    )
-                    story.append(Paragraph(title, title_style))
-                    story.append(Spacer(1, 0.2 * inch))
+                    set_font_safe(16, "B")
+                    pdf.set_text_color(33, 33, 33)
+                    pdf.multi_cell(w=usable_width, h=10, text=title, align='L')
+                    pdf.ln(5)
 
-                    # Add content (simple paragraph, markdown not fully rendered)
+                    # Add separator line
+                    pdf.set_draw_color(150, 150, 150)
+                    y = pdf.get_y()
+                    pdf.line(pdf.l_margin, y, pdf.w - pdf.r_margin, y)
+                    pdf.ln(8)
+
+                    # Add content
+                    set_font_safe(10)
+                    pdf.set_text_color(51, 51, 51)
+
                     for line in content.split("\n"):
-                        if line.strip():
-                            story.append(Paragraph(line, styles["BodyText"]))
-                            story.append(Spacer(1, 0.1 * inch))
+                        line = line.strip()
+                        if not line:
+                            pdf.ln(4)
+                            continue
 
-                    doc_pdf.build(story)
+                        # Strip markdown formatting
+                        clean = line.replace("**", "").replace("*", "")
+
+                        # Handle markdown headers
+                        if line.startswith("### "):
+                            set_font_safe(11, "B")
+                            pdf.multi_cell(w=usable_width, h=7, text=clean[4:])
+                            set_font_safe(10)
+                        elif line.startswith("## "):
+                            pdf.ln(3)
+                            set_font_safe(13, "B")
+                            pdf.multi_cell(w=usable_width, h=8, text=clean[3:])
+                            set_font_safe(10)
+                        elif line.startswith("# "):
+                            pdf.ln(4)
+                            set_font_safe(14, "B")
+                            pdf.multi_cell(w=usable_width, h=9, text=clean[2:])
+                            set_font_safe(10)
+                        elif line.startswith("- ") or line.startswith("* "):
+                            pdf.multi_cell(w=usable_width, h=6, text=f"  • {clean[2:]}")
+                        else:
+                            pdf.multi_cell(w=usable_width, h=6, text=clean)
+
+                    pdf.output(filepath)
                 except ImportError:
-                    errors.append(f"⚠️ PDF format requires reportlab library: {title}")
+                    errors.append(f"⚠️ PDF format requires fpdf2 library: {title}")
+                    continue
+                except Exception as pdf_err:
+                    logger.error(f"[PDF] Creation failed: {pdf_err}")
+                    errors.append(f"⚠️ PDF creation failed for '{title}': {str(pdf_err)}")
                     continue
 
             elif format_type == "docx":

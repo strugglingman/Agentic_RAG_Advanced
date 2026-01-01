@@ -144,9 +144,6 @@ async def chat_agent(
         )
 
         # Execute handler
-        logger.debug(
-            f"Before executing SendMessageCommand for user {current_user.email.value}"
-        )
         result: SendMessageResult = await handler.execute(command)
 
         # Stream the response

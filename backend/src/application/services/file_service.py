@@ -399,6 +399,8 @@ class FileService:
                 "size_bytes": f.size_bytes,
                 "created_at": f.created_at.isoformat() if f.created_at else None,
                 "source_tool": f.source_tool,
+                "source_url": f.source_url,  # For downloaded files - shows original URL
+                "indexed_in_chromadb": f.indexed_in_chromadb,  # For RAG status display
             }
             for f in files
         ]

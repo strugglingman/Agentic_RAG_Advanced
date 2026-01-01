@@ -27,6 +27,8 @@ class RuntimeContext(TypedDict):
     request_data: Optional[dict]  # Original request payload
     conversation_history: Optional[List[dict]]  # Pre-loaded conversation history
     file_service: Optional[Any]  # FileService for file operations (async)
+    available_files: Optional[List[dict]]  # User's files from FileRegistry for tool context
+    attachment_file_ids: Optional[List[dict]]  # Chat attachments uploaded in this message
 
 
 class AgentState(TypedDict):
@@ -82,6 +84,8 @@ def create_runtime_context(
     request_data: Optional[dict] = None,
     conversation_history: Optional[List[dict]] = None,
     file_service: Optional[Any] = None,
+    available_files: Optional[List[dict]] = None,
+    attachment_file_ids: Optional[List[dict]] = None,
 ) -> RuntimeContext:
     """
     Factory function to create runtime context.
@@ -94,6 +98,8 @@ def create_runtime_context(
         request_data: Original request payload
         conversation_history: Pre-loaded conversation history
         file_service: FileService for file operations (async)
+        available_files: User's files from FileRegistry (for tool context and planning)
+        attachment_file_ids: Chat attachments uploaded in this message
 
     Returns:
         RuntimeContext with non-serializable objects
@@ -106,6 +112,8 @@ def create_runtime_context(
         request_data=request_data,
         conversation_history=conversation_history or [],
         file_service=file_service,
+        available_files=available_files or [],
+        attachment_file_ids=attachment_file_ids or [],
     )
 
 
@@ -159,6 +167,8 @@ def create_initial_state_with_context(
     request_data: Optional[dict] = None,
     conversation_history: Optional[List[dict]] = None,
     file_service: Optional[Any] = None,
+    available_files: Optional[List[dict]] = None,
+    attachment_file_ids: Optional[List[dict]] = None,
 ) -> Tuple[AgentState, RuntimeContext]:
     """
     Factory function to create both initial state and runtime context.
@@ -174,6 +184,8 @@ def create_initial_state_with_context(
         request_data: Original request payload
         conversation_history: Pre-loaded conversation history
         file_service: FileService for file operations (async)
+        available_files: User's files from FileRegistry (for tool context and planning)
+        attachment_file_ids: Chat attachments uploaded in this message
 
     Returns:
         Tuple of (AgentState, RuntimeContext)
@@ -187,5 +199,7 @@ def create_initial_state_with_context(
         request_data=request_data,
         conversation_history=conversation_history,
         file_service=file_service,
+        available_files=available_files,
+        attachment_file_ids=attachment_file_ids,
     )
     return state, runtime

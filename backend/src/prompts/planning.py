@@ -2,18 +2,197 @@
 Planning prompts for query decomposition and step creation.
 """
 
+from datetime import datetime, timezone
+from typing import List, Optional
+
 
 class PlanningPrompts:
     """Prompts for creating execution plans from user queries."""
 
+    # File count limits per category (matching agent_service.py)
+    CHAT_FILES_LIMIT = 10
+    UPLOADED_FILES_LIMIT = 15
+    DOWNLOADED_FILES_LIMIT = 10
+    CREATED_FILES_LIMIT = 10
+
     @staticmethod
-    def create_plan(query: str, conversation_context: str = "") -> str:
+    def _format_time_ago(dt) -> str:
+        """Format datetime as human-readable time ago string."""
+        if not dt:
+            return ""
+        try:
+            if isinstance(dt, str):
+                # Parse ISO format string
+                dt = datetime.fromisoformat(dt.replace("Z", "+00:00"))
+            now = datetime.now(timezone.utc)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            diff = now - dt
+            if diff.days > 30:
+                return f"{diff.days // 30}mo ago"
+            elif diff.days > 0:
+                return f"{diff.days}d ago"
+            elif diff.seconds > 3600:
+                return f"{diff.seconds // 3600}h ago"
+            elif diff.seconds > 60:
+                return f"{diff.seconds // 60}m ago"
+            else:
+                return "just now"
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _build_files_section(
+        available_files: List[dict],
+        attachment_file_ids: Optional[List[dict]] = None,
+    ) -> str:
+        """
+        Build file context section for planning prompt.
+
+        Groups files by category and formats them with file_id prominently displayed
+        for use in email attachments and file operations.
+
+        Matches agent_service.py logic:
+        - Same categories: chat, uploaded, downloaded, created
+        - Same order of display
+        - Same file count limits per category
+        - Shows file_id, original_name, download_url, and created_at
+
+        Args:
+            available_files: List of files from FileRegistry
+            attachment_file_ids: Chat attachments uploaded in current message
+
+        Returns:
+            Formatted string section for files context
+        """
+        if not available_files and not attachment_file_ids:
+            return ""
+
+        sections = []
+
+        # Current message attachments (inline content available)
+        # These are just-uploaded files whose content will be extracted inline
+        if attachment_file_ids:
+            attachment_lines = []
+            for f in attachment_file_ids:
+                file_id = f.get("file_id", "")
+                filename = f.get("filename", "unknown")
+                mime_type = f.get("mime_type", "")
+                attachment_lines.append(
+                    f"  - **{filename}** (file_id: `{file_id}`, type: {mime_type}) [INLINE CONTENT AVAILABLE]"
+                )
+            if attachment_lines:
+                sections.append(
+                    "### Current Message Attachments\n"
+                    "These files were uploaded with this message. Their content has been extracted inline.\n"
+                    + "\n".join(attachment_lines)
+                )
+
+        if available_files:
+            # Group by category (same as agent_service.py)
+            by_category = {"chat": [], "uploaded": [], "downloaded": [], "created": []}
+            for f in available_files:
+                cat = f.get("category", "uploaded")
+                if cat in by_category:
+                    by_category[cat].append(f)
+
+            # Chat attachments (from previous messages in conversation)
+            # Limit to CHAT_FILES_LIMIT most recent
+            if by_category["chat"]:
+                lines = []
+                for f in by_category["chat"][: PlanningPrompts.CHAT_FILES_LIMIT]:
+                    file_id = f.get("id", "")
+                    name = f.get("original_name", "unknown")
+                    url = f.get("download_url", f"/api/files/{file_id}")
+                    time_ago = PlanningPrompts._format_time_ago(f.get("created_at"))
+                    time_info = f", {time_ago}" if time_ago else ""
+                    lines.append(
+                        f"  - **{name}** (file_id: `{file_id}`{time_info}) → [Download]({url})"
+                    )
+                sections.append(
+                    "### Chat Attachments (previous messages)\n" + "\n".join(lines)
+                )
+
+            # Uploaded files (RAG indexed)
+            # Limit to UPLOADED_FILES_LIMIT most recent
+            if by_category["uploaded"]:
+                lines = []
+                for f in by_category["uploaded"][
+                    : PlanningPrompts.UPLOADED_FILES_LIMIT
+                ]:
+                    file_id = f.get("id", "")
+                    name = f.get("original_name", "unknown")
+                    url = f.get("download_url", f"/api/files/{file_id}")
+                    indexed = f.get("indexed_in_chromadb", False)
+                    rag_status = "✓ RAG indexed" if indexed else "not indexed"
+                    time_ago = PlanningPrompts._format_time_ago(f.get("created_at"))
+                    time_info = f", {time_ago}" if time_ago else ""
+                    lines.append(
+                        f"  - **{name}** (file_id: `{file_id}`, {rag_status}{time_info}) → [Download]({url})"
+                    )
+                sections.append(
+                    "### Uploaded Files (RAG documents)\n" + "\n".join(lines)
+                )
+
+            # Downloaded files
+            # Limit to DOWNLOADED_FILES_LIMIT most recent
+            # Downloaded files are NOT indexed in ChromaDB - cannot use retrieve on them
+            if by_category["downloaded"]:
+                lines = []
+                for f in by_category["downloaded"][
+                    : PlanningPrompts.DOWNLOADED_FILES_LIMIT
+                ]:
+                    file_id = f.get("id", "")
+                    name = f.get("original_name", "unknown")
+                    url = f.get("download_url", f"/api/files/{file_id}")
+                    source = f.get("source_url", "")
+                    source_info = f" from {source}" if source else ""
+                    lines.append(
+                        f"  - **{name}** (file_id: `{file_id}`, ⚠ NOT searchable){source_info} → [Download]({url})"
+                    )
+                sections.append("### Downloaded Files (for attachments only, NOT searchable via retrieve)\n" + "\n".join(lines))
+
+            # Created files
+            # Limit to CREATED_FILES_LIMIT most recent
+            # Created files are NOT indexed in ChromaDB - cannot use retrieve on them
+            if by_category["created"]:
+                lines = []
+                for f in by_category["created"][: PlanningPrompts.CREATED_FILES_LIMIT]:
+                    file_id = f.get("id", "")
+                    name = f.get("original_name", "unknown")
+                    url = f.get("download_url", f"/api/files/{file_id}")
+                    lines.append(
+                        f"  - **{name}** (file_id: `{file_id}`, ⚠ NOT searchable) → [Download]({url})"
+                    )
+                sections.append("### Created Documents (for attachments only, NOT searchable via retrieve)\n" + "\n".join(lines))
+
+        if not sections:
+            return ""
+
+        return (
+            "\n## Available Files\n"
+            "- Use file_id (e.g., `cmjg8yrab0000xspw5ip79qcb`) when referencing files for email attachments.\n"
+            "- Use download_url (e.g., `/api/files/{file_id}`) when providing download links to user.\n"
+            "- **IMPORTANT**: Only files with `✓ RAG indexed` can be searched via `retrieve`. Files with `⚠ NOT searchable` are for download/attachment only.\n\n"
+            + "\n\n".join(sections)
+            + "\n"
+        )
+
+    @staticmethod
+    def create_plan(
+        query: str,
+        conversation_context: str = "",
+        available_files: Optional[List[dict]] = None,
+        attachment_file_ids: Optional[List[dict]] = None,
+    ) -> str:
         """
         Generate prompt for creating a multi-step execution plan.
 
         Args:
             query: User's original question
             conversation_context: Summary of recent conversation for context understanding
+            available_files: List of user's files from FileRegistry
+            attachment_file_ids: Chat attachments uploaded in current message
 
         Returns:
             Prompt string for plan generation
@@ -29,9 +208,13 @@ You MUST resolve these references using the conversation context above and inclu
 For example: If user previously discussed "南京10个景点" and now asks "这些景点的路线", you must include the actual attraction names.
 """
 
+        files_section = PlanningPrompts._build_files_section(
+            available_files or [], attachment_file_ids
+        )
+
         return f"""
 You are a planning assistant. Create a plan to answer this query using available tools.
-{context_section}
+{context_section}{files_section}
 ## User Query
 {query}
 
@@ -40,6 +223,9 @@ You are a planning assistant. Create a plan to answer this query using available
 - retrieve: Search internal COMPANY documents and uploaded files ONLY
 - calculator: Perform mathematical calculations
 - web_search: Search the web for CURRENT/real-time information (weather, news, stock prices, recent events)
+- download_file: Download a file from a URL and save to user's storage (returns file_id for chaining)
+- send_email: Send an email with optional file attachments (use file_id from available files or from download_file/create_documents output)
+- create_documents: Create documents (PDF, DOCX, TXT, CSV, XLSX, HTML, MD) from content (returns file_id for chaining)
 
 ## CRITICAL TOOL SELECTION RULES:
 
@@ -51,14 +237,36 @@ You are a planning assistant. Create a plan to answer this query using available
 - Anything the LLM already knows from training
 
 ### Use "retrieve" ONLY for:
-- Company internal documents
-- User-uploaded files
-- Organization-specific policies or data
+- Files marked with "✓ RAG indexed" in the available files list
+- Company internal documents that have been indexed
+- User-uploaded files that are searchable
+- IMPORTANT: Files marked "⚠ NOT searchable" CANNOT be searched via retrieve - use direct_answer or web_search instead
 
 ### Use "web_search" ONLY for:
 - Current/real-time information (today's weather, live prices)
 - Very recent events (within last few months)
 - Information that changes frequently
+
+### Use "download_file" for:
+- Downloading files from external URLs
+- Saving web resources for later use or email attachment
+- Output includes file_id which can be used with send_email
+
+### Use "send_email" for:
+- Sending emails to specified recipients
+- Attaching files using file_id (from available files list or tool outputs)
+- IMPORTANT: Use exact file_id values, do not modify them
+
+### Use "create_documents" for:
+- Creating new documents (reports, summaries, exports)
+- Supported formats: PDF, DOCX, TXT, CSV, XLSX, HTML, MD
+- Output includes file_id which can be used with send_email
+
+## FILE OPERATIONS - IMPORTANT:
+- When user asks to email a file, use the file_id from the Available Files section above
+- When user asks to download something and email it, chain: download_file → send_email (use file_id from download_file output)
+- When user asks to create a document and email it, chain: create_documents → send_email (use file_id from create_documents output)
+- Inline attachment content (marked [INLINE CONTENT AVAILABLE]) has already been extracted - no need to retrieve it
 
 ## IMPORTANT:
 1. Write DETAILED, COMPREHENSIVE queries after the colon
@@ -71,6 +279,9 @@ You are a planning assistant. Create a plan to answer this query using available
 - Query: "这些景点的具体路线" (after discussing Nanjing attractions) → {{"steps": ["direct_answer: Provide a detailed travel itinerary and route connecting Nanjing Memorial Hall, Zhongshan Mausoleum, Ming Xiaoling Tomb, Xuanwu Lake, Yangtze River Bridge, Confucius Temple, Nanjing Museum, Zhonghua Gate, Purple Mountain Observatory, and Jiming Temple, including transportation options between each location, recommended visiting order, and time estimates"]}}
 - Query: "What is our Q3 revenue?" → {{"steps": ["retrieve: Q3 quarterly revenue report"]}}
 - Query: "明天北京天气怎么样" → {{"steps": ["web_search: Beijing weather forecast tomorrow"]}}
+- Query: "Download the report from example.com/report.pdf and email it to john@company.com" → {{"steps": ["download_file: https://example.com/report.pdf", "send_email: Send email to john@company.com with attached file (use file_id from previous step)"]}}
+- Query: "Email me the Q3 report" (with Q3_Report.pdf in available files) → {{"steps": ["send_email: Send Q3_Report.pdf (file_id: cmjg8yrab0000xspw5ip79qcb) to user"]}}
+- Query: "Create a summary document and send it to my manager" → {{"steps": ["create_documents: Create PDF summary document with key points", "send_email: Send the created document to manager (use file_id from previous step)"]}}
 
 Return ONLY JSON:
 {{"steps": ["tool_name: detailed comprehensive query with full context", ...]}}

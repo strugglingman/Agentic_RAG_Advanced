@@ -60,7 +60,7 @@ class Config:
     # ==============================================================================
     # LangGraph Configuration
     # ==============================================================================
-    USE_LANGGRAPH = os.getenv("USE_LANGGRAPH", "false").lower() in {
+    USE_LANGGRAPH = os.getenv("USE_LANGGRAPH", "true").lower() in {
         "1",
         "true",
         "yes",

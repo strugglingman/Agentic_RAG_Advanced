@@ -17,7 +17,9 @@ def route_after_planning(state: AgentState) -> str:
         state: Current agent state
 
     Returns:
-        Next node name: "retrieve", "tool_calculator", "tool_web_search", "generate", or "error"
+        Next node name: "retrieve", "tool_calculator", "tool_web_search",
+        "tool_download_file", "tool_send_email", "tool_create_documents",
+        "generate", or "error"
     """
     plan = state.get("plan", [])
     current_step = state.get("current_step", 0)
@@ -44,6 +46,45 @@ def route_after_planning(state: AgentState) -> str:
     if "direct_answer" in step or "direct answer" in step:
         print("[ROUTE_AFTER_PLANNING] Matched direct_answer, returning direct_answer")
         return "direct_answer"
+
+    # Download file keywords (check BEFORE generic "download")
+    if (
+        "download_file" in step
+        or "download file" in step
+        or "download from url" in step
+        or "fetch file" in step
+    ):
+        print(
+            "[ROUTE_AFTER_PLANNING] Matched download_file, returning tool_download_file"
+        )
+        return "tool_download_file"
+
+    # Send email keywords
+    if (
+        "send_email" in step
+        or "send email" in step
+        or "email to" in step
+        or "mail to" in step
+    ):
+        print("[ROUTE_AFTER_PLANNING] Matched send_email, returning tool_send_email")
+        return "tool_send_email"
+
+    # Create documents keywords (check BEFORE generic "create")
+    if (
+        "create_document" in step
+        or "create document" in step
+        or "generate document" in step
+        or "create pdf" in step
+        or "create docx" in step
+        or "create csv" in step
+        or "create xlsx" in step
+        or "create file" in step
+        or "write to file" in step
+    ):
+        print(
+            "[ROUTE_AFTER_PLANNING] Matched create_documents, returning tool_create_documents"
+        )
+        return "tool_create_documents"
 
     # Web search keywords (check BEFORE generic "search")
     if (

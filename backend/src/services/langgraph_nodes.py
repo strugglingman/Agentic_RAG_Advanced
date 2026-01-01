@@ -62,6 +62,224 @@ def dict_to_evaluation_result(d: dict) -> EvaluationResult:
     )
 
 
+# ==================== HELPER: Extract Attachment Content ====================
+
+
+def _describe_image_with_vision(
+    file_path: str, mime_type: str, openai_client=None
+) -> str:
+    """
+    Use Vision API to describe an image.
+
+    Args:
+        file_path: Absolute path to image file
+        mime_type: MIME type (image/png, image/jpeg, etc.)
+        openai_client: OpenAI client instance
+
+    Returns:
+        Text description of the image from Vision API
+    """
+    import base64
+    import os
+
+    if not openai_client:
+        file_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
+        return f"[Image file ({mime_type}) - {file_size} bytes - Vision API client not available]"
+
+    try:
+        # Read and encode image as base64
+        with open(file_path, "rb") as f:
+            image_data = base64.b64encode(f.read()).decode("utf-8")
+
+        # Build multimodal message for Vision API
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            "Describe this image in detail. Include:\n"
+                            "- What the image shows (objects, people, scenes)\n"
+                            "- Any text visible in the image\n"
+                            "- Charts/graphs: describe the data and trends\n"
+                            "- Documents: summarize the content\n"
+                            "Be concise but thorough."
+                        ),
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:{mime_type};base64,{image_data}",
+                            "detail": "auto",
+                        },
+                    },
+                ],
+            }
+        ]
+
+        # Call Vision API
+        response = openai_client.chat.completions.create(
+            model=Config.OPENAI_VISION_MODEL,
+            messages=messages,
+            max_tokens=1000,
+            temperature=0.3,
+        )
+
+        description = response.choices[0].message.content.strip()
+        logger.info(f"[LANGGRAPH] Vision API described image: {file_path[:50]}...")
+        return f"[IMAGE DESCRIPTION]\n{description}"
+
+    except Exception as e:
+        logger.error(f"[LANGGRAPH] Vision API failed for {file_path}: {e}")
+        # Fallback: return basic info about the image
+        try:
+            file_size = os.path.getsize(file_path)
+            return f"[Image file ({mime_type}) - {file_size} bytes - Vision API error: {e}]"
+        except Exception:
+            return f"[Image file ({mime_type}) - Vision API unavailable]"
+
+
+async def _extract_attachment_content(
+    file_path: str, mime_type: str, openai_client=None
+) -> str:
+    """
+    Extract text content from attachment file (async wrapper).
+
+    Supports PDF, DOCX, Excel, text files, and images (via Vision API).
+    Similar to agent_service._extract_file_content but async-compatible.
+
+    Args:
+        file_path: Absolute path to file on disk
+        mime_type: MIME type of the file
+        openai_client: Optional OpenAI client for Vision API (images)
+
+    Returns:
+        Extracted text content (truncated if too long)
+    """
+    import asyncio
+    from functools import partial
+
+    # Run sync extraction in thread pool to avoid blocking
+    loop = asyncio.get_event_loop()
+    func = partial(_extract_file_content_sync, file_path, mime_type, openai_client)
+    return await loop.run_in_executor(None, func)
+
+
+def _extract_file_content_sync(
+    file_path: str, mime_type: str, openai_client=None
+) -> str:
+    """
+    Synchronous file content extraction.
+
+    Args:
+        file_path: Absolute path to file on disk
+        mime_type: MIME type of the file
+        openai_client: Optional OpenAI client for Vision API (images)
+
+    Returns:
+        Extracted text content
+    """
+    try:
+        max_chars = 50000  # Limit to prevent overwhelming context
+
+        # Image files - use Vision API
+        if mime_type.startswith("image/"):
+            return _describe_image_with_vision(file_path, mime_type, openai_client)
+
+        # PDF files
+        elif mime_type == "application/pdf":
+            try:
+                import PyPDF2
+
+                with open(file_path, "rb") as f:
+                    reader = PyPDF2.PdfReader(f)
+                    text_parts = []
+                    for page in reader.pages[:50]:  # Limit to first 50 pages
+                        text_parts.append(page.extract_text())
+                    content = "\n".join(text_parts)
+                    return content[:max_chars] + (
+                        "..." if len(content) > max_chars else ""
+                    )
+            except Exception as e:
+                logger.error(f"[LANGGRAPH] Failed to extract PDF content: {e}")
+                return f"[PDF file - text extraction failed: {e}]"
+
+        # DOCX files
+        elif (
+            mime_type
+            == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        ):
+            try:
+                import docx
+
+                doc = docx.Document(file_path)
+                text_parts = [paragraph.text for paragraph in doc.paragraphs]
+                content = "\n".join(text_parts)
+                return content[:max_chars] + (
+                    "..." if len(content) > max_chars else ""
+                )
+            except Exception as e:
+                logger.error(f"[LANGGRAPH] Failed to extract DOCX content: {e}")
+                return f"[DOCX file - text extraction failed]"
+
+        # Excel files
+        elif mime_type in [
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "application/vnd.ms-excel",
+        ]:
+            try:
+                import openpyxl
+
+                wb = openpyxl.load_workbook(file_path, data_only=True)
+                text_parts = []
+                for sheet in wb.worksheets[:5]:  # Limit to first 5 sheets
+                    text_parts.append(f"Sheet: {sheet.title}")
+                    for row in list(sheet.iter_rows(values_only=True))[:100]:
+                        row_text = "\t".join(
+                            str(cell) if cell is not None else "" for cell in row
+                        )
+                        if row_text.strip():
+                            text_parts.append(row_text)
+                content = "\n".join(text_parts)
+                return content[:max_chars] + (
+                    "..." if len(content) > max_chars else ""
+                )
+            except Exception as e:
+                logger.error(f"[LANGGRAPH] Failed to extract Excel content: {e}")
+                return f"[Excel file - text extraction failed]"
+
+        # Text files (plain text, markdown, CSV, etc.)
+        elif mime_type.startswith("text/"):
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                    return content[:max_chars] + (
+                        "..." if len(content) > max_chars else ""
+                    )
+            except UnicodeDecodeError:
+                try:
+                    with open(file_path, "r", encoding="latin-1") as f:
+                        content = f.read()
+                        return content[:max_chars] + (
+                            "..." if len(content) > max_chars else ""
+                        )
+                except Exception as e:
+                    logger.error(f"[LANGGRAPH] Failed to read text file: {e}")
+                    return f"[Text file - encoding error]"
+
+        # Unsupported file type
+        else:
+            import os
+
+            file_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
+            return f"[File type {mime_type} not supported - {file_size} bytes]"
+
+    except Exception as e:
+        logger.error(f"[LANGGRAPH] Unexpected error extracting file content: {e}")
+        return f"[Error reading file: {str(e)}]"
+
+
 # ==================== PLANNING NODE ====================
 
 
@@ -124,7 +342,50 @@ def create_plan_node(
                 context_parts.append(f"{role}: {content}")
             conversation_context = "\n".join(context_parts)
 
-        planning_prompt = PlanningPrompts.create_plan(query, conversation_context)
+        # Get available files and attachments from runtime context
+        available_files = runtime.get("available_files", [])
+        attachment_file_ids = runtime.get("attachment_file_ids", [])
+
+        # Extract attachment content (similar to agent_service)
+        # This ensures LangGraph can actually read uploaded file contents
+        attachment_contents = ""
+        file_service = runtime.get("file_service")
+        user_id = runtime.get("user_id")
+        dept_id = runtime.get("dept_id")
+        openai_client = runtime.get("openai_client")  # For Vision API (images)
+        if attachment_file_ids and file_service:
+            content_parts = []
+            for att in attachment_file_ids:
+                try:
+                    file_path = await file_service.get_file_path(
+                        att.get("file_id"),
+                        user_id,
+                        dept_id=dept_id,
+                    )
+                    extracted = await _extract_attachment_content(
+                        file_path, att.get("mime_type", ""), openai_client
+                    )
+                    if extracted:
+                        content_parts.append(
+                            f"\n\n--- Attached File: {att.get('filename', 'unknown')} "
+                            f"(file_id: {att.get('file_id')}) ---\n{extracted}"
+                        )
+                except Exception as e:
+                    logger.warning(f"[PLAN] Failed to extract attachment: {e}")
+            if content_parts:
+                attachment_contents = "\n".join(content_parts)
+
+        # Append attachment contents to query so planner can see them
+        query_with_attachments = query
+        if attachment_contents:
+            query_with_attachments = f"{query}\n\n[ATTACHED FILE CONTENTS]{attachment_contents}"
+
+        planning_prompt = PlanningPrompts.create_plan(
+            query=query_with_attachments,
+            conversation_context=conversation_context,
+            available_files=available_files,
+            attachment_file_ids=attachment_file_ids,
+        )
         try:
             client = runtime.get("openai_client")
             if not client:
@@ -555,7 +816,7 @@ def create_tool_calculator_node(
                 "dept_id": runtime.get("dept_id"),
                 "user_id": runtime.get("user_id"),
                 "openai_client": client,
-                "request_data": runtime.get("request_data", {}),
+                "request_data": runtime.get("request_data") or {},
                 "file_service": runtime.get("file_service"),
             }
 
@@ -729,7 +990,7 @@ def create_tool_web_search_node(
                 "dept_id": runtime.get("dept_id"),
                 "user_id": runtime.get("user_id"),
                 "openai_client": client,
-                "request_data": runtime.get("request_data", {}),
+                "request_data": runtime.get("request_data") or {},
                 "file_service": runtime.get("file_service"),
             }
 
@@ -803,6 +1064,552 @@ def create_tool_web_search_node(
     return tool_web_search_node
 
 
+# ==================== DOWNLOAD FILE NODE ====================
+
+
+def create_tool_download_file_node(
+    runtime: RuntimeContext,
+) -> Callable[[AgentState], Coroutine[Any, Any, Dict[str, Any]]]:
+    """
+    Factory function to create tool_download_file_node with runtime context bound.
+
+    Args:
+        runtime: RuntimeContext with openai_client, file_service, user_id, dept_id
+
+    Returns:
+        Async tool_download_file_node function
+    """
+
+    async def tool_download_file_node(state: AgentState) -> Dict[str, Any]:
+        """
+        Execute download_file tool using LLM function calling.
+
+        This node downloads files from URLs and stores them in the file registry.
+        The file_id from the result can be used by subsequent tools (e.g., send_email).
+
+        Args:
+            state: Current agent state
+
+        Returns:
+            Updated state with tool results including files_created for chaining
+        """
+        try:
+            plan = state.get("plan", [])
+            current_step = state.get("current_step", 0)
+            query = state.get("query", "")
+
+            # Get OpenAI client from runtime
+            client = runtime.get("openai_client")
+            if not client:
+                return {
+                    "tools_used": state.get("tools_used", []),
+                    "tool_results": state.get("tool_results", {}),
+                    "current_step": current_step,
+                    "iteration_count": state.get("iteration_count", 0) + 1,
+                    "error": "OpenAI client required for tool execution",
+                }
+
+            # Build prompt for LLM tool calling
+            if plan and current_step < len(plan):
+                action_step = plan[current_step]
+                # Extract URLs from plan step
+                clean_query = (
+                    action_step.split(":", 1)[1].strip()
+                    if ":" in action_step
+                    else action_step
+                )
+                prompt = ToolPrompts.download_file_prompt(clean_query)
+            else:
+                prompt = ToolPrompts.fallback_prompt(query, "download_file")
+
+            response = client.chat.completions.create(
+                model=Config.OPENAI_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                tools=TOOL_DOWNLOAD_FILE,
+                tool_choice="auto",
+                temperature=0.1,
+            )
+
+            if not response.choices[0].message.tool_calls:
+                return {
+                    "tools_used": state.get("tools_used", []),
+                    "tool_results": state.get("tool_results", {}),
+                    "current_step": current_step,
+                    "iteration_count": state.get("iteration_count", 0) + 1,
+                    "messages": state.get("messages", [])
+                    + [AIMessage(content="No tool was called by the LLM for download.")],
+                }
+
+            tool_call = response.choices[0].message.tool_calls[0]
+            tool_name = tool_call.function.name
+            tool_args = json.loads(tool_call.function.arguments)
+
+            # Build context for tool execution from runtime
+            context = {
+                "vector_db": runtime.get("vector_db"),
+                "dept_id": runtime.get("dept_id"),
+                "user_id": runtime.get("user_id"),
+                "openai_client": client,
+                "request_data": runtime.get("request_data") or {},
+                "file_service": runtime.get("file_service"),
+                "conversation_id": (runtime.get("request_data") or {}).get("conversation_id"),
+            }
+
+            result = await execute_tool_call(tool_name, tool_args, context)
+
+            tool_results = state.get("tool_results", {})
+            tool_key = f"{tool_name}_step_{current_step}"
+            if tool_key not in tool_results:
+                tool_results[tool_key] = []
+            tool_results[tool_key].append(
+                {
+                    "step": current_step,
+                    "args": tool_args,
+                    "result": result,
+                    "query": query,
+                }
+            )
+
+            # Extract file_ids from result for chaining to subsequent tools
+            # Format from execute_download_file: "File ID: {file_id}\n..."
+            files_created = []
+            for line in result.split("\n"):
+                if "File ID:" in line:
+                    file_id = line.split("File ID:")[1].strip()
+                    files_created.append({"file_id": file_id, "source": "download_file"})
+
+            # Store tool result with files_created for chaining
+            step_contexts = state.get("step_contexts", {})
+            if current_step not in step_contexts:
+                step_contexts[current_step] = []
+
+            # Remove any existing download_file context
+            step_contexts[current_step] = [
+                ctx
+                for ctx in step_contexts[current_step]
+                if not (
+                    ctx.get("type") == "tool" and ctx.get("tool_name") == "download_file"
+                )
+            ]
+
+            # Add new download_file context with files_created for chaining
+            step_contexts[current_step].append(
+                {
+                    "type": "tool",
+                    "tool_name": tool_name,
+                    "result": result,
+                    "args": tool_args,
+                    "files_created": files_created,  # For chaining to send_email
+                    "plan_step": (
+                        plan[current_step] if plan and current_step < len(plan) else ""
+                    ),
+                }
+            )
+
+            return {
+                "tools_used": state.get("tools_used", []) + [tool_name],
+                "tool_results": tool_results,
+                "step_contexts": step_contexts,
+                "draft_answer": result,  # Set draft_answer for verify_node
+                "current_step": current_step,
+                "iteration_count": state.get("iteration_count", 0) + 1,
+                "messages": state.get("messages", [])
+                + [
+                    AIMessage(
+                        content=f"Downloaded files: {len(files_created)} file(s) created"
+                    )
+                ],
+            }
+
+        except Exception as e:
+            return {
+                "tools_used": state.get("tools_used", []),
+                "tool_results": state.get("tool_results", {}),
+                "draft_answer": f"Download failed: {str(e)}",
+                "current_step": current_step,
+                "iteration_count": state.get("iteration_count", 0) + 1,
+                "error": f"Download file failed: {str(e)}",
+                "messages": state.get("messages", [])
+                + [AIMessage(content=f"Download file failed: {str(e)}")],
+            }
+
+    return tool_download_file_node
+
+
+# ==================== CREATE DOCUMENTS NODE ====================
+
+
+def create_tool_create_documents_node(
+    runtime: RuntimeContext,
+) -> Callable[[AgentState], Coroutine[Any, Any, Dict[str, Any]]]:
+    """
+    Factory function to create tool_create_documents_node with runtime context bound.
+
+    Args:
+        runtime: RuntimeContext with openai_client, file_service, user_id
+
+    Returns:
+        Async tool_create_documents_node function
+    """
+
+    async def tool_create_documents_node(state: AgentState) -> Dict[str, Any]:
+        """
+        Execute create_documents tool using LLM function calling.
+
+        This node creates documents (PDF, DOCX, TXT, CSV, XLSX, HTML, MD) from content.
+        The file_id from the result can be used by subsequent tools (e.g., send_email).
+
+        For multi-step queries, this node can access previous step_answers to include
+        retrieved content in the created document.
+
+        Args:
+            state: Current agent state
+
+        Returns:
+            Updated state with tool results including files_created for chaining
+        """
+        try:
+            plan = state.get("plan", [])
+            current_step = state.get("current_step", 0)
+            query = state.get("query", "")
+
+            # Get OpenAI client from runtime
+            client = runtime.get("openai_client")
+            if not client:
+                return {
+                    "tools_used": state.get("tools_used", []),
+                    "tool_results": state.get("tool_results", {}),
+                    "current_step": current_step,
+                    "iteration_count": state.get("iteration_count", 0) + 1,
+                    "error": "OpenAI client required for tool execution",
+                }
+
+            # Gather context from previous steps for document content
+            step_answers = state.get("step_answers", [])
+            step_contexts = state.get("step_contexts", {})
+
+            # Build content context from previous step answers
+            previous_content = ""
+            if step_answers:
+                content_parts = []
+                for ans in step_answers:
+                    content_parts.append(f"## {ans.get('question', 'Step Result')}\n{ans.get('answer', '')}")
+                previous_content = "\n\n".join(content_parts)
+
+            # Build prompt for LLM tool calling
+            if plan and current_step < len(plan):
+                action_step = plan[current_step]
+                clean_query = (
+                    action_step.split(":", 1)[1].strip()
+                    if ":" in action_step
+                    else action_step
+                )
+                # Include previous step content in prompt for document creation
+                prompt = ToolPrompts.create_documents_prompt(
+                    clean_query, previous_content=previous_content
+                )
+            else:
+                prompt = ToolPrompts.fallback_prompt(query, "create_documents")
+
+            response = client.chat.completions.create(
+                model=Config.OPENAI_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                tools=TOOL_CREATE_DOCUMENTS,
+                tool_choice="auto",
+                temperature=0.1,
+            )
+
+            if not response.choices[0].message.tool_calls:
+                return {
+                    "tools_used": state.get("tools_used", []),
+                    "tool_results": state.get("tool_results", {}),
+                    "current_step": current_step,
+                    "iteration_count": state.get("iteration_count", 0) + 1,
+                    "messages": state.get("messages", [])
+                    + [AIMessage(content="No tool was called by the LLM for document creation.")],
+                }
+
+            tool_call = response.choices[0].message.tool_calls[0]
+            tool_name = tool_call.function.name
+            tool_args = json.loads(tool_call.function.arguments)
+
+            # Build context for tool execution from runtime
+            context = {
+                "vector_db": runtime.get("vector_db"),
+                "dept_id": runtime.get("dept_id"),
+                "user_id": runtime.get("user_id"),
+                "openai_client": client,
+                "request_data": runtime.get("request_data") or {},
+                "file_service": runtime.get("file_service"),
+                "conversation_id": (runtime.get("request_data") or {}).get("conversation_id"),
+            }
+
+            result = await execute_tool_call(tool_name, tool_args, context)
+
+            tool_results = state.get("tool_results", {})
+            tool_key = f"{tool_name}_step_{current_step}"
+            if tool_key not in tool_results:
+                tool_results[tool_key] = []
+            tool_results[tool_key].append(
+                {
+                    "step": current_step,
+                    "args": tool_args,
+                    "result": result,
+                    "query": query,
+                }
+            )
+
+            # Extract file_ids from result for chaining to subsequent tools
+            # Format from execute_create_documents: "File ID: {file_id}\n..."
+            files_created = []
+            for line in result.split("\n"):
+                if "File ID:" in line:
+                    file_id = line.split("File ID:")[1].strip()
+                    files_created.append({"file_id": file_id, "source": "create_documents"})
+
+            # Store tool result with files_created for chaining
+            if current_step not in step_contexts:
+                step_contexts[current_step] = []
+
+            # Remove any existing create_documents context
+            step_contexts[current_step] = [
+                ctx
+                for ctx in step_contexts[current_step]
+                if not (
+                    ctx.get("type") == "tool" and ctx.get("tool_name") == "create_documents"
+                )
+            ]
+
+            # Add new create_documents context with files_created for chaining
+            step_contexts[current_step].append(
+                {
+                    "type": "tool",
+                    "tool_name": tool_name,
+                    "result": result,
+                    "args": tool_args,
+                    "files_created": files_created,  # For chaining to send_email
+                    "plan_step": (
+                        plan[current_step] if plan and current_step < len(plan) else ""
+                    ),
+                }
+            )
+
+            return {
+                "tools_used": state.get("tools_used", []) + [tool_name],
+                "tool_results": tool_results,
+                "step_contexts": step_contexts,
+                "draft_answer": result,  # Set draft_answer for verify_node
+                "current_step": current_step,
+                "iteration_count": state.get("iteration_count", 0) + 1,
+                "messages": state.get("messages", [])
+                + [
+                    AIMessage(
+                        content=f"Created documents: {len(files_created)} file(s)"
+                    )
+                ],
+            }
+
+        except Exception as e:
+            return {
+                "tools_used": state.get("tools_used", []),
+                "tool_results": state.get("tool_results", {}),
+                "draft_answer": f"Document creation failed: {str(e)}",
+                "current_step": current_step,
+                "iteration_count": state.get("iteration_count", 0) + 1,
+                "error": f"Create documents failed: {str(e)}",
+                "messages": state.get("messages", [])
+                + [AIMessage(content=f"Create documents failed: {str(e)}")],
+            }
+
+    return tool_create_documents_node
+
+
+# ==================== SEND EMAIL NODE ====================
+
+
+def create_tool_send_email_node(
+    runtime: RuntimeContext,
+) -> Callable[[AgentState], Coroutine[Any, Any, Dict[str, Any]]]:
+    """
+    Factory function to create tool_send_email_node with runtime context bound.
+
+    Args:
+        runtime: RuntimeContext with openai_client, file_service, user_id
+
+    Returns:
+        Async tool_send_email_node function
+    """
+
+    async def tool_send_email_node(state: AgentState) -> Dict[str, Any]:
+        """
+        Execute send_email tool using LLM function calling.
+
+        This node sends emails with optional attachments. It can access files_created
+        from previous steps (download_file, create_documents) to attach them.
+
+        Key feature: Extracts file_ids from previous step_contexts for attachments.
+
+        Args:
+            state: Current agent state
+
+        Returns:
+            Updated state with tool results
+        """
+        try:
+            plan = state.get("plan", [])
+            current_step = state.get("current_step", 0)
+            query = state.get("query", "")
+
+            # Get OpenAI client from runtime
+            client = runtime.get("openai_client")
+            if not client:
+                return {
+                    "tools_used": state.get("tools_used", []),
+                    "tool_results": state.get("tool_results", {}),
+                    "current_step": current_step,
+                    "iteration_count": state.get("iteration_count", 0) + 1,
+                    "error": "OpenAI client required for tool execution",
+                }
+
+            # Collect all files_created from previous steps for potential attachments
+            step_contexts = state.get("step_contexts", {})
+            available_file_ids = []
+            for step_num, contexts in step_contexts.items():
+                if step_num < current_step:  # Only look at previous steps
+                    for ctx in contexts:
+                        files_created = ctx.get("files_created", [])
+                        for f in files_created:
+                            available_file_ids.append(f["file_id"])
+
+            # Also include files from available_files in runtime (user's existing files)
+            available_files = runtime.get("available_files", [])
+            available_file_info = []
+            for f in available_files:
+                available_file_info.append({
+                    "file_id": f.get("file_id"),
+                    "name": f.get("original_name"),
+                    "category": f.get("category"),
+                })
+
+            # Build prompt for LLM tool calling with file context
+            if plan and current_step < len(plan):
+                action_step = plan[current_step]
+                clean_query = (
+                    action_step.split(":", 1)[1].strip()
+                    if ":" in action_step
+                    else action_step
+                )
+                prompt = ToolPrompts.send_email_prompt(
+                    clean_query,
+                    available_file_ids=available_file_ids,
+                    available_files=available_file_info,
+                )
+            else:
+                prompt = ToolPrompts.fallback_prompt(query, "send_email")
+
+            response = client.chat.completions.create(
+                model=Config.OPENAI_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                tools=TOOL_SEND_EMAIL,
+                tool_choice="auto",
+                temperature=0.1,
+            )
+
+            if not response.choices[0].message.tool_calls:
+                return {
+                    "tools_used": state.get("tools_used", []),
+                    "tool_results": state.get("tool_results", {}),
+                    "current_step": current_step,
+                    "iteration_count": state.get("iteration_count", 0) + 1,
+                    "messages": state.get("messages", [])
+                    + [AIMessage(content="No tool was called by the LLM for send email.")],
+                }
+
+            tool_call = response.choices[0].message.tool_calls[0]
+            tool_name = tool_call.function.name
+            tool_args = json.loads(tool_call.function.arguments)
+
+            # Build context for tool execution from runtime
+            context = {
+                "vector_db": runtime.get("vector_db"),
+                "dept_id": runtime.get("dept_id"),
+                "user_id": runtime.get("user_id"),
+                "openai_client": client,
+                "request_data": runtime.get("request_data") or {},
+                "file_service": runtime.get("file_service"),
+            }
+
+            result = await execute_tool_call(tool_name, tool_args, context)
+
+            tool_results = state.get("tool_results", {})
+            tool_key = f"{tool_name}_step_{current_step}"
+            if tool_key not in tool_results:
+                tool_results[tool_key] = []
+            tool_results[tool_key].append(
+                {
+                    "step": current_step,
+                    "args": tool_args,
+                    "result": result,
+                    "query": query,
+                }
+            )
+
+            # Store tool result in step_contexts
+            if current_step not in step_contexts:
+                step_contexts[current_step] = []
+
+            # Remove any existing send_email context
+            step_contexts[current_step] = [
+                ctx
+                for ctx in step_contexts[current_step]
+                if not (
+                    ctx.get("type") == "tool" and ctx.get("tool_name") == "send_email"
+                )
+            ]
+
+            # Add new send_email context
+            step_contexts[current_step].append(
+                {
+                    "type": "tool",
+                    "tool_name": tool_name,
+                    "result": result,
+                    "args": tool_args,
+                    "plan_step": (
+                        plan[current_step] if plan and current_step < len(plan) else ""
+                    ),
+                }
+            )
+
+            return {
+                "tools_used": state.get("tools_used", []) + [tool_name],
+                "tool_results": tool_results,
+                "step_contexts": step_contexts,
+                "draft_answer": result,  # Set draft_answer for verify_node
+                "current_step": current_step,
+                "iteration_count": state.get("iteration_count", 0) + 1,
+                "messages": state.get("messages", [])
+                + [
+                    AIMessage(
+                        content=f"Email sent: {result[:100]}..."
+                    )
+                ],
+            }
+
+        except Exception as e:
+            return {
+                "tools_used": state.get("tools_used", []),
+                "tool_results": state.get("tool_results", {}),
+                "draft_answer": f"Email sending failed: {str(e)}",
+                "current_step": current_step,
+                "iteration_count": state.get("iteration_count", 0) + 1,
+                "error": f"Send email failed: {str(e)}",
+                "messages": state.get("messages", [])
+                + [AIMessage(content=f"Send email failed: {str(e)}")],
+            }
+
+    return tool_send_email_node
+
+
 # ==================== DIRECT ANSWER NODE ====================
 def create_direct_answer_node(
     runtime: RuntimeContext,
@@ -840,6 +1647,23 @@ def create_direct_answer_node(
             system_prompt = GenerationPrompts.get_system_prompt(
                 ContextType.DIRECT_ANSWER
             )
+
+            # Add available files context for "give me the link" type queries
+            available_files = runtime.get("available_files", [])
+            files_context = ""
+            if available_files:
+                file_lines = []
+                for f in available_files:
+                    file_lines.append(
+                        f"- [{f.get('original_name')}]({f.get('download_url')}) "
+                        f"(category: {f.get('category')})"
+                    )
+                files_context = (
+                    "\n\nAVAILABLE FILES (use these download links if user asks):\n"
+                    + "\n".join(file_lines)
+                )
+                system_prompt += files_context
+
             openai_messages = [{"role": "system", "content": system_prompt}]
             conversation_history = runtime.get("conversation_history", [])
             if conversation_history:
@@ -1131,6 +1955,38 @@ def create_generate_node(
 
             system_prompt = GenerationPrompts.get_system_prompt(context_type)
 
+            # Add source file download links for retrieved documents
+            # Match retrieved doc sources with available_files to provide links
+            available_files = runtime.get("available_files", [])
+            if available_files and not is_web_search:
+                # Build file_id to download_url mapping
+                file_map = {}
+                for f in available_files:
+                    file_map[f.get("file_id")] = {
+                        "name": f.get("original_name"),
+                        "url": f.get("download_url"),
+                    }
+
+                # Collect unique source files from retrieved docs
+                source_files = set()
+                for step_ctx in step_ctx_list:
+                    if step_ctx["type"] == "retrieval":
+                        for doc in step_ctx.get("docs", []):
+                            file_id = doc.get("file_id")
+                            if file_id and file_id in file_map:
+                                source_files.add(file_id)
+
+                # Add source file links to system prompt
+                if source_files:
+                    source_links = []
+                    for fid in source_files:
+                        info = file_map[fid]
+                        source_links.append(f"- [{info['name']}]({info['url']})")
+                    system_prompt += (
+                        "\n\nSOURCE FILE DOWNLOADS (include these links in your answer):\n"
+                        + "\n".join(source_links)
+                    )
+
             # Use the SPECIFIC plan step as the question (not the full multi-part query)
             # This ensures the LLM answers ONLY what this step is about
             refined_query = state.get("refined_query", None)
@@ -1289,11 +2145,22 @@ def create_verify_node(
             # Get types from all contexts (can have multiple: retrieve + web_search)
             step_types = [ctx.get("type", "unknown") for ctx in step_ctx_list]
 
+            # Also get tool names for action tools
+            tool_names = [
+                ctx.get("tool_name", "")
+                for ctx in step_ctx_list
+                if ctx.get("type") == "tool"
+            ]
+
+            # Action tools that skip citation enforcement (direct results, not RAG)
+            action_tools = {"download_file", "create_documents", "send_email"}
+            is_action_tool = bool(set(tool_names) & action_tools)
+
             clean_answer = ""
 
-            # Direct answer steps skip citation enforcement
+            # Direct answer and action tool steps skip citation enforcement
             valid_ids = []  # Initialize for all cases
-            if "direct_answer" in step_types:
+            if "direct_answer" in step_types or is_action_tool:
                 clean_answer = draft_answer
             else:
                 context_num = 1
@@ -1471,6 +2338,104 @@ TOOL_WEB_SEARCH = [
                     },
                 },
                 "required": ["query"],
+            },
+        },
+    },
+]
+
+TOOL_DOWNLOAD_FILE = [
+    {
+        "type": "function",
+        "function": {
+            "name": "download_file",
+            "description": "Download files from URLs. Returns file_id for each downloaded file that can be used for attachments.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file_urls": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "List of URLs to download files from",
+                    },
+                },
+                "required": ["file_urls"],
+            },
+        },
+    },
+]
+
+TOOL_CREATE_DOCUMENTS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "create_documents",
+            "description": "Create documents (PDF, DOCX, TXT, CSV, XLSX, HTML, MD) from content. Returns file_id for each created file.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "documents": {
+                        "type": "array",
+                        "description": "List of documents to create",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "content": {
+                                    "type": "string",
+                                    "description": "Document content (supports markdown)",
+                                },
+                                "title": {
+                                    "type": "string",
+                                    "description": "Document title",
+                                },
+                                "format": {
+                                    "type": "string",
+                                    "enum": ["pdf", "docx", "txt", "md", "html", "csv", "xlsx"],
+                                    "description": "Output format (default: pdf)",
+                                },
+                                "filename": {
+                                    "type": "string",
+                                    "description": "Optional custom filename (without extension)",
+                                },
+                            },
+                            "required": ["content", "title"],
+                        },
+                    },
+                },
+                "required": ["documents"],
+            },
+        },
+    },
+]
+
+TOOL_SEND_EMAIL = [
+    {
+        "type": "function",
+        "function": {
+            "name": "send_email",
+            "description": "Send email with optional attachments. Use file_id from previous tool results for attachments.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "to": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Recipient email addresses",
+                    },
+                    "subject": {
+                        "type": "string",
+                        "description": "Email subject",
+                    },
+                    "body": {
+                        "type": "string",
+                        "description": "Email body content",
+                    },
+                    "attachments": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "File IDs to attach (from download_file or create_documents results)",
+                    },
+                },
+                "required": ["to", "subject", "body"],
             },
         },
     },
