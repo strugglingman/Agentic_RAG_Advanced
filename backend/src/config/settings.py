@@ -28,7 +28,7 @@ class Config:
     # ==============================================================================
     # OpenAI API Settings
     # ==============================================================================
-    OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.2")
+    OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
     OPENAI_SIMPLE_MODEL = os.getenv(
         "OPENAI_SIMPLE_MODEL", "gpt-4o-mini"
     )  # Fast and cheap for simple, classification questions.
@@ -125,6 +125,9 @@ class Config:
     REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379")
     REDIS_CACHE_TTL: int = int(os.getenv("REDIS_CACHE_TTL", "3600"))
     REDIS_CACHE_LIMIT: int = int(os.getenv("REDIS_CACHE_LIMIT", "15"))
+
+    # Slack conversation mapping TTL (how long to remember channel → conversation_id mapping)
+    SLACK_CONV_TTL: int = int(os.getenv("SLACK_CONV_TTL", "86400"))  # 24 hours
 
     # ==============================================================================
     # Retrieval & Search Settings
@@ -309,6 +312,47 @@ class Config:
     DOWNLOAD_BASE = os.getenv("DOWNLOAD_BASE", "downloads")
     MAX_DOWNLOAD_SIZE_MB = float(os.getenv("MAX_DOWNLOAD_SIZE_MB", "100"))
     DOWNLOAD_TIMEOUT = int(os.getenv("DOWNLOAD_TIMEOUT", "30"))  # seconds
+
+    # ==============================================================================
+    # Backend API Settings
+    # ==============================================================================
+    BACKEND_API_TIMEOUT = int(os.getenv("BACKEND_API_TIMEOUT", "120"))
+
+    # ==============================================================================
+    # Bot General Configuration
+    # ==============================================================================
+    BOT_BACKEND_URL = os.getenv("BOT_BACKEND_URL", "http://localhost:5001")
+
+    # ==============================================================================
+    # Slack Bot Configuration
+    # ==============================================================================
+    # Enable/disable Slack integration
+    SLACK_ENABLED = os.getenv("SLACK_ENABLED", "false").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+    # Slack Bot User OAuth Token (starts with xoxb-)
+    # Get from: Slack App → OAuth & Permissions → Bot User OAuth Token
+    SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN", "")
+
+    # Slack Signing Secret (for verifying webhook requests)
+    # Get from: Slack App → Basic Information → Signing Secret
+    SLACK_SIGNING_SECRET = os.getenv("SLACK_SIGNING_SECRET", "")
+
+    # Default department for channels not in SLACK_CHANNEL_TO_DEPT mapping
+    SLACK_DEFAULT_DEPT = os.getenv("SLACK_DEFAULT_DEPT", "MYHB|software|ml")
+
+    # Channel → Department mapping (JSON string)
+    # Example: {"C0123456789": "engineering", "C9876543210": "sales"}
+    # Leave empty to use SLACK_DEFAULT_DEPT for all channels
+    SLACK_CHANNEL_TO_DEPT: dict = {}  # TODO: Parse from env if needed
+
+    # Workspace → Department mapping (for Enterprise Grid with multiple workspaces)
+    # Example: {"T0123456789": "company_a", "T9876543210": "company_b"}
+    SLACK_WORKSPACE_TO_DEPT: dict = {}  # TODO: Parse from env if needed
 
 
 class DevelopmentConfig(Config):

@@ -30,6 +30,7 @@ from src.presentation.api import (
     org_router,
     ingest_router,
 )
+from src.adapters.slack.slack_routes import router as slack_router
 
 # Setup logging
 setup_logging(Config.LOG_LEVEL, Config.LOG_PATH)
@@ -48,6 +49,7 @@ def get_user_identifier(request: Request) -> str:
     if auth_header.startswith("Bearer "):
         try:
             import jwt
+
             token = auth_header[7:]
             # Decode without verification just to get claims for rate limiting
             payload = jwt.decode(token, options={"verify_signature": False})
@@ -178,7 +180,9 @@ def create_fastapi_app() -> FastAPI:
 
     # Validation error handler - shows detailed Pydantic errors
     @app.exception_handler(RequestValidationError)
-    async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    async def validation_exception_handler(
+        request: Request, exc: RequestValidationError
+    ):
         errors = exc.errors()
         print(f"[VALIDATION ERROR] {errors}")  # Log to console
         return JSONResponse(
@@ -190,6 +194,7 @@ def create_fastapi_app() -> FastAPI:
     @app.exception_handler(StarletteHTTPException)
     async def http_exception_handler(request: Request, exc: StarletteHTTPException):
         import traceback
+
         print(f"[HTTP ERROR {exc.status_code}] {exc.detail}")
         print(f"[HTTP ERROR TRACEBACK]\n{traceback.format_exc()}")
         return JSONResponse(
@@ -201,6 +206,7 @@ def create_fastapi_app() -> FastAPI:
     @app.exception_handler(Exception)
     async def global_exception_handler(request: Request, exc: Exception):
         import traceback
+
         print(f"[GLOBAL ERROR] {type(exc).__name__}: {exc}")  # Log to console
         print(f"[GLOBAL ERROR TRACEBACK]\n{traceback.format_exc()}")
         return JSONResponse(
@@ -224,6 +230,7 @@ def create_fastapi_app() -> FastAPI:
     app.include_router(files_router)  # GET /files, GET /files/{file_id}
     app.include_router(org_router)  # GET /org-structure
     app.include_router(ingest_router)  # POST /ingest
+    app.include_router(slack_router)  # Slack integration routes
 
     return app
 

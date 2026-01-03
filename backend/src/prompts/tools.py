@@ -146,17 +146,31 @@ FILES FROM PREVIOUS STEPS (use file_id for attachments):
 USER'S AVAILABLE FILES:
 {chr(10).join(file_list)}"""
 
-        return f"""You need to call the send_email tool for this specific task.
+        return f"""You need to evaluate whether to call the send_email tool for this task.
 
 Task: {task}{files_section}
 
-INSTRUCTIONS:
-1. Extract recipient email addresses from the task
+CRITICAL EMAIL POLICY (MUST FOLLOW):
+1. You MUST NOT send emails automatically without explicit user confirmation
+2. You may ONLY call send_email if the user has EXPLICITLY CONFIRMED:
+   - The recipient email address(es) - NEVER invent or guess addresses
+   - The intent to send the email
+3. If ANY of the following is true, DO NOT call the tool:
+   - No specific email address was provided by the user
+   - The email address looks like a placeholder (e.g., user@example.com, test@test.com)
+   - The user only asked for a document/file without mentioning email
+   - The user said "give me a link" or "send me a link" (this means download link, NOT email)
+4. If confirmation is missing or ambiguous:
+   - DO NOT call send_email
+   - Instead, respond asking for the recipient's email address and confirmation
+
+INSTRUCTIONS (ONLY if all conditions above are met):
+1. Extract recipient email addresses (must be explicitly provided by user)
 2. Determine the email subject
 3. Compose the email body
 4. For attachments, use the file_id values from the available files above
 
-Call the send_email tool with to, subject, body, and optionally attachments (array of file_ids)."""
+If you cannot confirm a valid, user-provided email address, respond with a message asking for clarification instead of calling the tool."""
 
     @staticmethod
     def fallback_prompt(query: str, tool_type: str) -> str:
