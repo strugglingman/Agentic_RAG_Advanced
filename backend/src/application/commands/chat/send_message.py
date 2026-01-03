@@ -168,9 +168,6 @@ class SendMessageHandler(CommandHandler[SendMessageResult]):
         available_files = await self._discover_files(
             query, user_email, conversation_id, dept_id=dept_id
         )
-        logger.debug(
-            f"********************************available_files: {available_files}"
-        )
 
         agent_context = {
             "vector_db": self.vector_db,
@@ -223,9 +220,7 @@ class SendMessageHandler(CommandHandler[SendMessageResult]):
                     user_email=user_email,
                     filename=attachment.get("filename", "unknown"),
                     content=base64.b64decode(attachment.get("data", "")),
-                    mime_type=attachment.get(
-                        "mime_type", "application/octet-stream"
-                    ),
+                    mime_type=attachment.get("mime_type", "application/octet-stream"),
                     conversation_id=conversation_id,
                     dept_id=dept_id,
                 )

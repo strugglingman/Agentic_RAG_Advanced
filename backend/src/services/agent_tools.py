@@ -535,7 +535,14 @@ DOWNLOAD_FILE_SCHEMA = {
     "type": "function",
     "function": {
         "name": "download_file",
-        "description": ("Download a file from a given URL or internal document link."),
+        "description": (
+            "Download files or web pages from URLs. "
+            "Use this tool to download:\n"
+            "- Direct file links (PDF, Excel, images, etc.)\n"
+            "- Web page URLs from web_search results (will be saved as HTML files)\n"
+            "- Any HTTP/HTTPS URL that user wants to save locally\n"
+            "After downloading, files can be attached to emails using send_email tool."
+        ),
         "parameters": {
             "type": "object",
             "properties": {
@@ -543,10 +550,13 @@ DOWNLOAD_FILE_SCHEMA = {
                     "type": "array",
                     "items": {
                         "type": "string",
-                        "description": "URL of the file to download.",
+                        "description": "URL to download (can be file URL or web page URL)",
                     },
                     "description": (
-                        "The list of URLs of the files to download. Can be external URLs or internal document links."
+                        "List of URLs to download. Supports:\n"
+                        "- External file URLs (https://example.com/report.pdf)\n"
+                        "- Web page URLs from search results (https://example.com/article)\n"
+                        "- Internal document links"
                     ),
                 },
             },
@@ -686,6 +696,7 @@ def execute_web_search(args: Dict[str, Any], context: Dict[str, Any]) -> str:
     query = args.get("query", "")
     max_results = args.get("max_results", 5) or Config.WEB_SEARCH_MAX_RESULTS
     try:
+        logger.debug(f"[WEB_SEARCH] Using provider: {Config.WEB_SEARCH_PROVIDER}")
         web_search_service = WebSearchService(
             provider=Config.WEB_SEARCH_PROVIDER,
             max_results=max_results,
@@ -844,6 +855,15 @@ async def execute_download_file(args: Dict[str, Any], context: Dict[str, Any]) -
     results = []
     errors = []
 
+    # Use browser-like headers to avoid 403 errors from websites
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+    }
+
     for file_url in file_list:
         try:
             logger.debug(f"[DOWNLOAD_FILE] File URL: {file_url}")
@@ -855,7 +875,7 @@ async def execute_download_file(args: Dict[str, Any], context: Dict[str, Any]) -
             # Check file size before downloading
             try:
                 request_header = requests.head(
-                    file_url, timeout=10, allow_redirects=True
+                    file_url, timeout=10, allow_redirects=True, headers=headers
                 )
                 content_length = request_header.headers.get("Content-Length", 0)
                 if Config.MAX_DOWNLOAD_SIZE_MB and content_length:
@@ -869,12 +889,13 @@ async def execute_download_file(args: Dict[str, Any], context: Dict[str, Any]) -
                 # HEAD request failed, try downloading anyway
                 pass
 
-            # Download file
+            # Download file with browser-like headers
             res = requests.get(
                 file_url,
                 stream=True,
                 timeout=Config.DOWNLOAD_TIMEOUT,
                 allow_redirects=True,
+                headers=headers,
             )
             if res.status_code != 200:
                 errors.append(f"⚠️ Download failed: {file_url} (HTTP {res.status_code})")
@@ -896,6 +917,37 @@ async def execute_download_file(args: Dict[str, Any], context: Dict[str, Any]) -
 
             filename = urllib.parse.unquote(filename)
             filename = re.sub(r"[^\w\-_\. ]", "_", filename)
+
+            # Add extension based on Content-Type if filename has no extension
+            if "." not in filename or filename.endswith("_"):
+                content_type = (
+                    res.headers.get("Content-Type", "").split(";")[0].strip().lower()
+                )
+                extension_map = {
+                    "text/html": ".html",
+                    "application/pdf": ".pdf",
+                    "image/jpeg": ".jpg",
+                    "image/png": ".png",
+                    "image/gif": ".gif",
+                    "image/webp": ".webp",
+                    "application/json": ".json",
+                    "text/plain": ".txt",
+                    "text/csv": ".csv",
+                    "application/xml": ".xml",
+                    "text/xml": ".xml",
+                    "application/zip": ".zip",
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+                    "application/msword": ".doc",
+                    "application/vnd.ms-excel": ".xls",
+                }
+                ext = extension_map.get(content_type, "")
+                if ext:
+                    filename = filename.rstrip("_") + ext
+                    logger.info(
+                        f"[DOWNLOAD_FILE] Added extension {ext} based on Content-Type: {content_type}"
+                    )
+
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             unique_filename = f"{timestamp}_{filename}"
             download_path = os.path.join(Config.DOWNLOAD_BASE, user_id, unique_filename)
@@ -1202,7 +1254,7 @@ async def execute_create_documents(
                     from fpdf import FPDF
 
                     # Create PDF with Unicode support
-                    pdf = FPDF(orientation='P', unit='mm', format='A4')
+                    pdf = FPDF(orientation="P", unit="mm", format="A4")
                     pdf.set_margins(left=20, top=20, right=20)
                     pdf.set_auto_page_break(auto=True, margin=20)
 
@@ -1244,7 +1296,7 @@ async def execute_create_documents(
                     # Add title
                     set_font_safe(16, "B")
                     pdf.set_text_color(33, 33, 33)
-                    pdf.multi_cell(w=usable_width, h=10, text=title, align='L')
+                    pdf.multi_cell(w=usable_width, h=10, text=title, align="L")
                     pdf.ln(5)
 
                     # Add separator line
@@ -1292,7 +1344,9 @@ async def execute_create_documents(
                     continue
                 except Exception as pdf_err:
                     logger.error(f"[PDF] Creation failed: {pdf_err}")
-                    errors.append(f"⚠️ PDF creation failed for '{title}': {str(pdf_err)}")
+                    errors.append(
+                        f"⚠️ PDF creation failed for '{title}': {str(pdf_err)}"
+                    )
                     continue
 
             elif format_type == "docx":

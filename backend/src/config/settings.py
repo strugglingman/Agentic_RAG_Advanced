@@ -28,7 +28,7 @@ class Config:
     # ==============================================================================
     # OpenAI API Settings
     # ==============================================================================
-    OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
+    OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.2")
     OPENAI_SIMPLE_MODEL = os.getenv(
         "OPENAI_SIMPLE_MODEL", "gpt-4o-mini"
     )  # Fast and cheap for simple, classification questions.
@@ -91,9 +91,9 @@ class Config:
         "OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"
     )
     RERANKER_MODEL_NAME = os.getenv(
-        # "RERANKER_MODEL_NAME", "cross-encoder/ms-marco-MiniLM-L-6-v2"
+        # cross-encoder/ms-marco-MiniLM-L-6-v2, BAAI/bge-reranker-base, BAAI/bge-reranker-v2-m3
         "RERANKER_MODEL_NAME",
-        "BAAI/bge-reranker-base",
+        "BAAI/bge-reranker-v2-m3",
     )
 
     # ==============================================================================
@@ -139,7 +139,7 @@ class Config:
         "yes",
         "on",
     }
-    TOP_K = int(os.getenv("TOP_K", "5"))
+    TOP_K = int(os.getenv("TOP_K", "8"))
     CANDIDATES = int(os.getenv("CANDIDATES", "50"))
     FUSE_ALPHA = float(os.getenv("FUSE_ALPHA", "0.5"))
 

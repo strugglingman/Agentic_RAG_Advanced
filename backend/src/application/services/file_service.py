@@ -299,24 +299,30 @@ class FileService:
                     return file_path
                 file_ref = filename  # Fallback to filename search
 
-        # Try to get by file ID
-        file_entity = await self._repository.get_accessible_file(
-            file_id=FileId(file_ref),
-            user_email=UserEmail(user_email),
-            dept_id=DeptId(dept_id) if dept_id else DeptId(""),
-        )
+        # Check if file_ref looks like a cuid (file ID) or a filename
+        # CUID pattern: starts with 'c', 25 chars total, alphanumeric
+        import re
+        is_cuid = bool(re.match(r"^c[a-z0-9]{24}$", file_ref))
 
-        if file_entity:
-            # Verify file exists on disk
-            if self._storage.file_exists(file_entity.storage_path.value):
-                return file_entity.storage_path.value
-            else:
-                logger.error(
-                    f"[FileService] File in DB but missing on disk: {file_entity.storage_path.value}"
-                )
-                raise FileNotFoundError(f"File registered but not found on disk: {file_ref}")
+        # Try to get by file ID only if it looks like a cuid
+        if is_cuid:
+            file_entity = await self._repository.get_accessible_file(
+                file_id=FileId(file_ref),
+                user_email=UserEmail(user_email),
+                dept_id=DeptId(dept_id) if dept_id else DeptId(""),
+            )
 
-        # Try to find by filename
+            if file_entity:
+                # Verify file exists on disk
+                if self._storage.file_exists(file_entity.storage_path.value):
+                    return file_entity.storage_path.value
+                else:
+                    logger.error(
+                        f"[FileService] File in DB but missing on disk: {file_entity.storage_path.value}"
+                    )
+                    raise FileNotFoundError(f"File registered but not found on disk: {file_ref}")
+
+        # Try to find by filename (for non-cuid refs or when cuid lookup failed)
         file_entity = await self._repository.find_by_name(
             user_email=UserEmail(user_email),
             original_name=file_ref,

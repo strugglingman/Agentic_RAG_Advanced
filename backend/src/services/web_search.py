@@ -7,6 +7,7 @@ the requested information (EXTERNAL recommendation).
 Week 3 - Day 5: Web Search Service
 """
 
+import logging
 from typing import Optional, List
 from dataclasses import dataclass
 from urllib.parse import urlparse
@@ -14,6 +15,8 @@ from src.config.settings import Config
 from ddgs import DDGS  # Renamed from duckduckgo_search
 from tavily import TavilyClient
 from langsmith import traceable
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -182,6 +185,7 @@ class WebSearchService:
            - Return empty list []
         """
         try:
+            logger.debug(f"[WEB_SEARCH] DuckDuckGo query: '{query[:80]}...'")
             ddgs = DDGS()
             results = ddgs.text(query, max_results=max_results)
             final_results = []
@@ -194,9 +198,10 @@ class WebSearchService:
                 )
                 final_results.append(web_result)
 
+            logger.debug(f"[WEB_SEARCH] DuckDuckGo returned {len(final_results)} results")
             return final_results
         except Exception as e:
-            print(f"[WEB_SEARCH] DuckDuckGo error: {str(e)}")
+            logger.error(f"[WEB_SEARCH] DuckDuckGo error: {str(e)}")
             return []
 
     def _search_tavily(
@@ -226,9 +231,17 @@ class WebSearchService:
         For now, can just raise NotImplementedError or return empty list
         """
         try:
+            logger.debug(f"[WEB_SEARCH] Tavily query: '{query[:80]}...'")
             client = TavilyClient(api_key=self.tavily_api_key)
             response = client.search(query, max_results=max_results)
             raw_results = response.get("results", [])
+
+            # Log results count
+            if not raw_results:
+                logger.debug(f"[WEB_SEARCH] Tavily returned 0 results for: '{query[:80]}'")
+            else:
+                logger.debug(f"[WEB_SEARCH] Tavily returned {len(raw_results)} results")
+
             final_results = []
             for r in raw_results:
                 web_result = WebSearchResult(
@@ -241,7 +254,7 @@ class WebSearchService:
 
             return final_results
         except Exception as e:
-            print(f"[WEB_SEARCH] Tavily error: {str(e)}")
+            logger.error(f"[WEB_SEARCH] Tavily error: {str(e)}")
             return []
 
     def _extract_domain(self, url: str) -> str:
@@ -317,7 +330,8 @@ class WebSearchService:
             output += f"   {r.snippet}\n\n"
 
         # Comment out too much citation prompt
-        output += "[Note: Answer is from external web sources. You MUST NOT cite the answer with bracket citations.]"
+        output += "[Note: Answer is from external web sources. You MUST NOT cite the answer with bracket citations.]\n"
+        output += "[Tip: If user asks to download these pages or send them as attachments, use download_file tool with the URLs above.]"
         # print(f"[WEB_SEARCH] Formatted output for agent:\n{output}")
 
         return output

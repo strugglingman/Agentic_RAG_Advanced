@@ -270,7 +270,7 @@ class AgentService:
                 "- For questions about CURRENT/EXTERNAL information (weather, news, stock prices, real-time data): Use web_search tool\n"
                 "- For mathematical calculations or numerical operations: Use calculator tool\n"
                 "- For simple factual questions that don't require internal documents: Answer directly\n"
-                "- For file downloads: Use download_file tool with specified links, please collect all files first then call this tool once\n"
+                "- For file downloads: Use download_file tool with URLs. This works for BOTH direct file links AND web page URLs from web_search results. Collect all URLs, then call download_file once.\n"
                 "- For sending emails: Use send_email tool ONLY after explicit user confirmation of all details, you MUST follow the instruction of Email sending policy (CRITICAL) part.\n"
                 "- For create/generate documents: Use create_documents tool to generate formatted files (PDF, DOCX, TXT, CSV, HTML, etc.) from content and return the markdown links.\n"
                 "- You may use multiple tools if needed to fully answer the question\n"

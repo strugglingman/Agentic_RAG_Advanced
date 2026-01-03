@@ -216,9 +216,7 @@ def _extract_file_content_sync(
                 doc = docx.Document(file_path)
                 text_parts = [paragraph.text for paragraph in doc.paragraphs]
                 content = "\n".join(text_parts)
-                return content[:max_chars] + (
-                    "..." if len(content) > max_chars else ""
-                )
+                return content[:max_chars] + ("..." if len(content) > max_chars else "")
             except Exception as e:
                 logger.error(f"[LANGGRAPH] Failed to extract DOCX content: {e}")
                 return f"[DOCX file - text extraction failed]"
@@ -242,9 +240,7 @@ def _extract_file_content_sync(
                         if row_text.strip():
                             text_parts.append(row_text)
                 content = "\n".join(text_parts)
-                return content[:max_chars] + (
-                    "..." if len(content) > max_chars else ""
-                )
+                return content[:max_chars] + ("..." if len(content) > max_chars else "")
             except Exception as e:
                 logger.error(f"[LANGGRAPH] Failed to extract Excel content: {e}")
                 return f"[Excel file - text extraction failed]"
@@ -378,7 +374,9 @@ def create_plan_node(
         # Append attachment contents to query so planner can see them
         query_with_attachments = query
         if attachment_contents:
-            query_with_attachments = f"{query}\n\n[ATTACHED FILE CONTENTS]{attachment_contents}"
+            query_with_attachments = (
+                f"{query}\n\n[ATTACHED FILE CONTENTS]{attachment_contents}"
+            )
 
         planning_prompt = PlanningPrompts.create_plan(
             query=query_with_attachments,
@@ -1137,7 +1135,9 @@ def create_tool_download_file_node(
                     "current_step": current_step,
                     "iteration_count": state.get("iteration_count", 0) + 1,
                     "messages": state.get("messages", [])
-                    + [AIMessage(content="No tool was called by the LLM for download.")],
+                    + [
+                        AIMessage(content="No tool was called by the LLM for download.")
+                    ],
                 }
 
             tool_call = response.choices[0].message.tool_calls[0]
@@ -1152,7 +1152,9 @@ def create_tool_download_file_node(
                 "openai_client": client,
                 "request_data": runtime.get("request_data") or {},
                 "file_service": runtime.get("file_service"),
-                "conversation_id": (runtime.get("request_data") or {}).get("conversation_id"),
+                "conversation_id": (runtime.get("request_data") or {}).get(
+                    "conversation_id"
+                ),
             }
 
             result = await execute_tool_call(tool_name, tool_args, context)
@@ -1176,7 +1178,9 @@ def create_tool_download_file_node(
             for line in result.split("\n"):
                 if "File ID:" in line:
                     file_id = line.split("File ID:")[1].strip()
-                    files_created.append({"file_id": file_id, "source": "download_file"})
+                    files_created.append(
+                        {"file_id": file_id, "source": "download_file"}
+                    )
 
             # Store tool result with files_created for chaining
             step_contexts = state.get("step_contexts", {})
@@ -1188,7 +1192,8 @@ def create_tool_download_file_node(
                 ctx
                 for ctx in step_contexts[current_step]
                 if not (
-                    ctx.get("type") == "tool" and ctx.get("tool_name") == "download_file"
+                    ctx.get("type") == "tool"
+                    and ctx.get("tool_name") == "download_file"
                 )
             ]
 
@@ -1293,7 +1298,9 @@ def create_tool_create_documents_node(
             if step_answers:
                 content_parts = []
                 for ans in step_answers:
-                    content_parts.append(f"## {ans.get('question', 'Step Result')}\n{ans.get('answer', '')}")
+                    content_parts.append(
+                        f"## {ans.get('question', 'Step Result')}\n{ans.get('answer', '')}"
+                    )
                 previous_content = "\n\n".join(content_parts)
 
             # Build prompt for LLM tool calling
@@ -1326,7 +1333,11 @@ def create_tool_create_documents_node(
                     "current_step": current_step,
                     "iteration_count": state.get("iteration_count", 0) + 1,
                     "messages": state.get("messages", [])
-                    + [AIMessage(content="No tool was called by the LLM for document creation.")],
+                    + [
+                        AIMessage(
+                            content="No tool was called by the LLM for document creation."
+                        )
+                    ],
                 }
 
             tool_call = response.choices[0].message.tool_calls[0]
@@ -1341,7 +1352,9 @@ def create_tool_create_documents_node(
                 "openai_client": client,
                 "request_data": runtime.get("request_data") or {},
                 "file_service": runtime.get("file_service"),
-                "conversation_id": (runtime.get("request_data") or {}).get("conversation_id"),
+                "conversation_id": (runtime.get("request_data") or {}).get(
+                    "conversation_id"
+                ),
             }
 
             result = await execute_tool_call(tool_name, tool_args, context)
@@ -1365,7 +1378,9 @@ def create_tool_create_documents_node(
             for line in result.split("\n"):
                 if "File ID:" in line:
                     file_id = line.split("File ID:")[1].strip()
-                    files_created.append({"file_id": file_id, "source": "create_documents"})
+                    files_created.append(
+                        {"file_id": file_id, "source": "create_documents"}
+                    )
 
             # Store tool result with files_created for chaining
             if current_step not in step_contexts:
@@ -1376,7 +1391,8 @@ def create_tool_create_documents_node(
                 ctx
                 for ctx in step_contexts[current_step]
                 if not (
-                    ctx.get("type") == "tool" and ctx.get("tool_name") == "create_documents"
+                    ctx.get("type") == "tool"
+                    and ctx.get("tool_name") == "create_documents"
                 )
             ]
 
@@ -1485,11 +1501,13 @@ def create_tool_send_email_node(
             available_files = runtime.get("available_files", [])
             available_file_info = []
             for f in available_files:
-                available_file_info.append({
-                    "file_id": f.get("file_id"),
-                    "name": f.get("original_name"),
-                    "category": f.get("category"),
-                })
+                available_file_info.append(
+                    {
+                        "file_id": f.get("file_id"),
+                        "name": f.get("original_name"),
+                        "category": f.get("category"),
+                    }
+                )
 
             # Build prompt for LLM tool calling with file context
             if plan and current_step < len(plan):
@@ -1522,7 +1540,11 @@ def create_tool_send_email_node(
                     "current_step": current_step,
                     "iteration_count": state.get("iteration_count", 0) + 1,
                     "messages": state.get("messages", [])
-                    + [AIMessage(content="No tool was called by the LLM for send email.")],
+                    + [
+                        AIMessage(
+                            content="No tool was called by the LLM for send email."
+                        )
+                    ],
                 }
 
             tool_call = response.choices[0].message.tool_calls[0]
@@ -1588,11 +1610,7 @@ def create_tool_send_email_node(
                 "current_step": current_step,
                 "iteration_count": state.get("iteration_count", 0) + 1,
                 "messages": state.get("messages", [])
-                + [
-                    AIMessage(
-                        content=f"Email sent: {result[:100]}..."
-                    )
-                ],
+                + [AIMessage(content=f"Email sent: {result[:100]}...")],
             }
 
         except Exception as e:
@@ -1940,6 +1958,10 @@ def create_generate_node(
                     context_num += 1
 
             if not contexts:
+                logger.warning(
+                    f"[GENERATE_NODE] No contexts found for step {current_step}. "
+                    f"step_ctx_list={step_ctx_list}"
+                )
                 raise ValueError(
                     "No context available from retrieved documents or tool results."
                 )
@@ -2037,6 +2059,13 @@ def create_generate_node(
             draft_answer = ""
             if response.choices and response.choices[0].message:
                 draft_answer = response.choices[0].message.content
+
+            # Log if answer seems too short (potential issue)
+            if draft_answer and len(draft_answer) < 10:
+                logger.warning(
+                    f"[GENERATE_NODE] Very short answer generated ({len(draft_answer)} chars): "
+                    f"'{draft_answer[:100]}'. Context length was {len(final_context)} chars."
+                )
 
             return {
                 "draft_answer": draft_answer,
@@ -2389,7 +2418,15 @@ TOOL_CREATE_DOCUMENTS = [
                                 },
                                 "format": {
                                     "type": "string",
-                                    "enum": ["pdf", "docx", "txt", "md", "html", "csv", "xlsx"],
+                                    "enum": [
+                                        "pdf",
+                                        "docx",
+                                        "txt",
+                                        "md",
+                                        "html",
+                                        "csv",
+                                        "xlsx",
+                                    ],
                                     "description": "Output format (default: pdf)",
                                 },
                                 "filename": {
