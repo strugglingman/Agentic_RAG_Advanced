@@ -31,6 +31,7 @@ from src.models.evaluation import ReflectionConfig, EvaluationCriteria
 from src.services.query_refiner import QueryRefiner
 from src.services.clarification_helper import ClarificationHelper
 from src.services.web_search import WebSearchService
+from src.services.browser_download import browser_download, is_browser_use_available
 from src.utils.send_email import send_email
 
 logger = logging.getLogger(__name__)
@@ -238,7 +239,9 @@ def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
                             "to": refined_query,
                         }
                     )
-                    print(f"[QUERY_REFINER] '{current_query}' -> '{refined_query}'")
+                    logger.info(
+                        f"[REFINED_QUERY] Original: '{current_query}' → Refined: '{refined_query}'"
+                    )
 
                     # Update current query for next iteration
                     current_query = refined_query
@@ -256,8 +259,8 @@ def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
                     )
 
                     if not ctx:
-                        print(
-                            f"[QUERY_REFINER] No results for refined query, keeping previous results"
+                        logger.info(
+                            "[REFINED_QUERY] No results for refined query, keeping previous results"
                         )
                         # Restore previous contexts
                         ctx = context["_retrieved_contexts"]
@@ -541,7 +544,9 @@ DOWNLOAD_FILE_SCHEMA = {
             "- Direct file links (PDF, Excel, images, etc.)\n"
             "- Web page URLs from web_search results (will be saved as HTML files)\n"
             "- Any HTTP/HTTPS URL that user wants to save locally\n"
-            "After downloading, files can be attached to emails using send_email tool."
+            "- Files from sites requiring login (with browser automation fallback)\n"
+            "After downloading, files can be attached to emails using send_email tool.\n"
+            "If direct download fails, browser automation will attempt to navigate and download."
         ),
         "parameters": {
             "type": "object",
@@ -556,7 +561,16 @@ DOWNLOAD_FILE_SCHEMA = {
                         "List of URLs to download. Supports:\n"
                         "- External file URLs (https://example.com/report.pdf)\n"
                         "- Web page URLs from search results (https://example.com/article)\n"
-                        "- Internal document links"
+                        "- Internal document links\n"
+                        "- Login-protected pages (browser automation will handle login)"
+                    ),
+                },
+                "task_description": {
+                    "type": "string",
+                    "description": (
+                        "Optional: Natural language description of what to download. "
+                        "Useful for complex downloads like 'December 2025 internet invoice from netbank'. "
+                        "This helps the browser automation agent navigate if direct download fails."
                     ),
                 },
             },
@@ -714,6 +728,115 @@ def execute_web_search(args: Dict[str, Any], context: Dict[str, Any]) -> str:
         return f"Error during web search: {str(e)}"
 
 
+async def _try_browser_download(
+    url: str,
+    user_id: str,
+    context: Dict[str, Any],
+    task_description: str = "",
+) -> str | None:
+    """
+    Try to download a file using browser automation as fallback.
+
+    Args:
+        url: The URL that failed with HTTP download
+        user_id: User ID for directory organization
+        context: System context with file_service
+        task_description: Optional natural language description of what to download
+
+    Returns:
+        Success message string if download succeeded, None if failed
+    """
+    if not Config.BROWSER_USE_ENABLED:
+        logger.debug(
+            "[BROWSER_DOWNLOAD] Browser automation disabled, skipping fallback"
+        )
+        return None
+
+    try:
+        if not is_browser_use_available():
+            logger.warning("[BROWSER_DOWNLOAD] browser-use not available")
+            return None
+
+        logger.info(f"[BROWSER_DOWNLOAD] Attempting browser fallback for: {url}")
+
+        # Build task description for the browser agent
+        # Note: Don't add URL here - browser_download's _build_task_prompt handles it
+        if task_description:
+            task = task_description
+        else:
+            task = "Download the file from this URL"
+
+        logger.debug(f"[BROWSER_DOWNLOAD] Task description: {task}")
+
+        # Download directory
+        download_dir = os.path.join(Config.DOWNLOAD_BASE, user_id)
+
+        # Get credentials if configured
+        credentials = None
+        if Config.BROWSER_TEST_USERNAME and Config.BROWSER_TEST_PASSWORD:
+            credentials = {
+                "username": Config.BROWSER_TEST_USERNAME,
+                "password": Config.BROWSER_TEST_PASSWORD,
+            }
+
+        # Run browser download
+        success, message, file_path = await browser_download(
+            task=task,
+            download_dir=download_dir,
+            url=url,
+            credentials=credentials,
+        )
+
+        if not success or not file_path:
+            logger.warning(f"[BROWSER_DOWNLOAD] Failed: {message}")
+            return None
+
+        # Register the downloaded file
+        file_service: FileService = context.get("file_service")
+        if not file_service:
+            logger.error("[BROWSER_DOWNLOAD] FileService not in context")
+            return None
+
+        filename = os.path.basename(file_path)
+        file_size = os.path.getsize(file_path)
+
+        # Guess mime type from extension
+        import mimetypes
+
+        mime_type, _ = mimetypes.guess_type(file_path)
+        mime_type = mime_type or "application/octet-stream"
+
+        result = await file_service.register_file(
+            user_email=user_id,
+            category="downloaded",
+            original_name=filename,
+            storage_path=file_path,
+            source_tool="download_file_browser",
+            mime_type=mime_type,
+            size_bytes=file_size,
+            source_url=url,
+            conversation_id=context.get("conversation_id"),
+            dept_id=context.get("dept_id"),
+            metadata={"file_for_user": True, "browser_download": True},
+        )
+
+        file_id = result["file_id"]
+        download_url = result["download_url"]
+
+        logger.info(f"[BROWSER_DOWNLOAD] Success: {filename} -> {file_id}")
+
+        return (
+            f"✅ Downloaded (via browser): {filename}\n"
+            f"   File ID: {file_id}\n"
+            f"   Download: [{filename}]({download_url})\n"
+            f"   → Use file ID '{file_id}' for email attachments"
+        )
+
+    except Exception as e:
+        logger.error(f"[BROWSER_DOWNLOAD] Error: {e}")
+        return None
+
+
 @traceable
 async def execute_download_file(args: Dict[str, Any], context: Dict[str, Any]) -> str:
     """
@@ -841,7 +964,6 @@ async def execute_download_file(args: Dict[str, Any], context: Dict[str, Any]) -
     Returns: "Downloaded 1 file:\\n👉 [report.pdf](/api/files/clx_abc123) [file:clx_abc123]"
     LLM shows: "Downloaded successfully! 👉 [report.pdf](/api/files/clx_abc123)"
     """
-    # TODO: Implement download_file logic following the steps above
     # For now, return placeholder
     file_list = args.get("file_urls", [])
     if not file_list:
@@ -898,6 +1020,14 @@ async def execute_download_file(args: Dict[str, Any], context: Dict[str, Any]) -
                 headers=headers,
             )
             if res.status_code != 200:
+                # Try browser fallback for auth errors (401, 403) or other failures
+                if res.status_code in (401, 403, 404, 500, 502, 503):
+                    browser_result = await _try_browser_download(
+                        file_url, user_id, context, args.get("task_description", "")
+                    )
+                    if browser_result:
+                        results.append(browser_result)
+                        continue
                 errors.append(f"⚠️ Download failed: {file_url} (HTTP {res.status_code})")
                 continue
 
@@ -991,8 +1121,15 @@ async def execute_download_file(args: Dict[str, Any], context: Dict[str, Any]) -
             )
 
         except requests.RequestException as e:
-            errors.append(f"⚠️ Network error: {file_url} - {str(e)}")
-            logger.error(f"[DOWNLOAD_FILE] Request error for {file_url}: {e}")
+            # Try browser fallback if enabled
+            browser_result = await _try_browser_download(
+                file_url, user_id, context, args.get("task_description", "")
+            )
+            if browser_result:
+                results.append(browser_result)
+            else:
+                errors.append(f"⚠️ Network error: {file_url} - {str(e)}")
+                logger.error(f"[DOWNLOAD_FILE] Request error for {file_url}: {e}")
         except IOError as e:
             errors.append(f"⚠️ File write error: {file_url} - {str(e)}")
             logger.error(f"[DOWNLOAD_FILE] IO error for {file_url}: {e}")

@@ -100,7 +100,7 @@ def setup_logging(level: str = "INFO", log_file: str | None = None):
     # Set up file logging if log_file provided with rotation
     if log_file:
         Path(log_file).parent.mkdir(parents=True, exist_ok=True)
-        file_handler = DescendingFileHandler(
+        file_handler = RotatingFileHandler(
             log_file, maxBytes=10 * 1024 * 1024, backupCount=5
         )
         file_handler.setFormatter(formatter)

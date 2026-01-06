@@ -198,7 +198,9 @@ class WebSearchService:
                 )
                 final_results.append(web_result)
 
-            logger.debug(f"[WEB_SEARCH] DuckDuckGo returned {len(final_results)} results")
+            logger.debug(
+                f"[WEB_SEARCH] DuckDuckGo returned {len(final_results)} results"
+            )
             return final_results
         except Exception as e:
             logger.error(f"[WEB_SEARCH] DuckDuckGo error: {str(e)}")
@@ -238,7 +240,9 @@ class WebSearchService:
 
             # Log results count
             if not raw_results:
-                logger.debug(f"[WEB_SEARCH] Tavily returned 0 results for: '{query[:80]}'")
+                logger.debug(
+                    f"[WEB_SEARCH] Tavily returned 0 results for: '{query[:80]}'"
+                )
             else:
                 logger.debug(f"[WEB_SEARCH] Tavily returned {len(raw_results)} results")
 
@@ -324,15 +328,14 @@ class WebSearchService:
         # print(f"[WEB_SEARCH] {results} for agent and query: {query}")
         output = f'Web search results for: "{query}"\n\n'
         for i, r in enumerate(results):
-            output += f"{i+1}. {r.title}\n"
+            output += f"{i+1}. **{r.title}**\n"
             output += f"   Source: {r.source}\n"
-            output += f"   URL: {r.url}\n"
+            output += f"   Link: [{r.title}]({r.url})\n"
             output += f"   {r.snippet}\n\n"
 
         # Comment out too much citation prompt
         output += "[Note: Answer is from external web sources. You MUST NOT cite the answer with bracket citations.]\n"
         output += "[Tip: If user asks to download these pages or send them as attachments, use download_file tool with the URLs above.]"
-        # print(f"[WEB_SEARCH] Formatted output for agent:\n{output}")
 
         return output
 

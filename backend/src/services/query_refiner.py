@@ -10,6 +10,7 @@ Week 2 - Day 3: Query Refinement
 from typing import Optional, List, Dict, Any
 from openai import OpenAI
 from src.models.evaluation import EvaluationResult, RecommendationAction
+from src.services.llm_client import chat_completion
 from src.config.settings import Config
 from langsmith import traceable
 
@@ -100,10 +101,11 @@ class QueryRefiner:
             context_hint=context_hint,
         )
         try:
-            response = self.client.chat.completions.create(
+            response = chat_completion(
+                client=self.client,
                 model=self.model,
                 temperature=self.temperature,
-                max_completion_tokens=150,
+                max_tokens=150,
                 messages=[
                     {
                         "role": "system",

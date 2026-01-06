@@ -1,10 +1,17 @@
-"""Document processing service"""
+"""
+Document processing service.
+
+Supports multilingual document processing including:
+- Space-separated languages: English, Swedish, Finnish, Spanish, German, French
+- CJK languages: Chinese, Japanese (proper sentence splitting)
+"""
 import os
 import re
 import csv
 import json
 import logging
 from docx import Document
+from src.utils.multilingual import split_sentences as multilingual_split_sentences
 
 logger = logging.getLogger(__name__)
 
@@ -213,9 +220,16 @@ def read_text(file_path: str, text_max: int = 400000):
 
 
 def sentence_split(text: str) -> list[str]:
-    """Split text into sentences"""
-    parts = re.split(r'(?<=[.!?])\s+(?=[A-Z0-9])', text.strip())
-    return [p.strip() for p in parts if p and p.strip()]
+    """
+    Split text into sentences with multilingual support.
+
+    Handles:
+    - Latin languages: . ! ? followed by space and capital letter
+    - Chinese: 。 ！ ？ ；
+    - Japanese: 。 ！ ？
+    - Mixed multilingual text
+    """
+    return multilingual_split_sentences(text)
 
 
 def make_chunks(pages_text: list, target: int = 400, overlap: int = 90) -> list[tuple]:

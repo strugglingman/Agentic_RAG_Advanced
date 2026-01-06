@@ -66,6 +66,7 @@ from dataclasses import dataclass
 from typing import Optional, Any
 from openai import OpenAI
 from src.utils.sanitizer import sanitize_text
+from src.utils.url_formatter import format_urls_as_markdown
 from src.domain.value_objects.conversation_id import ConversationId
 from src.domain.value_objects.user_email import UserEmail
 from src.domain.value_objects.dept_id import DeptId
@@ -77,6 +78,7 @@ from src.application.common.interfaces import Command, CommandHandler
 from src.application.services import FileService
 from src.services.query_supervisor import QuerySupervisor
 from src.services.vector_db import VectorDB
+from src.services.llm_client import chat_completion
 from src.utils.safety import looks_like_injection
 from src.config.settings import Config
 
@@ -166,7 +168,14 @@ class SendMessageHandler(CommandHandler[SendMessageResult]):
             command.attachments or [], user_email, conversation_id, dept_id
         )
         available_files = await self._discover_files(
-            query, user_email, conversation_id, dept_id=dept_id
+            query,
+            user_email,
+            conversation_id,
+            dept_id=dept_id,
+            conversation_history=conversation_history,
+        )
+        logger.debug(
+            f"********************************available_files count: {len(available_files)} and attachment_file_ids count: {len(attachment_file_ids)}********************************"
         )
 
         agent_context = {
@@ -188,6 +197,8 @@ class SendMessageHandler(CommandHandler[SendMessageResult]):
         final_answer, contexts = await self.query_supervisor.process_query(
             query, agent_context
         )
+        # Ensure all URLs in the answer are formatted as clickable markdown links
+        final_answer = format_urls_as_markdown(final_answer)
 
         assistant_message = Message.create(
             conversation_id=ConversationId(conversation_id),
@@ -234,14 +245,16 @@ class SendMessageHandler(CommandHandler[SendMessageResult]):
                     }
                 )
                 logger.info(
-                    f"Saved attachment: {file_id} ({attachment.get('filename')})"
+                    f"[SendMessage] Saved attachment: {file_id} ({attachment.get('filename')})"
                 )
             except Exception as e:
-                logger.error(f"Failed to save attachment: {e}")
+                logger.error(f"[SendMessage] Failed to save attachment: {e}")
 
         return attachment_file_ids
 
-    def _detect_file_intent_with_llm(self, query: str) -> bool:
+    def _detect_file_intent_with_llm(
+        self, query: str, conversation_history: list[dict] = None
+    ) -> bool:
         """Use LLM to detect if user wants file links/references (multilingual support).
 
         This replaces keyword-based detection to support all languages.
@@ -254,19 +267,35 @@ class SendMessageHandler(CommandHandler[SendMessageResult]):
             return self._detect_file_intent_with_keywords(query)
 
         try:
+            # Include recent conversation context for short queries like "confirm", "yes"
+            context_section = ""
+            if conversation_history and len(query.strip()) < 30:
+                recent = conversation_history[-4:]  # Last 2 exchanges
+                context_lines = [f"{m['role']}: {m['content'][:100]}" for m in recent]
+                context_section = (
+                    f"\nRecent conversation:\n" + "\n".join(context_lines) + "\n"
+                )
+
             prompt = """Analyze this user query and determine if they are requesting or expecting:
 - Links to source files/documents
 - Download links
 - File references or attachments
 - Original document sources
-
+- Confirming a pending action that involves files/emails (e.g., "confirm", "yes", "proceed", "send it")
+{context}
 User query: {query}
 
 CRITICAL! Answer ONLY with: yes or no"""
 
-            response = self.openai_client.chat.completions.create(
+            response = chat_completion(
+                client=self.openai_client,
                 model=Config.OPENAI_SIMPLE_MODEL,
-                messages=[{"role": "user", "content": prompt.format(query=query)}],
+                messages=[
+                    {
+                        "role": "user",
+                        "content": prompt.format(query=query, context=context_section),
+                    }
+                ],
                 max_tokens=5,
                 temperature=0,
             )
@@ -318,13 +347,16 @@ CRITICAL! Answer ONLY with: yes or no"""
         user_email: str,
         conversation_id: str,
         dept_id: str = None,
+        conversation_history: list[dict] = None,
     ) -> list[dict]:
         """Fetch user's files if query implies need for file links/references.
 
         Uses LLM-based intent detection to support multilingual queries.
         Includes shared files in same department when dept_id is provided.
         """
-        needs_file_discovery = self._detect_file_intent_with_llm(query)
+        needs_file_discovery = self._detect_file_intent_with_llm(
+            query, conversation_history
+        )
 
         if not needs_file_discovery:
             logger.debug(

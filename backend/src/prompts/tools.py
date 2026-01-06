@@ -57,25 +57,39 @@ IMPORTANT: Extract the search query ONLY from the task description above. Do NOT
 Call the web_search tool with the appropriate query."""
 
     @staticmethod
-    def download_file_prompt(task: str) -> str:
+    def download_file_prompt(task: str, previous_step_context: str = "") -> str:
         """
         Generate prompt for download_file tool calling.
 
         Args:
             task: The download task description with URLs
+            previous_step_context: Results from previous steps (e.g., web_search URLs)
 
         Returns:
             Prompt string for download_file function calling
         """
+        context_section = ""
+        if previous_step_context:
+            context_section = f"""
+
+📋 PREVIOUS STEP RESULTS (extract URLs from here):
+{previous_step_context}
+
+IMPORTANT: The URLs to download are in the previous step results above.
+Extract ALL http:// or https:// URLs from the previous step results."""
+
         return f"""You need to call the download_file tool for this specific task.
 
-Task: {task}
+Task: {task}{context_section}
 
-IMPORTANT: Extract ALL file URLs from the task description above. Look for:
-- http:// or https:// URLs
-- /api/files/ internal links
-
-Return all URLs as a list in file_urls parameter.
+INSTRUCTIONS:
+1. Extract ALL file URLs from either:
+   - The task description above (if URLs are explicitly listed)
+   - The PREVIOUS STEP RESULTS section (if URLs came from web_search)
+2. Look for:
+   - http:// or https:// URLs
+   - /api/files/ internal links
+3. Return all URLs as a list in file_urls parameter
 
 Call the download_file tool with the appropriate file_urls array."""
 
@@ -117,6 +131,7 @@ Call the create_documents tool with the documents array."""
         task: str,
         available_file_ids: list = None,
         available_files: list = None,
+        previous_step_context: str = None,
     ) -> str:
         """
         Generate prompt for send_email tool calling.
@@ -125,17 +140,26 @@ Call the create_documents tool with the documents array."""
             task: The email task description
             available_file_ids: File IDs from previous tool results (download_file, create_documents)
             available_files: User's existing files from FileRegistry
+            previous_step_context: Results from previous plan steps (contains file_ids created)
 
         Returns:
             Prompt string for send_email function calling
         """
         files_section = ""
 
+        # Show previous step results (contains file_ids from create_documents, etc.)
+        if previous_step_context:
+            files_section += f"""
+
+📋 PREVIOUS STEP RESULTS (use file_ids mentioned here):
+{previous_step_context}"""
+
         if available_file_ids:
             files_section += f"""
 
-FILES FROM PREVIOUS STEPS (use file_id for attachments):
-{', '.join(available_file_ids)}"""
+⭐ FILES CREATED IN THIS SESSION (PRIORITY - use these file_ids for attachments):
+{', '.join(available_file_ids)}
+IMPORTANT: Use ONLY these file_ids for attachments, NOT file_ids from conversation history."""
 
         if available_files:
             file_list = []
@@ -168,7 +192,8 @@ INSTRUCTIONS (ONLY if all conditions above are met):
 1. Extract recipient email addresses (must be explicitly provided by user)
 2. Determine the email subject
 3. Compose the email body
-4. For attachments, use the file_id values from the available files above
+4. For attachments: Use file_ids from "FILES CREATED IN THIS SESSION" section above (⭐ marked).
+   DO NOT use file_ids from conversation history - those may be outdated.
 
 If you cannot confirm a valid, user-provided email address, respond with a message asking for clarification instead of calling the tool."""
 

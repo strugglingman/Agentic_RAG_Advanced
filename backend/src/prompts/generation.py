@@ -47,9 +47,17 @@ RULES FOR WEB SEARCH RESULTS:
 1. Use the information from the web search results below to answer the question
 2. DO NOT use bracket citations [n] - web sources don't need inline citations
 3. Synthesize information from multiple search results
-4. At the end, simply mention "Source: Web search" 
+4. At the end, simply mention "Source: Web search"
 5. Be direct and informative - extract the key information from the search snippets
-6. If the search results don't contain enough detail, do your best to summarize what's available"""
+6. If the search results don't contain enough detail, do your best to summarize what's available
+
+CRITICAL - DO NOT:
+- Say "I will now download...", "Let me download...", "I'll proceed to..."
+- Promise to perform actions you cannot execute in this response
+- Reference future steps or actions - only answer with the information available NOW
+- Make up or hallucinate actions that haven't happened yet
+
+Your job is ONLY to answer the current question using the web search results provided."""
 
     DOCUMENT_SYSTEM = """You are a helpful assistant that answers questions using provided contexts or tool results.
 

@@ -18,6 +18,7 @@ from typing import Dict, Any, List, Optional, Tuple
 from openai import OpenAI
 from langsmith import traceable
 from src.services.agent_tools import ALL_TOOLS, execute_tool_call
+from src.services.llm_client import chat_completion_with_tools, chat_completion
 from src.config.settings import Config
 from src.utils.stream_utils import stream_text_smart
 from src.utils.safety import enforce_citations
@@ -101,7 +102,9 @@ class AgentService:
                 # Enforce citations: drop sentences without valid citations
                 if contexts and Config.ENFORCE_CITATIONS:
                     valid_ids = list(range(1, len(contexts) + 1))
-                    logger.info(f"[AGENT] Raw answer before enforce_citations: {answer!r}")
+                    logger.info(
+                        f"[AGENT] Raw answer before enforce_citations: {answer!r}"
+                    )
                     answer, all_supported = enforce_citations(answer, valid_ids)
                     logger.info(f"[AGENT] Answer after enforce_citations: {answer!r}")
                     if not all_supported:
@@ -167,13 +170,15 @@ class AgentService:
         Returns:
             OpenAI chat completion response
         """
-        response = self.client.chat.completions.create(
-            model=self.model,
+        response = chat_completion_with_tools(
+            client=self.client,
             messages=messages,
             tools=self.tools,
-            tool_choice="auto",
+            model=self.model,
             temperature=self.temperature,
+            tool_choice="auto",
         )
+
         return response
 
     @traceable
@@ -624,11 +629,12 @@ class AgentService:
             ]
 
             # Call Vision API (gpt-4o-mini supports vision)
-            response = self.client.chat.completions.create(
+            response = chat_completion(
+                client=self.client,
                 model=Config.OPENAI_VISION_MODEL,
                 messages=messages,
-                max_tokens=1000,
                 temperature=0.3,
+                max_tokens=1000,
             )
 
             description = response.choices[0].message.content.strip()

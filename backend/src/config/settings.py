@@ -28,7 +28,7 @@ class Config:
     # ==============================================================================
     # OpenAI API Settings
     # ==============================================================================
-    OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.2")
+    OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
     OPENAI_SIMPLE_MODEL = os.getenv(
         "OPENAI_SIMPLE_MODEL", "gpt-4o-mini"
     )  # Fast and cheap for simple, classification questions.
@@ -83,7 +83,7 @@ class Config:
 
     # For local provider: SentenceTransformer model name
     EMBEDDING_MODEL_NAME = os.getenv(
-        "EMBEDDING_MODEL_NAME", "sentence-transformers/all-MiniLM-L6-v2"
+        "EMBEDDING_MODEL_NAME", "intfloat/multilingual-e5-base"
     )
     # For openai provider: OpenAI embedding model
     # Options: text-embedding-3-small (1536-dim), text-embedding-3-large (3072-dim)
@@ -144,12 +144,13 @@ class Config:
     FUSE_ALPHA = float(os.getenv("FUSE_ALPHA", "0.5"))
 
     # Quality thresholds for hybrid search and reranking
-    MIN_HYBRID = float(os.getenv("MIN_HYBRID", "0.1"))
+    # Note: These thresholds assume normalized scores in [0,1] range
+    MIN_HYBRID = float(os.getenv("MIN_HYBRID", "0.15"))
     AVG_HYBRID = float(os.getenv("AVG_HYBRID", "0.1"))
     MIN_SEM_SIM = float(os.getenv("MIN_SEM_SIM", "0.35"))
-    AVG_SEM_SIM = float(os.getenv("AVG_SEM_SIM", "0.2"))
-    MIN_RERANK = float(os.getenv("MIN_RERANK", "0.5"))
-    AVG_RERANK = float(os.getenv("AVG_RERANK", "0.3"))
+    AVG_SEM_SIM = float(os.getenv("AVG_SEM_SIM", "0.25"))
+    MIN_RERANK = float(os.getenv("MIN_RERANK", "0.45"))
+    AVG_RERANK = float(os.getenv("AVG_RERANK", "0.35"))
     ENFORCE_CITATIONS = os.getenv("ENFORCE_CITATIONS", "true").lower() in {
         "1",
         "true",
@@ -227,6 +228,17 @@ class Config:
     WEB_SEARCH_PROVIDER: str = os.getenv("WEB_SEARCH_PROVIDER", "duckduckgo")
     WEB_SEARCH_MAX_RESULTS: int = int(os.getenv("WEB_SEARCH_MAX_RESULTS", "5"))
     TAVILY_API_KEY: str = os.getenv("TAVILY_API_KEY", "")
+
+    # ==============================================================================
+    # Debug & Logging
+    # ==============================================================================
+    # Show detailed score calculations in logs (for debugging retrieval/evaluation)
+    SHOW_SCORES = os.getenv("SHOW_SCORES", "false").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
     # ==============================================================================
     # Self-Reflection / Retrieval Evaluation
@@ -312,6 +324,33 @@ class Config:
     DOWNLOAD_BASE = os.getenv("DOWNLOAD_BASE", "downloads")
     MAX_DOWNLOAD_SIZE_MB = float(os.getenv("MAX_DOWNLOAD_SIZE_MB", "100"))
     DOWNLOAD_TIMEOUT = int(os.getenv("DOWNLOAD_TIMEOUT", "30"))  # seconds
+
+    # ==============================================================================
+    # Browser Automation (Browser-Use) Settings
+    # ==============================================================================
+    # Enable browser automation for complex downloads (login-required, JS-rendered)
+    BROWSER_USE_ENABLED = os.getenv("BROWSER_USE_ENABLED", "false").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    # Run browser in headless mode (no visible window)
+    BROWSER_HEADLESS = os.getenv("BROWSER_HEADLESS", "true").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    # Browser automation timeout (longer than HTTP due to page navigation)
+    BROWSER_TIMEOUT = int(os.getenv("BROWSER_TIMEOUT", "60"))  # seconds
+    # Max steps for browser agent (each step = one action: click, type, navigate)
+    BROWSER_MAX_STEPS = int(os.getenv("BROWSER_MAX_STEPS", "15"))
+    # Test credentials for development (replace with secure credential management later)
+    BROWSER_TEST_USERNAME = os.getenv("BROWSER_TEST_USERNAME", "")
+    BROWSER_TEST_PASSWORD = os.getenv("BROWSER_TEST_PASSWORD", "")
+    # Save browser agent conversation logs for debugging (empty = disabled)
+    BROWSER_LOG_PATH = os.getenv("BROWSER_LOG_PATH", "logs/browser_agent.log")
 
     # ==============================================================================
     # Backend API Settings

@@ -1,6 +1,10 @@
 """
 Retrieval service for RAG system.
 Handles semantic search, hybrid search (BM25 + semantic), and reranking.
+
+Supports multilingual text including:
+- Space-separated languages: English, Swedish, Finnish, Spanish, German, French
+- CJK languages: Chinese, Japanese (via jieba tokenization)
 """
 
 from __future__ import annotations
@@ -11,10 +15,13 @@ import numpy as np
 from rank_bm25 import BM25Okapi
 from sentence_transformers import CrossEncoder
 from src.utils.safety import coverage_ok
+from src.utils.multilingual import tokenize as multilingual_tokenize
 from src.config.settings import Config
 
 if TYPE_CHECKING:
     from src.services.vector_db import VectorDB
+
+logger = logging.getLogger(__name__)
 
 # Global state for BM25 index (cached per user/dept)
 _bm25 = None
@@ -49,6 +56,124 @@ def unique_snippet(ctx, prefix=150):
     return out
 
 
+def log_chunk_scores(query: str, chunks: list, use_hybrid: bool, use_reranker: bool):
+    """
+    Log detailed scores for retrieved chunks in a pretty format.
+    Only logs when SHOW_SCORES is enabled.
+
+    Also calculates and shows the evaluation metrics that feed into
+    the confidence score calculation in retrieval_evaluator.py
+    """
+    # Build header
+    header = f"""
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                         RETRIEVAL SCORES DEBUG                               ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+║ Query: {query[:150]:<150} ║
+║ Mode: {'Hybrid + Reranker' if use_hybrid and use_reranker else 'Hybrid' if use_hybrid else 'Semantic + Reranker' if use_reranker else 'Semantic Only':<72} ║
+║ Chunks Retrieved: {len(chunks):<60} ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+║  #  │ sem_sim │  bm25  │ hybrid │ rerank │ Source                            ║
+╠═════╪═════════╪════════╪════════╪════════╪═══════════════════════════════════╣"""
+
+    logger.info(header)
+
+    # Log each chunk
+    for i, chunk in enumerate(chunks, 1):
+        sem_sim = chunk.get("sem_sim", 0.0)
+        bm25 = chunk.get("bm25", 0.0)
+        hybrid = chunk.get("hybrid", 0.0)
+        rerank = chunk.get("rerank", 0.0)
+        source = chunk.get("source", "unknown")[:35]
+        page = chunk.get("page", 0)
+
+        # Format source with page if available
+        source_display = f"{source}" + (f" p.{page}" if page > 0 else "")
+        source_display = source_display[:35]
+
+        row = f"║ {i:>2}  │  {sem_sim:>5.3f}  │ {bm25:>5.3f}  │ {hybrid:>5.3f}  │ {rerank:>5.3f}  │ {source_display:<35} ║"
+        logger.info(row)
+
+    # Calculate summary stats
+    avg_sem = sum(c.get("sem_sim", 0) for c in chunks) / len(chunks) if chunks else 0
+    avg_bm25 = sum(c.get("bm25", 0) for c in chunks) / len(chunks) if chunks else 0
+    avg_hybrid = sum(c.get("hybrid", 0) for c in chunks) / len(chunks) if chunks else 0
+    avg_rerank = sum(c.get("rerank", 0) for c in chunks) / len(chunks) if chunks else 0
+
+    max_sem = max(c.get("sem_sim", 0) for c in chunks) if chunks else 0
+    max_bm25 = max(c.get("bm25", 0) for c in chunks) if chunks else 0
+    max_hybrid = max(c.get("hybrid", 0) for c in chunks) if chunks else 0
+    max_rerank = max(c.get("rerank", 0) for c in chunks) if chunks else 0
+
+    min_sem = min(c.get("sem_sim", 0) for c in chunks) if chunks else 0
+    min_bm25 = min(c.get("bm25", 0) for c in chunks) if chunks else 0
+    min_hybrid = min(c.get("hybrid", 0) for c in chunks) if chunks else 0
+    min_rerank = min(c.get("rerank", 0) for c in chunks) if chunks else 0
+
+    # Determine which score is used for evaluation (priority: rerank > hybrid > sem_sim)
+    has_rerank = any(c.get("rerank", 0.0) != 0.0 for c in chunks)
+    has_hybrid = any(c.get("hybrid", 0.0) != 0.0 for c in chunks)
+
+    if has_rerank:
+        eval_score_type = "rerank"
+        avg_eval_score = avg_rerank
+        min_eval_score = min_rerank
+    elif has_hybrid:
+        eval_score_type = "hybrid"
+        avg_eval_score = avg_hybrid
+        min_eval_score = min_hybrid
+    else:
+        eval_score_type = "sem_sim"
+        avg_eval_score = avg_sem
+        min_eval_score = min_sem
+
+    # Calculate predicted confidence (same formula as retrieval_evaluator.py)
+    context_count = len(chunks)
+    context_presence = 1.0 if context_count > 0 else 0.0
+
+    # Note: keyword_overlap requires the query keywords which we don't have here
+    # So we show "N/A" for keyword_overlap and show what confidence would be with reranker formula
+    if has_rerank and avg_eval_score >= 0.5 and context_count > 0:
+        # Reranker-optimized formula
+        formula_type = "Reranker-optimized (ignores keyword overlap)"
+        predicted_confidence = min(
+            1.0, avg_eval_score * 0.5 + min_eval_score * 0.3 + context_presence * 0.2
+        )
+        formula_breakdown = f"avg*0.5 + min*0.3 + presence*0.2 = {avg_eval_score:.3f}*0.5 + {min_eval_score:.3f}*0.3 + {context_presence:.1f}*0.2"
+    else:
+        # Standard formula (keyword_overlap unknown here, shown as ~0.3 estimate)
+        formula_type = "Standard (uses keyword overlap)"
+        keyword_estimate = 0.3  # Rough estimate
+        predicted_confidence = min(
+            1.0,
+            keyword_estimate * 0.4
+            + avg_eval_score * 0.3
+            + min_eval_score * 0.2
+            + context_presence * 0.1,
+        )
+        formula_breakdown = f"kw*0.4 + avg*0.3 + min*0.2 + presence*0.1 = ~{keyword_estimate:.1f}*0.4 + {avg_eval_score:.3f}*0.3 + {min_eval_score:.3f}*0.2 + {context_presence:.1f}*0.1"
+
+    footer = f"""╠═════╪═════════╪════════╪════════╪════════╪═══════════════════════════════════╣
+║ AVG │  {avg_sem:>5.3f}  │ {avg_bm25:>5.3f}  │ {avg_hybrid:>5.3f}  │ {avg_rerank:>5.3f}  │                                   ║
+║ MAX │  {max_sem:>5.3f}  │ {max_bm25:>5.3f}  │ {max_hybrid:>5.3f}  │ {max_rerank:>5.3f}  │                                   ║
+║ MIN │  {min_sem:>5.3f}  │ {min_bm25:>5.3f}  │ {min_hybrid:>5.3f}  │ {min_rerank:>5.3f}  │                                   ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+║ Thresholds: MIN_SEM={Config.MIN_SEM_SIM:.2f} MIN_HYBRID={Config.MIN_HYBRID:.2f} MIN_RERANK={Config.MIN_RERANK:.2f}         ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+║                    EVALUATION METRICS (for confidence calc)                  ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+║ Score Type Used: {eval_score_type:<61} ║
+║ Avg Score: {avg_eval_score:<67.4f} ║
+║ Min Score: {min_eval_score:<67.4f} ║
+║ Context Count: {context_count:<63} ║
+║ Formula: {formula_type:<69} ║
+║ Breakdown: {formula_breakdown:<67} ║
+║ Predicted Confidence: {predicted_confidence:<56.4f} ║
+╚══════════════════════════════════════════════════════════════════════════════╝"""
+
+    logger.info(footer)
+
+
 def get_reranker():
     """Get or initialize the reranker model."""
     global _reranker
@@ -67,6 +192,10 @@ def build_bm25(vector_db: VectorDB, dept_id: str, user_id: str):
     """
     Build BM25 index for the given user and department.
     Filters documents by dept_id and user_id (includes shared documents).
+
+    Uses multilingual tokenization to support:
+    - Space-separated languages (English, Swedish, Finnish, Spanish, etc.)
+    - CJK languages (Chinese, Japanese) via jieba word segmentation
     """
     global _bm25, _bm25_ids, _bm25_docs, _bm25_metas
     try:
@@ -91,12 +220,15 @@ def build_bm25(vector_db: VectorDB, dept_id: str, user_id: str):
                 filtered_docs.append(docs[i])
                 filtered_metas.append(meta)
 
-        tokenized = [d.split() for d in filtered_docs]
+        # Use multilingual tokenization instead of simple split()
+        tokenized = [multilingual_tokenize(d) for d in filtered_docs]
         _bm25 = BM25Okapi(tokenized)
         _bm25_ids = filtered_ids
         _bm25_docs = filtered_docs
         _bm25_metas = filtered_metas
-    except:
+        logging.debug(f"[BM25] Built index with {len(filtered_docs)} documents")
+    except Exception as e:
+        logging.warning(f"[BM25] Failed to build index: {e}")
         _bm25 = None
         _bm25_ids = []
         _bm25_docs = []
@@ -253,7 +385,8 @@ def retrieve(
                 user_previous = user_id
 
             if _bm25 and _bm25_docs:
-                _bm25_scores = _bm25.get_scores(query.split())
+                # Use multilingual tokenization for query as well
+                _bm25_scores = _bm25.get_scores(multilingual_tokenize(query))
                 count = max(Config.CANDIDATES, top_k)
                 top_indexes = np.argsort(_bm25_scores)[::-1][:count]
                 # Normalize BM25 scores BEFORE union (within BM25 top-N)
@@ -329,30 +462,37 @@ def retrieve(
                     ) * item.get("sem_sim", 0.0)
 
                 # Confidence gate on hybrid
+                # When reranker is enabled, use relaxed thresholds to let more candidates through
+                # The reranker will do the final filtering with its more accurate scores
                 max_hybrid = (
                     max(item.get("hybrid", 0) for item in ctx_candidates)
                     if ctx_candidates
                     else 0
                 )
-                if max_hybrid < Config.MIN_HYBRID:
+                hybrid_threshold = (
+                    Config.MIN_HYBRID * 0.5 if use_reranker else Config.MIN_HYBRID
+                )
+                if max_hybrid < hybrid_threshold:
                     return (
                         [],
                         "No relevant documents found after applying hybrid confidence threshold.",
                     )
 
                 # Use coverage check to filter candidates
-                scores = [item.get("hybrid", 0) for item in ctx_candidates]
-                covered = coverage_ok(
-                    scores,
-                    topk=min(len(ctx_candidates), top_k * 2),
-                    score_avg=Config.AVG_HYBRID,
-                    score_min=Config.MIN_HYBRID,
-                )
-                if not covered:
-                    return (
-                        [],
-                        "No relevant documents found after applying hybrid coverage check.",
+                # Skip coverage check when reranker is enabled - let reranker be the judge
+                if not use_reranker:
+                    scores = [item.get("hybrid", 0) for item in ctx_candidates]
+                    covered = coverage_ok(
+                        scores,
+                        topk=min(len(ctx_candidates), top_k * 2),
+                        score_avg=Config.AVG_HYBRID,
+                        score_min=Config.MIN_HYBRID,
                     )
+                    if not covered:
+                        return (
+                            [],
+                            "No relevant documents found after applying hybrid coverage check.",
+                        )
 
                 ctx_candidates = sorted(
                     ctx_candidates, key=lambda x: x.get("hybrid", 0), reverse=True
@@ -360,23 +500,29 @@ def retrieve(
         else:
             # Confidence gate on semantic-only (already normalized in ctx_original)
             ctx_candidates = [item for item in ctx_original]
-            if max(sims_raw) < Config.MIN_SEM_SIM:
+            # When reranker is enabled, use relaxed thresholds
+            sem_threshold = (
+                Config.MIN_SEM_SIM * 0.5 if use_reranker else Config.MIN_SEM_SIM
+            )
+            if max(sims_raw) < sem_threshold:
                 return (
                     [],
                     "No relevant documents found after applying semantic confidence threshold.",
                 )
             # Use coverage check to filter semantic only candidates
-            covered = coverage_ok(
-                sims_raw,
-                topk=min(len(ctx_candidates), top_k),
-                score_avg=Config.AVG_SEM_SIM,
-                score_min=Config.MIN_SEM_SIM,
-            )
-            if not covered:
-                return (
-                    [],
-                    "No relevant documents found after applying semantic coverage check.",
+            # Skip coverage check when reranker is enabled - let reranker be the judge
+            if not use_reranker:
+                covered = coverage_ok(
+                    sims_raw,
+                    topk=min(len(ctx_candidates), top_k),
+                    score_avg=Config.AVG_SEM_SIM,
+                    score_min=Config.MIN_SEM_SIM,
                 )
+                if not covered:
+                    return (
+                        [],
+                        "No relevant documents found after applying semantic coverage check.",
+                    )
 
             ctx_candidates = sorted(
                 ctx_candidates, key=lambda x: x.get("sem_sim", 0), reverse=True
@@ -434,7 +580,11 @@ def retrieve(
                 print(f"Rerank error: {e}")
                 return [], f"Rerank failed: {str(e)}"
 
-        return ctx_candidates[:top_k], None
+        final_chunks = ctx_candidates[:top_k]
+        if Config.SHOW_SCORES and final_chunks:
+            log_chunk_scores(query, final_chunks, use_hybrid, use_reranker)
+
+        return final_chunks, None
     except Exception as e:
         return [], str(e)
 

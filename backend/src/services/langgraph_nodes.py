@@ -27,6 +27,11 @@ from src.models.evaluation import (
     RecommendationAction,
 )
 from src.services.query_refiner import QueryRefiner
+from src.services.llm_client import (
+    chat_completion,
+    chat_completion_structured,
+    chat_completion_with_tools,
+)
 from src.utils.safety import enforce_citations
 from src.utils.sanitizer import sanitize_text
 from src.config.settings import Config
@@ -60,6 +65,187 @@ def dict_to_evaluation_result(d: dict) -> EvaluationResult:
         recommendation=RecommendationAction(d["recommendation"]),
         reasoning=d["reasoning"],
     )
+
+
+# ==================== HELPER: Build Previous Step Context ====================
+
+
+class PreviousStepContext:
+    """
+    Container for all previous step information.
+
+    Provides everything to LLM so it can extract what it needs.
+    """
+
+    def __init__(
+        self,
+        text: str = "",
+        file_ids: list = None,
+        urls: list = None,
+    ):
+        self.text = text  # Combined step_answers + raw step_contexts results
+        self.file_ids = file_ids or []  # Pre-extracted file_ids for convenience
+        self.urls = urls or []  # Pre-extracted URLs for convenience
+
+
+def build_previous_step_context(
+    state: AgentState, current_step: int
+) -> PreviousStepContext:
+    """
+    Build complete context from ALL previous steps.
+
+    This unified helper collects everything so LLM can extract what it needs:
+    1. step_answers: Human-readable verified answers per step
+    2. step_contexts: Raw tool/doc results (contains URLs, file content, etc.)
+    3. file_ids: Pre-extracted from files_created for convenience
+    4. urls: Pre-extracted from web_search results for convenience
+
+    Args:
+        state: Current agent state
+        current_step: Current step number (collects from steps < current_step)
+
+    Returns:
+        PreviousStepContext with text, file_ids, and urls
+    """
+    import re
+
+    step_answers = state.get("step_answers", [])
+    step_contexts = state.get("step_contexts", {})
+
+    text_parts = []
+    file_ids = []
+    urls = []
+
+    # 1. Collect from step_answers (verified human-readable answers)
+    for ans in step_answers:
+        step_num = ans.get("step", "?")
+        question = ans.get("question", "")
+        answer = ans.get("answer", "")
+        text_parts.append(f"Step {step_num} ({question}):\n{answer}")
+
+    # 2. Collect from step_contexts (raw tool/doc data)
+    for step_num in sorted(step_contexts.keys()):
+        # Only look at PREVIOUS steps (not current or future)
+        if step_num >= current_step:
+            continue
+
+        for ctx in step_contexts[step_num]:
+            ctx_type = ctx.get("type", "")
+            tool_name = ctx.get("tool_name", "")
+            result = ctx.get("result", "")
+
+            # Extract file_ids from files_created
+            files_created = ctx.get("files_created", [])
+            for f in files_created:
+                fid = f.get("file_id") if isinstance(f, dict) else f
+                if fid and fid not in file_ids:
+                    file_ids.append(fid)
+
+            # Extract URLs from web_search results
+            if tool_name == "web_search" and result:
+                # Match http:// and https:// URLs
+                url_pattern = r'https?://[^\s<>"\')\]]+(?=[^\w]|$)'
+                found_urls = re.findall(url_pattern, result)
+                for url in found_urls:
+                    # Clean up trailing punctuation
+                    url = url.rstrip(".,;:!?")
+                    if url and url not in urls:
+                        urls.append(url)
+
+            # Add raw result to text (for full context)
+            if ctx_type == "tool" and result:
+                text_parts.append(f"{tool_name} result:\n{result}")
+            elif ctx_type == "document":
+                docs = ctx.get("docs", [])
+                if docs:
+                    doc_texts = []
+                    for i, doc in enumerate(docs[:5]):  # Limit to 5 docs
+                        content = doc.get("content", "")[:500]  # Truncate
+                        source = doc.get("source", "unknown")
+                        doc_texts.append(f"  [{i+1}] {source}: {content}...")
+                    text_parts.append(f"Retrieved documents:\n" + "\n".join(doc_texts))
+
+    logger.info(
+        f"[BUILD_PREV_CTX] step={current_step}, "
+        f"answers={len(step_answers)}, "
+        f"file_ids={len(file_ids)}, "
+        f"urls={len(urls)}"
+    )
+
+    return PreviousStepContext(
+        text="\n\n".join(text_parts) if text_parts else "",
+        file_ids=file_ids,
+        urls=urls,
+    )
+
+
+# ==================== HELPER: Query Optimization for Tools ====================
+
+
+def _optimize_step_query(step_query: str, tool_type: str, openai_client) -> str:
+    """
+    Optimize a planner-generated step query for the target tool.
+
+    This is FORMAT refinement (verbose → concise), NOT semantic refinement.
+    Skip if refined_query exists (handled by refine_node).
+
+    Args:
+        step_query: The verbose query from planner
+        tool_type: "retrieve" or "web_search"
+        openai_client: OpenAI client for LLM optimization
+
+    Returns:
+        Optimized query string
+    """
+    if not step_query or not openai_client:
+        return step_query
+
+    try:
+        if tool_type == "retrieve":
+            prompt = f"""Convert this verbose search query into a concise natural question for document retrieval.
+
+Input: {step_query}
+
+Rules:
+1. Output a clear question (under 80 chars)
+2. Keep core intent and key entities
+3. Remove filler words
+
+Output ONLY the refined question."""
+
+        elif tool_type == "web_search":
+            prompt = f"""Shorten this web search query while keeping key information.
+
+Input: {step_query}
+
+Rules:
+1. Output under 150 characters
+2. Keep essential keywords
+3. Remove redundant descriptions
+
+Output ONLY the shortened query."""
+        else:
+            return step_query
+
+        response = chat_completion(
+            client=openai_client,
+            model=Config.OPENAI_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1,
+            max_tokens=100,
+        )
+
+        optimized = response.choices[0].message.content.strip().strip('"').strip("'")
+        if len(optimized) >= 5:
+            logger.info(
+                f"[QUERY_OPT] {tool_type}: '{step_query[:50]}...' → '{optimized}'"
+            )
+            return optimized
+        return step_query
+
+    except Exception as e:
+        logger.warning(f"[QUERY_OPT] Failed: {e}")
+        return step_query
 
 
 # ==================== HELPER: Extract Attachment Content ====================
@@ -119,7 +305,8 @@ def _describe_image_with_vision(
         ]
 
         # Call Vision API
-        response = openai_client.chat.completions.create(
+        response = chat_completion(
+            client=openai_client,
             model=Config.OPENAI_VISION_MODEL,
             messages=messages,
             max_tokens=1000,
@@ -389,11 +576,59 @@ def create_plan_node(
             if not client:
                 raise ValueError("OpenAI client is required for planning node.")
 
-            response = client.chat.completions.create(
-                model=Config.OPENAI_MODEL,
+            # Use OpenAI Structured Outputs with strict schema for reliable planning
+            # This guarantees 100% schema compliance - LLM cannot generate invalid plans
+            plan_schema = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "execution_plan",
+                    "strict": True,
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "steps": {
+                                "type": "array",
+                                "description": "List of execution steps. One step per topic is usually sufficient.",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "tool": {
+                                            "type": "string",
+                                            "enum": [
+                                                "retrieve",
+                                                "web_search",
+                                                "direct_answer",
+                                                "calculator",
+                                                "download_file",
+                                                "send_email",
+                                                "create_documents",
+                                            ],
+                                            "description": "The tool to use for this step",
+                                        },
+                                        "query": {
+                                            "type": "string",
+                                            "description": "The query or instruction for this tool",
+                                        },
+                                    },
+                                    "required": ["tool", "query"],
+                                    "additionalProperties": False,
+                                },
+                                "minItems": 1,
+                                "maxItems": 3,  # Prevent redundant multi-step plans
+                            },
+                        },
+                        "required": ["steps"],
+                        "additionalProperties": False,
+                    },
+                },
+            }
+
+            response = chat_completion_structured(
+                client=client,
                 messages=[{"role": "user", "content": planning_prompt}],
+                schema=plan_schema,
+                model=Config.OPENAI_MODEL,
                 temperature=Config.OPENAI_TEMPERATURE,
-                response_format={"type": "json_object"},
             )
 
             plan_data = {}
@@ -401,15 +636,24 @@ def create_plan_node(
                 plan_data = json.loads(response.choices[0].message.content)
 
             plans = []
-            if plan_data:
-                plans = plan_data.get(
-                    "steps", [f"Retrieve documents for: {query}", "Generate answer"]
-                )
+            if plan_data and "steps" in plan_data:
+                # Convert structured format to string format for routing
+                # e.g., {"tool": "retrieve", "query": "..."} -> "retrieve: ..."
+                for step in plan_data["steps"]:
+                    tool = step.get("tool", "retrieve")
+                    step_query = step.get("query", query)
+                    plans.append(f"{tool}: {step_query}")
+
+            if not plans:
+                plans = [f"retrieve: {query}"]  # Default fallback
+
+            logger.info(f"[PLAN] Structured plan created: {plans}")
+
         except Exception as e:
+            logger.warning(f"[PLAN] Structured output failed, using fallback: {e}")
             plans = [
-                f"Retrieve documents for the query: {query}",
-                "Generate answer from retrieved documents",
-            ]  # Fallback plan
+                f"retrieve: {query}",
+            ]  # Fallback plan - single retrieve step
 
         return {
             "plan": plans,
@@ -530,8 +774,21 @@ def create_retrieve_node(
                 for keyword in ["retrieve", "search", "find", "document", "documents"]:
                     step_query = step_query.replace(keyword, "").strip()
 
-            # Use refined query if available (from refinement loop), otherwise use step-specific query
-            query = state.get("refined_query") or step_query or state.get("query")
+            # Use refined query if available (from refinement loop), otherwise optimize step query
+            if state.get("refined_query"):
+                # Already in semantic refinement loop - use refined_query directly
+                query = state.get("refined_query")
+                logger.info(
+                    f"[RETRIEVE] Using refined_query (semantic refinement): '{query}'"
+                )
+            else:
+                # First call - optimize verbose planner query for retrieval
+                openai_client = runtime.get("openai_client")
+                logger.info(f"[RETRIEVE] Optimizing step_query: '{step_query}'")
+                query = _optimize_step_query(
+                    step_query, "retrieve", openai_client
+                ) or state.get("query")
+                logger.info(f"[RETRIEVE] Optimized query: '{query}'")
 
             where = build_where(request_data, dept_id, user_id)
             ctx, err = retrieve(
@@ -784,7 +1041,8 @@ def create_tool_calculator_node(
                 # True fallback - no plan, no detour
                 prompt = ToolPrompts.fallback_prompt(query, "calculator")
 
-            response = client.chat.completions.create(
+            response = chat_completion_with_tools(
+                client=client,
                 model=Config.OPENAI_MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 tools=TOOL_CALCULATOR,
@@ -794,11 +1052,30 @@ def create_tool_calculator_node(
 
             # Check if LLM called a tool
             if not response.choices[0].message.tool_calls:
+                # Save step_contexts so verify_node doesn't throw and can combine all step_answers
+                step_contexts = state.get("step_contexts", {})
+                if current_step not in step_contexts:
+                    step_contexts[current_step] = []
+                step_contexts[current_step].append(
+                    {
+                        "type": "tool",
+                        "tool_name": "calculator",
+                        "result": "Calculator not called - no calculation performed",
+                        "args": {},
+                        "plan_step": (
+                            plan[current_step]
+                            if plan and current_step < len(plan)
+                            else ""
+                        ),
+                    }
+                )
                 return {
                     "tools_used": state.get("tools_used", []),
                     "tool_results": state.get("tool_results", {}),
+                    "step_contexts": step_contexts,
                     "current_step": current_step,
                     "iteration_count": state.get("iteration_count", 0) + 1,
+                    "draft_answer": "Calculator was not called.",
                     "messages": state.get("messages", [])
                     + [AIMessage(content="No tool was called by the LLM.")],
                 }
@@ -947,20 +1224,34 @@ def create_tool_web_search_node(
                     if ":" in action_step
                     else action_step
                 )
+                # Optimize verbose planner query for web search (stay under Tavily 400 char limit)
+                logger.info(f"[WEB_SEARCH] Optimizing step_query: '{clean_query}'")
+                clean_query = _optimize_step_query(clean_query, "web_search", client)
+                logger.info(f"[WEB_SEARCH] Optimized query: '{clean_query}'")
                 prompt = ToolPrompts.web_search_prompt(clean_query, is_detour=False)
             elif is_detour:
                 refined_query = state.get("refined_query")
                 if refined_query:
                     task_query = refined_query
+                    logger.info(
+                        f"[WEB_SEARCH] Using refined_query (detour): '{task_query}'"
+                    )
                 elif plan and current_step < len(plan):
                     task_query = plan[current_step]
+                    logger.info(
+                        f"[WEB_SEARCH] Using plan step (detour): '{task_query}'"
+                    )
                 else:
                     task_query = query
+                    logger.info(
+                        f"[WEB_SEARCH] Using original query (detour): '{task_query}'"
+                    )
                 prompt = ToolPrompts.web_search_prompt(task_query, is_detour=True)
             else:
                 prompt = ToolPrompts.fallback_prompt(query, "web_search")
 
-            response = client.chat.completions.create(
+            response = chat_completion_with_tools(
+                client=client,
                 model=Config.OPENAI_MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 tools=TOOL_WEB_SEARCH,
@@ -969,11 +1260,30 @@ def create_tool_web_search_node(
             )
 
             if not response.choices[0].message.tool_calls:
+                # Save step_contexts so verify_node doesn't throw and can combine all step_answers
+                step_contexts = state.get("step_contexts", {})
+                if current_step not in step_contexts:
+                    step_contexts[current_step] = []
+                step_contexts[current_step].append(
+                    {
+                        "type": "tool",
+                        "tool_name": "web_search",
+                        "result": "Web search not called - no results",
+                        "args": {},
+                        "plan_step": (
+                            plan[current_step]
+                            if plan and current_step < len(plan)
+                            else ""
+                        ),
+                    }
+                )
                 return {
                     "tools_used": state.get("tools_used", []),
                     "tool_results": state.get("tool_results", {}),
+                    "step_contexts": step_contexts,
                     "current_step": current_step,
                     "iteration_count": state.get("iteration_count", 0) + 1,
+                    "draft_answer": "Web search was not performed.",
                     "messages": state.get("messages", [])
                     + [AIMessage(content="No tool was called by the LLM.")],
                 }
@@ -1107,6 +1417,13 @@ def create_tool_download_file_node(
                     "error": "OpenAI client required for tool execution",
                 }
 
+            # Use unified helper to get all previous step context
+            prev_ctx = build_previous_step_context(state, current_step)
+            logger.info(
+                f"[DOWNLOAD_FILE_NODE] prev_ctx: urls={len(prev_ctx.urls)}, "
+                f"file_ids={len(prev_ctx.file_ids)}, text_len={len(prev_ctx.text)}"
+            )
+
             # Build prompt for LLM tool calling
             if plan and current_step < len(plan):
                 action_step = plan[current_step]
@@ -1116,11 +1433,14 @@ def create_tool_download_file_node(
                     if ":" in action_step
                     else action_step
                 )
-                prompt = ToolPrompts.download_file_prompt(clean_query)
+                prompt = ToolPrompts.download_file_prompt(
+                    clean_query, previous_step_context=prev_ctx.text
+                )
             else:
                 prompt = ToolPrompts.fallback_prompt(query, "download_file")
 
-            response = client.chat.completions.create(
+            response = chat_completion_with_tools(
+                client=client,
                 model=Config.OPENAI_MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 tools=TOOL_DOWNLOAD_FILE,
@@ -1129,11 +1449,30 @@ def create_tool_download_file_node(
             )
 
             if not response.choices[0].message.tool_calls:
+                # Save step_contexts so verify_node doesn't throw and can combine all step_answers
+                step_contexts = state.get("step_contexts", {})
+                if current_step not in step_contexts:
+                    step_contexts[current_step] = []
+                step_contexts[current_step].append(
+                    {
+                        "type": "tool",
+                        "tool_name": "download_file",
+                        "result": "Download not performed - no files downloaded",
+                        "args": {},
+                        "plan_step": (
+                            plan[current_step]
+                            if plan and current_step < len(plan)
+                            else ""
+                        ),
+                    }
+                )
                 return {
                     "tools_used": state.get("tools_used", []),
                     "tool_results": state.get("tool_results", {}),
+                    "step_contexts": step_contexts,
                     "current_step": current_step,
                     "iteration_count": state.get("iteration_count", 0) + 1,
+                    "draft_answer": "Download was not performed.",
                     "messages": state.get("messages", [])
                     + [
                         AIMessage(content="No tool was called by the LLM for download.")
@@ -1289,19 +1628,15 @@ def create_tool_create_documents_node(
                     "error": "OpenAI client required for tool execution",
                 }
 
-            # Gather context from previous steps for document content
-            step_answers = state.get("step_answers", [])
-            step_contexts = state.get("step_contexts", {})
+            # Use unified helper to get all previous step context
+            prev_ctx = build_previous_step_context(state, current_step)
+            logger.info(
+                f"[CREATE_DOCUMENTS_NODE] prev_ctx: urls={len(prev_ctx.urls)}, "
+                f"file_ids={len(prev_ctx.file_ids)}, text_len={len(prev_ctx.text)}"
+            )
 
-            # Build content context from previous step answers
-            previous_content = ""
-            if step_answers:
-                content_parts = []
-                for ans in step_answers:
-                    content_parts.append(
-                        f"## {ans.get('question', 'Step Result')}\n{ans.get('answer', '')}"
-                    )
-                previous_content = "\n\n".join(content_parts)
+            # Get step_contexts for writing results (will store files_created)
+            step_contexts = state.get("step_contexts", {})
 
             # Build prompt for LLM tool calling
             if plan and current_step < len(plan):
@@ -1313,12 +1648,13 @@ def create_tool_create_documents_node(
                 )
                 # Include previous step content in prompt for document creation
                 prompt = ToolPrompts.create_documents_prompt(
-                    clean_query, previous_content=previous_content
+                    clean_query, previous_content=prev_ctx.text
                 )
             else:
                 prompt = ToolPrompts.fallback_prompt(query, "create_documents")
 
-            response = client.chat.completions.create(
+            response = chat_completion_with_tools(
+                client=client,
                 model=Config.OPENAI_MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 tools=TOOL_CREATE_DOCUMENTS,
@@ -1327,11 +1663,29 @@ def create_tool_create_documents_node(
             )
 
             if not response.choices[0].message.tool_calls:
+                # Save step_contexts so verify_node doesn't throw and can combine all step_answers
+                if current_step not in step_contexts:
+                    step_contexts[current_step] = []
+                step_contexts[current_step].append(
+                    {
+                        "type": "tool",
+                        "tool_name": "create_documents",
+                        "result": "Document creation not performed",
+                        "args": {},
+                        "plan_step": (
+                            plan[current_step]
+                            if plan and current_step < len(plan)
+                            else ""
+                        ),
+                    }
+                )
                 return {
                     "tools_used": state.get("tools_used", []),
                     "tool_results": state.get("tool_results", {}),
+                    "step_contexts": step_contexts,
                     "current_step": current_step,
                     "iteration_count": state.get("iteration_count", 0) + 1,
+                    "draft_answer": "Document creation was not performed.",
                     "messages": state.get("messages", [])
                     + [
                         AIMessage(
@@ -1472,6 +1826,7 @@ def create_tool_send_email_node(
             Updated state with tool results
         """
         try:
+            logger.info("[SEND_EMAIL_NODE] Starting send_email node execution")
             plan = state.get("plan", [])
             current_step = state.get("current_step", 0)
             query = state.get("query", "")
@@ -1487,23 +1842,29 @@ def create_tool_send_email_node(
                     "error": "OpenAI client required for tool execution",
                 }
 
-            # Collect all files_created from previous steps for potential attachments
-            step_contexts = state.get("step_contexts", {})
-            available_file_ids = []
-            for step_num, contexts in step_contexts.items():
-                if step_num < current_step:  # Only look at previous steps
-                    for ctx in contexts:
-                        files_created = ctx.get("files_created", [])
-                        for f in files_created:
-                            available_file_ids.append(f["file_id"])
+            # Use unified helper to get all previous step context
+            # This gives us file_ids from this plan AND full text context
+            prev_ctx = build_previous_step_context(state, current_step)
+            logger.info(
+                f"[SEND_EMAIL_NODE] prev_ctx: urls={len(prev_ctx.urls)}, "
+                f"file_ids={len(prev_ctx.file_ids)}, text_len={len(prev_ctx.text)}"
+            )
 
-            # Also include files from available_files in runtime (user's existing files)
+            # Get step_contexts for writing results later
+            step_contexts = state.get("step_contexts", {})
+
+            # Files from THIS PLAN (high priority) - from helper
+            session_file_ids = prev_ctx.file_ids
+
+            # User's EXISTING files (low priority) - from runtime, keep separate
             available_files = runtime.get("available_files", [])
             available_file_info = []
             for f in available_files:
                 available_file_info.append(
                     {
-                        "file_id": f.get("file_id"),
+                        "file_id": f.get(
+                            "id"
+                        ),  # list_files returns "id", not "file_id"
                         "name": f.get("original_name"),
                         "category": f.get("category"),
                     }
@@ -1519,26 +1880,87 @@ def create_tool_send_email_node(
                 )
                 prompt = ToolPrompts.send_email_prompt(
                     clean_query,
-                    available_file_ids=available_file_ids,
-                    available_files=available_file_info,
+                    available_file_ids=session_file_ids,  # Files from THIS plan (high priority)
+                    available_files=available_file_info,  # User's existing files (low priority)
+                    previous_step_context=prev_ctx.text,  # Full context from previous steps
                 )
             else:
                 prompt = ToolPrompts.fallback_prompt(query, "send_email")
 
-            response = client.chat.completions.create(
+            # Build messages with conversation history (like plan_node/generate_node)
+            # This allows LLM to see prior context when user says "confirm" or references earlier messages
+            messages = []
+            conversation_history = runtime.get("conversation_history", [])
+            if conversation_history:
+                # Add recent history for context (last 10 messages max)
+                recent_history = conversation_history[-10:]
+                for h in recent_history:
+                    messages.append(
+                        {"role": h.get("role", "user"), "content": h.get("content", "")}
+                    )
+            messages.append({"role": "user", "content": prompt})
+
+            logger.info(
+                f"[SEND_EMAIL_NODE] Calling LLM with session_file_ids={session_file_ids}, history_len={len(conversation_history)}"
+            )
+            response = chat_completion_with_tools(
+                client=client,
                 model=Config.OPENAI_MODEL,
-                messages=[{"role": "user", "content": prompt}],
+                messages=messages,
                 tools=TOOL_SEND_EMAIL,
                 tool_choice="auto",
                 temperature=0.1,
             )
+            logger.info(
+                f"[SEND_EMAIL_NODE] LLM response received, has_tool_calls={bool(response.choices[0].message.tool_calls)}"
+            )
 
             if not response.choices[0].message.tool_calls:
+                # Like AgentService: capture LLM's text response (clarification question)
+                llm_text = response.choices[0].message.content or ""
+                logger.info(
+                    f"[SEND_EMAIL_NODE] No tool called, LLM text: {llm_text[:200]}..."
+                )
+
+                # CRITICAL: Save step_contexts even when tool is not called
+                # This ensures verify_node doesn't throw and can combine all step_answers
+                # (including previous download step with markdown links)
+                if current_step not in step_contexts:
+                    step_contexts[current_step] = []
+                step_contexts[current_step].append(
+                    {
+                        "type": "tool",
+                        "tool_name": "send_email",
+                        "result": llm_text or "Email not sent - awaiting confirmation",
+                        "args": {},
+                        "plan_step": (
+                            plan[current_step]
+                            if plan and current_step < len(plan)
+                            else ""
+                        ),
+                    }
+                )
+
+                if llm_text.strip():
+                    # Return LLM's clarification as draft_answer (like AgentService line 98-99)
+                    return {
+                        "tools_used": state.get("tools_used", []),
+                        "tool_results": state.get("tool_results", {}),
+                        "step_contexts": step_contexts,  # Include step_contexts!
+                        "current_step": current_step,
+                        "iteration_count": state.get("iteration_count", 0) + 1,
+                        "draft_answer": llm_text,
+                        "messages": state.get("messages", [])
+                        + [AIMessage(content=llm_text)],
+                    }
+
                 return {
                     "tools_used": state.get("tools_used", []),
                     "tool_results": state.get("tool_results", {}),
+                    "step_contexts": step_contexts,  # Include step_contexts!
                     "current_step": current_step,
                     "iteration_count": state.get("iteration_count", 0) + 1,
+                    "draft_answer": "Email not sent - no response from LLM.",
                     "messages": state.get("messages", [])
                     + [
                         AIMessage(
@@ -1614,6 +2036,10 @@ def create_tool_send_email_node(
             }
 
         except Exception as e:
+            logger.error(f"[SEND_EMAIL_NODE] Exception: {type(e).__name__}: {str(e)}")
+            import traceback
+
+            logger.error(f"[SEND_EMAIL_NODE] Traceback: {traceback.format_exc()}")
             return {
                 "tools_used": state.get("tools_used", []),
                 "tool_results": state.get("tool_results", {}),
@@ -1697,10 +2123,11 @@ def create_direct_answer_node(
             user_message = GenerationPrompts.build_user_message(step_query)
             openai_messages.append({"role": "user", "content": user_message})
 
-            response = openai_client.chat.completions.create(
+            response = chat_completion(
+                client=openai_client,
                 model=Config.OPENAI_MODEL,
                 messages=openai_messages,
-                max_completion_tokens=Config.CHAT_MAX_TOKENS,
+                max_tokens=Config.CHAT_MAX_TOKENS,
                 temperature=Config.OPENAI_TEMPERATURE,
             )
             direct_answer = ""
@@ -1815,6 +2242,9 @@ def create_refine_node(
             )
 
             current_refinement_count = state.get("refinement_count", 0)
+            logger.info(
+                f"[REFINED_QUERY] Original: '{current_query}' → Refined: '{refined_query}'"
+            )
             return {
                 "refined_query": refined_query,
                 "refinement_count": current_refinement_count + 1,
@@ -2050,10 +2480,11 @@ def create_generate_node(
                 {"role": "user", "content": user_message_with_context}
             )
 
-            response = openai_client.chat.completions.create(
+            response = chat_completion(
+                client=openai_client,
                 model=Config.OPENAI_MODEL,
                 messages=openai_messages,
-                max_completion_tokens=Config.CHAT_MAX_TOKENS,
+                max_tokens=Config.CHAT_MAX_TOKENS,
                 temperature=Config.OPENAI_TEMPERATURE,
             )
             draft_answer = ""
@@ -2181,15 +2612,21 @@ def create_verify_node(
                 if ctx.get("type") == "tool"
             ]
 
-            # Action tools that skip citation enforcement (direct results, not RAG)
-            action_tools = {"download_file", "create_documents", "send_email"}
-            is_action_tool = bool(set(tool_names) & action_tools)
+            # Tools that skip citation enforcement (direct results, not RAG)
+            skip_citation_tools = {
+                "web_search",
+                "calculator",
+                "download_file",
+                "create_documents",
+                "send_email",
+            }
+            is_skip_citation_tool = bool(set(tool_names) & skip_citation_tools)
 
             clean_answer = ""
 
-            # Direct answer and action tool steps skip citation enforcement
             valid_ids = []  # Initialize for all cases
-            if "direct_answer" in step_types or is_action_tool:
+            # Direct answer and skip-citation tools bypass citation enforcement
+            if "direct_answer" in step_types or is_skip_citation_tool:
                 clean_answer = draft_answer
             else:
                 context_num = 1
@@ -2270,15 +2707,28 @@ def create_verify_node(
             else:
                 final_answer = None
 
-            logger.debug(
-                f"""
-                Verified answer at current step {current_step}. Has more steps: {has_more_steps}
-                Step contexts: {step_ctx_list}
-                Step answers so far: {step_answers}
-                Draft answer: {draft_answer}
-                Final answer so far: {final_answer}
-                """
-            )
+            # Summarize step contexts for logging (show doc count instead of full content)
+            step_ctx_summary = [
+                {
+                    "type": ctx.get("type", "unknown"),
+                    "docs": (
+                        len(ctx.get("docs", []))
+                        if isinstance(ctx.get("docs"), list)
+                        else 0
+                    ),
+                    f"plan_step_{i}": ctx.get("plan_step", ""),
+                }
+                for i, ctx in enumerate(step_ctx_list)
+            ]
+            # logger.debug(
+            #     f"""
+            #     Verified answer at current step {current_step}. Has more steps: {has_more_steps}
+            #     Step contexts: {step_ctx_summary}
+            #     Step answers so far: {step_answers}
+            #     Draft answer: {draft_answer}
+            #     Final answer so far: {final_answer}
+            #     """
+            # )
 
             return {
                 "final_answer": final_answer,

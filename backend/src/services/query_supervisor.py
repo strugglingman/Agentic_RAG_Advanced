@@ -28,6 +28,7 @@ from src.services.langgraph_state import (
 )
 from src.services.agent_service import AgentService
 from src.services.langgraph_builder import build_langgraph_agent
+from src.services.llm_client import chat_completion_json
 
 logger = logging.getLogger(__name__)
 
@@ -138,12 +139,12 @@ class QuerySupervisor:
             ExecutionRoute enum value
         """
         prompt = self._get_classification_prompt(query)
-        response = self.openai_client.chat.completions.create(
-            model=Config.OPENAI_MODEL,
+        response = chat_completion_json(
+            client=self.openai_client,
             messages=[{"role": "user", "content": prompt}],
-            max_completion_tokens=150,
+            model=Config.OPENAI_MODEL,
             temperature=0,
-            response_format={"type": "json_object"},
+            max_tokens=150,
         )
         if not response.choices or len(response.choices) == 0:
             raise ValueError("LLM classification returned no choices")
@@ -258,6 +259,8 @@ class QuerySupervisor:
             request_data=context.get("request_data", {}),
             conversation_history=context.get("conversation_history", []),
             file_service=context.get("file_service"),
+            available_files=context.get("available_files", []),
+            attachment_file_ids=context.get("attachment_file_ids", []),
         )
 
         # Build graph with runtime context bound to nodes, using cached checkpointer

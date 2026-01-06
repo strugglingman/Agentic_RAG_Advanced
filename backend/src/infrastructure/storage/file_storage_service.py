@@ -199,7 +199,6 @@ class FileStorageService:
             directory = os.path.join(self.download_base, user_id)
 
         os.makedirs(directory, exist_ok=True)
-        logger.debug(f"[FileStorage] Created download dir: {directory}")
         return directory
 
     def get_chat_attachment_dir(self, user_email: str) -> str:

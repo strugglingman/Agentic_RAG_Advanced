@@ -4,9 +4,13 @@ LangGraph conditional routing functions.
 These functions decide which node to execute next based on state.
 """
 
+import logging
+
 from src.services.langgraph_state import AgentState
 from src.models.evaluation import RecommendationAction
 from src.config.settings import Config
+
+logger = logging.getLogger(__name__)
 
 
 def route_after_planning(state: AgentState) -> str:
@@ -24,27 +28,27 @@ def route_after_planning(state: AgentState) -> str:
     plan = state.get("plan", [])
     current_step = state.get("current_step", 0)
 
-    print(f"[ROUTE_AFTER_PLANNING] plan={plan}, current_step={current_step}")
+    logger.info(f"[ROUTE_AFTER_PLANNING] plan={plan}, current_step={current_step}")
 
     if not plan:
-        print("[ROUTE_AFTER_PLANNING] No plan, returning error")
+        logger.info("[ROUTE_AFTER_PLANNING] No plan, returning error")
         return "error"
 
     # Check bounds
     if current_step >= len(plan):
-        print(
+        logger.info(
             f"[ROUTE_AFTER_PLANNING] current_step {current_step} >= len(plan) {len(plan)}, returning error"
         )
         return "error"
 
     # Check current step to decide which node
     step = plan[current_step].lower()
-    print(f"[ROUTE_AFTER_PLANNING] step={step}")
+    logger.info(f"[ROUTE_AFTER_PLANNING] step={step}")
 
     # IMPORTANT: Check specific tools BEFORE generic keywords to avoid false matches
     # Direct answer keywords
     if "direct_answer" in step or "direct answer" in step:
-        print("[ROUTE_AFTER_PLANNING] Matched direct_answer, returning direct_answer")
+        logger.info("[ROUTE_AFTER_PLANNING] Matched direct_answer, returning direct_answer")
         return "direct_answer"
 
     # Download file keywords (check BEFORE generic "download")
@@ -54,7 +58,7 @@ def route_after_planning(state: AgentState) -> str:
         or "download from url" in step
         or "fetch file" in step
     ):
-        print(
+        logger.info(
             "[ROUTE_AFTER_PLANNING] Matched download_file, returning tool_download_file"
         )
         return "tool_download_file"
@@ -66,7 +70,7 @@ def route_after_planning(state: AgentState) -> str:
         or "email to" in step
         or "mail to" in step
     ):
-        print("[ROUTE_AFTER_PLANNING] Matched send_email, returning tool_send_email")
+        logger.info("[ROUTE_AFTER_PLANNING] Matched send_email, returning tool_send_email")
         return "tool_send_email"
 
     # Create documents keywords (check BEFORE generic "create")
@@ -81,7 +85,7 @@ def route_after_planning(state: AgentState) -> str:
         or "create file" in step
         or "write to file" in step
     ):
-        print(
+        logger.info(
             "[ROUTE_AFTER_PLANNING] Matched create_documents, returning tool_create_documents"
         )
         return "tool_create_documents"
@@ -94,12 +98,12 @@ def route_after_planning(state: AgentState) -> str:
         or "online" in step
         or "google" in step
     ):
-        print("[ROUTE_AFTER_PLANNING] Matched web_search, returning tool_web_search")
+        logger.info("[ROUTE_AFTER_PLANNING] Matched web_search, returning tool_web_search")
         return "tool_web_search"
 
     # Calculator/computation keywords
     if "calculate" in step or "calculator" in step or "compute" in step:
-        print("[ROUTE_AFTER_PLANNING] Matched calculator, returning tool_calculator")
+        logger.info("[ROUTE_AFTER_PLANNING] Matched calculator, returning tool_calculator")
         return "tool_calculator"
 
     # Document retrieval keywords (after checking web_search to avoid "search" collision)
@@ -109,21 +113,21 @@ def route_after_planning(state: AgentState) -> str:
         or "search document" in step
         or "find in document" in step
     ):
-        print("[ROUTE_AFTER_PLANNING] Matched retrieve, returning retrieve")
+        logger.info("[ROUTE_AFTER_PLANNING] Matched retrieve, returning retrieve")
         return "retrieve"
 
     # Generic "search" fallback to retrieve (for backward compatibility)
     if "search" in step:
-        print("[ROUTE_AFTER_PLANNING] Matched generic search, returning retrieve")
+        logger.info("[ROUTE_AFTER_PLANNING] Matched generic search, returning retrieve")
         return "retrieve"
 
     # Default to generate if no tool needed
     if "answer" in step or "generate" in step or "respond" in step:
-        print("[ROUTE_AFTER_PLANNING] Matched generate, returning generate")
+        logger.info("[ROUTE_AFTER_PLANNING] Matched generate, returning generate")
         return "generate"
 
     # Fallback: if unclear, try retrieval first (safer default)
-    print("[ROUTE_AFTER_PLANNING] No match, fallback to retrieve")
+    logger.info("[ROUTE_AFTER_PLANNING] No match, fallback to retrieve")
     return "retrieve"
 
 
@@ -140,16 +144,24 @@ def route_after_reflection(state: AgentState) -> str:
     # Safety check: prevent infinite loops
     iteration_count = state.get("iteration_count", 0)
     if iteration_count >= Config.LANGGRAPH_MAX_ITERATIONS:
+        logger.info(f"[ROUTE_AFTER_REFLECTION] Max iterations reached ({iteration_count}), returning error")
         return "error"
 
     # evaluation_result is now stored as dict for serialization
     evaluation_result_dict = state.get("evaluation_result", None)
     if not evaluation_result_dict:
+        logger.info("[ROUTE_AFTER_REFLECTION] No evaluation_result, returning error")
         return "error"
 
     # Access recommendation as string from dict, convert to enum for comparison
     recommendation_str = evaluation_result_dict.get("recommendation")
+    confidence = evaluation_result_dict.get("confidence", 0)
+    quality = evaluation_result_dict.get("quality", "unknown")
+
+    logger.info(f"[ROUTE_AFTER_REFLECTION] quality={quality}, confidence={confidence:.3f}, recommendation={recommendation_str}")
+
     if not recommendation_str:
+        logger.info("[ROUTE_AFTER_REFLECTION] No recommendation, returning error")
         return "error"
 
     recommendation = RecommendationAction(recommendation_str)
@@ -160,21 +172,29 @@ def route_after_reflection(state: AgentState) -> str:
         refinement_count >= Config.REFLECTION_MAX_REFINEMENT_ATTEMPTS
         and recommendation == RecommendationAction.REFINE
     ):
+        logger.info(f"[ROUTE_AFTER_REFLECTION] Max refinements reached ({refinement_count}/{Config.REFLECTION_MAX_REFINEMENT_ATTEMPTS})")
         if state.get("retrieved_docs"):
+            logger.info("[ROUTE_AFTER_REFLECTION] Has docs, proceeding to generate")
             return "generate"  # Use what we have
         else:
+            logger.info("[ROUTE_AFTER_REFLECTION] No docs after max refinements, returning error")
             return "error"  # No results after 3 tries
 
     if recommendation == RecommendationAction.ANSWER:
+        logger.info("[ROUTE_AFTER_REFLECTION] → GENERATE (quality sufficient)")
         return "generate"
     elif recommendation == RecommendationAction.REFINE:
+        logger.info(f"[ROUTE_AFTER_REFLECTION] → REFINE (attempt {refinement_count + 1}/{Config.REFLECTION_MAX_REFINEMENT_ATTEMPTS})")
         return "refine"
     elif recommendation == RecommendationAction.EXTERNAL:
+        logger.info("[ROUTE_AFTER_REFLECTION] → WEB_SEARCH (external search needed)")
         return "tool_web_search"
     elif recommendation == RecommendationAction.CLARIFY:
+        logger.info("[ROUTE_AFTER_REFLECTION] → CLARIFY (asking user for clarification)")
         # User needs to clarify the query - generate with clarification message
         return "generate"
     else:
+        logger.info(f"[ROUTE_AFTER_REFLECTION] → GENERATE (fallback for {recommendation})")
         # Fallback for any unexpected recommendation
         return "generate"
 

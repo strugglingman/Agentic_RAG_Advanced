@@ -9,6 +9,7 @@ from openai import OpenAI
 from src.services.query_supervisor import QuerySupervisor
 from src.middleware.auth import require_identity
 from src.services.retrieval import retrieve, build_where, build_prompt
+from src.services.llm_client import chat_completion_stream
 from src.config.settings import Config
 from src.utils.safety import looks_like_injection, scrub_context
 from src.utils.stream_utils import stream_text_smart
@@ -138,12 +139,12 @@ async def chat(vector_db):
 
             answer = []
             try:
-                resp = openai_client.chat.completions.create(
+                resp = chat_completion_stream(
+                    client=openai_client,
                     model=Config.OPENAI_MODEL,
                     messages=messages,
                     temperature=0.1,
-                    max_completion_tokens=Config.CHAT_MAX_TOKENS,
-                    stream=True,
+                    max_tokens=Config.CHAT_MAX_TOKENS,
                 )
 
                 for chunk in resp:

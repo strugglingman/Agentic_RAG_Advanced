@@ -12,11 +12,14 @@ Supports three evaluation modes:
 
 import re
 import json
+import logging
 from typing import Dict, Any, List, Optional, Tuple
 from openai import OpenAI
 from langsmith import traceable
 
 from src.config.settings import Config
+
+logger = logging.getLogger(__name__)
 from src.models.evaluation import (
     EvaluationCriteria,
     EvaluationResult,
@@ -25,6 +28,7 @@ from src.models.evaluation import (
     RecommendationAction,
     ReflectionMode,
 )
+from src.services.llm_client import chat_completion, chat_completion_json
 
 
 class RetrievalEvaluator:
@@ -177,16 +181,43 @@ class RetrievalEvaluator:
         )
         min_score = min(relevance_scores) if relevance_scores else 0.0
         context_presence = 1.0 if context_count > 0 else 0.0
+
+        # Detect if reranker scores are being used
+        # Reranker scores are the most accurate signal for cross-language queries
+        has_rerank = any(c.get("rerank", 0.0) != 0.0 for c in criteria.contexts)
+
         # Calculate evaluation confidence
-        evaluation_confidence = min(
-            1.0,
-            (
-                keyword_overlap * 0.4
-                + avg_score * 0.3
-                + min_score * 0.2
-                + context_presence * 0.1
-            ),
-        )
+        # When reranker is used and scores are good, trust reranker over keyword overlap
+        # Keyword overlap fails for cross-language queries (e.g., Chinese query vs English docs)
+        if has_rerank and avg_score >= 0.5 and context_count > 0:
+            # Reranker-optimized formula: trust the reranker's semantic understanding
+            evaluation_confidence = min(
+                1.0,
+                (
+                    avg_score * 0.5  # Primary signal from reranker
+                    + min_score * 0.3  # Quality floor
+                    + context_presence * 0.2  # Have contexts
+                ),
+            )
+            logger.info(
+                f"[EVAL_FAST] Reranker formula: avg*0.5 + min*0.3 + presence*0.2 = "
+                f"{avg_score:.4f}*0.5 + {min_score:.4f}*0.3 + {context_presence:.1f}*0.2 = {evaluation_confidence:.4f}"
+            )
+        else:
+            # Original formula for non-reranker cases or low reranker scores
+            evaluation_confidence = min(
+                1.0,
+                (
+                    keyword_overlap * 0.4
+                    + avg_score * 0.3
+                    + min_score * 0.2
+                    + context_presence * 0.1
+                ),
+            )
+            logger.info(
+                f"[EVAL_FAST] Standard formula: kw*0.4 + avg*0.3 + min*0.2 + presence*0.1 = "
+                f"{keyword_overlap:.4f}*0.4 + {avg_score:.4f}*0.3 + {min_score:.4f}*0.2 + {context_presence:.1f}*0.1 = {evaluation_confidence:.4f}"
+            )
         coverage = keyword_overlap if context_count > 0 else 0.0
         issues = self._detect_issues(context_count, avg_score, keyword_overlap)
         missing_aspects = self._identify_missing_aspects(query_keywords, context_text)
@@ -247,13 +278,29 @@ class RetrievalEvaluator:
         result = self._evaluate_fast(criteria=criteria)
         partial_threshold = self.config.thresholds["partial"]
         good_threshold = self.config.thresholds["good"]
+
+        logger.info(
+            f"[EVAL_BALANCED] Fast result: confidence={result.confidence:.4f}, "
+            f"thresholds: partial={partial_threshold}, good={good_threshold}"
+        )
+
         if partial_threshold <= result.confidence < good_threshold:
+            logger.info(
+                f"[EVAL_BALANCED] Borderline confidence ({partial_threshold} <= {result.confidence:.4f} < {good_threshold}), calling LLM check..."
+            )
             adjusted_confidence, llm_reasoning = self._quick_llm_check(
                 criteria.query, criteria.contexts, result.confidence
+            )
+            logger.info(
+                f"[EVAL_BALANCED] LLM adjustment: {result.confidence:.4f} → {adjusted_confidence:.4f} (reason: {llm_reasoning})"
             )
             result.confidence = adjusted_confidence
             result.reasoning = llm_reasoning
             result.quality = self.config.get_quality_level(adjusted_confidence)
+        else:
+            logger.info(
+                f"[EVAL_BALANCED] No LLM check needed (confidence {result.confidence:.4f} not in borderline range)"
+            )
 
         result.mode_used = ReflectionMode.BALANCED
         return result
@@ -337,10 +384,11 @@ class RetrievalEvaluator:
 
                 Be strict: only answer 'yes' if contexts directly and completely answer the query.
             """
-            response = self.client.chat.completions.create(
+            response = chat_completion(
+                client=self.client,
                 model=Config.OPENAI_MODEL,
                 temperature=0.0,
-                max_completion_tokens=150,
+                max_tokens=150,
                 messages=[{"role": "user", "content": prompt}],
             )
             content = response.choices[0].message.content
@@ -359,8 +407,18 @@ class RetrievalEvaluator:
             adjusted = baseline_confidence
             if answer == "yes":
                 adjusted = min(1.0, baseline_confidence + 0.1)
+                logger.info(
+                    f"[EVAL_LLM] LLM answered 'yes': {baseline_confidence:.4f} + 0.1 = {adjusted:.4f}"
+                )
             elif answer == "no":
                 adjusted = max(0.0, baseline_confidence - 0.1)
+                logger.info(
+                    f"[EVAL_LLM] LLM answered 'no': {baseline_confidence:.4f} - 0.1 = {adjusted:.4f}"
+                )
+            else:
+                logger.info(
+                    f"[EVAL_LLM] LLM answered 'partial': {baseline_confidence:.4f} (no change)"
+                )
 
             reasoning = (
                 reasoning_match.group(1).strip()
@@ -489,10 +547,10 @@ class RetrievalEvaluator:
 
         # Step 3: Call OpenAI API
         try:
-            response = self.client.chat.completions.create(
+            response = chat_completion_json(
+                client=self.client,
                 model=Config.OPENAI_MODEL,
                 temperature=0.0,
-                response_format={"type": "json_object"},
                 messages=[{"role": "user", "content": prompt}],
             )
 

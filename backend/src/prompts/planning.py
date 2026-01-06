@@ -150,7 +150,10 @@ class PlanningPrompts:
                     lines.append(
                         f"  - **{name}** (file_id: `{file_id}`, ⚠ NOT searchable){source_info} → [Download]({url})"
                     )
-                sections.append("### Downloaded Files (for attachments only, NOT searchable via retrieve)\n" + "\n".join(lines))
+                sections.append(
+                    "### Downloaded Files (for attachments only, NOT searchable via retrieve)\n"
+                    + "\n".join(lines)
+                )
 
             # Created files
             # Limit to CREATED_FILES_LIMIT most recent
@@ -164,7 +167,10 @@ class PlanningPrompts:
                     lines.append(
                         f"  - **{name}** (file_id: `{file_id}`, ⚠ NOT searchable) → [Download]({url})"
                     )
-                sections.append("### Created Documents (for attachments only, NOT searchable via retrieve)\n" + "\n".join(lines))
+                sections.append(
+                    "### Created Documents (for attachments only, NOT searchable via retrieve)\n"
+                    + "\n".join(lines)
+                )
 
         if not sections:
             return ""
@@ -203,9 +209,12 @@ class PlanningPrompts:
 ## Recent Conversation Context
 {conversation_context}
 
-CRITICAL: The user may reference previous messages using words like "这些", "以上", "those", "these", "it", "them".
-You MUST resolve these references using the conversation context above and include the ACTUAL content in your plan.
-For example: If user previously discussed "南京10个景点" and now asks "这些景点的路线", you must include the actual attraction names.
+Use conversation context ONLY when user explicitly references it with words like:
+- Chinese: "这些", "那些", "以上", "之前", "刚才说的", "上面的"
+- English: "these", "those", "it", "them", "the above", "what you said"
+
+For example: "这些景点的路线" → include actual attraction names from context.
+For standalone queries (no reference words), create a fresh plan based on the current query only.
 """
 
         files_section = PlanningPrompts._build_files_section(
@@ -272,22 +281,55 @@ You are a planning assistant. Create a plan to answer this query using available
 - When user asks to create a document and email it, chain: create_documents → send_email (use file_id from create_documents output)
 - Inline attachment content (marked [INLINE CONTENT AVAILABLE]) has already been extracted - no need to retrieve it
 
+## CRITICAL: MULTI-STEP vs SINGLE-STEP PLANS
+
+**Use MULTI-STEP plans ONLY when steps have TRUE DEPENDENCIES (step 2 needs output from step 1):**
+- ✅ download_file → send_email (must download before attaching)
+- ✅ create_documents → send_email (must create before attaching)
+- ✅ retrieve → calculator (get data, then compute on it)
+- ✅ web_search → create_documents (search info, then create report)
+- ✅ web_search → download_file (search for resources, then download the URLs found)
+- ✅ web_search → download_file → send_email (search, download, then email the downloaded files)
+
+**CRITICAL: web_search returns URLs, NOT files. To send files from web, you MUST:**
+1. web_search: Find the resources/URLs
+2. download_file: Download the URLs to get file_ids
+3. send_email: Attach files using the file_ids from download_file
+
+**NEVER create "fallback" plans where steps are ALTERNATIVES (try X, if fail try Y):**
+- ❌ ["retrieve", "web_search"] ← WRONG! System auto-fallbacks to web_search if retrieve fails
+- ❌ ["retrieve", "direct_answer"] ← WRONG! These are alternatives, not dependencies
+- ❌ ["retrieve", "web_search", "direct_answer"] ← WRONG! Redundant fallback chain
+
+**The system has AUTOMATIC fallback handling:**
+- If "retrieve" finds insufficient results → system AUTOMATICALLY routes to "web_search"
+- You only need to specify the PRIMARY tool for the query
+
+**Use SINGLE-STEP for simple queries:**
+- ✅ ["retrieve: A Man Called Ove"] ← Auto-fallback handles web_search if needed
+- ✅ ["web_search: Beijing weather"] ← Single step for real-time info
+- ✅ ["direct_answer: Explain quantum physics"] ← Single step for general knowledge
+
 ## IMPORTANT:
-1. Write DETAILED, COMPREHENSIVE queries after the colon
-2. Include ALL context from conversation when resolving references
+1. For **retrieve**: Write SHORT keyword-based queries (not instructions). Example: "A Man Called Ove character Ove Sonja" NOT "Search files for content about..."
+2. For **direct_answer/web_search**: Write detailed, comprehensive queries describing what answer is needed
 3. For travel/route questions, specify: locations, order, and request for transportation details
 4. The LLM will generate a detailed, well-formatted answer based on your plan
+5. **Multi-step = dependencies, Single-step = alternatives** (system handles fallbacks)
 
 ## Examples:
 - Query: "南京的10个旅游景点" → {{"steps": ["direct_answer: List and describe the top 10 tourist attractions in Nanjing, China, including historical significance and visitor tips"]}}
 - Query: "这些景点的具体路线" (after discussing Nanjing attractions) → {{"steps": ["direct_answer: Provide a detailed travel itinerary and route connecting Nanjing Memorial Hall, Zhongshan Mausoleum, Ming Xiaoling Tomb, Xuanwu Lake, Yangtze River Bridge, Confucius Temple, Nanjing Museum, Zhonghua Gate, Purple Mountain Observatory, and Jiming Temple, including transportation options between each location, recommended visiting order, and time estimates"]}}
 - Query: "What is our Q3 revenue?" → {{"steps": ["retrieve: Q3 quarterly revenue report"]}}
+- Query: "Tell me about the man called Ove" → {{"steps": ["retrieve: A Man Called Ove Ove character personality Sonja"]}}
 - Query: "明天北京天气怎么样" → {{"steps": ["web_search: Beijing weather forecast tomorrow"]}}
 - Query: "Download the report from example.com/report.pdf and email it to john@company.com" → {{"steps": ["download_file: https://example.com/report.pdf", "send_email: Send email to john@company.com with attached file (use file_id from previous step)"]}}
 - Query: "Email me the Q3 report" (with Q3_Report.pdf in available files) → {{"steps": ["send_email: Send Q3_Report.pdf (file_id: cmjg8yrab0000xspw5ip79qcb) to user"]}}
 - Query: "Create a summary document and send it to my manager" → {{"steps": ["create_documents: Create PDF summary document with key points", "send_email: Send the created document to manager (use file_id from previous step)"]}}
 - Query: "帮我整理成文件给我链接" (create document and give me link) → {{"steps": ["create_documents: Create PDF document with the requested content"]}} (ONLY ONE step - link is auto-included in output)
 - Query: "Create a report and provide download link" → {{"steps": ["create_documents: Create the report document"]}} (ONLY ONE step - link is auto-included)
+- Query: "Find articles about Nanjing travel and send them to john@example.com" → {{"steps": ["web_search: Find travel articles and guides about Nanjing tourism", "download_file: Download the web pages from the URLs found in web search", "send_email: Send the downloaded files to john@example.com with attached files (use file_ids from download_file)"]}}
+- Query: "Search for Python tutorials and download them for me" → {{"steps": ["web_search: Find Python programming tutorials and guides", "download_file: Download the tutorial pages from the URLs found"]}}
 
 Return ONLY JSON:
 {{"steps": ["tool_name: detailed comprehensive query with full context", ...]}}
