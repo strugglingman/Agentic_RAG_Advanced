@@ -66,6 +66,12 @@ class Config:
         "yes",
         "on",
     }
+    USE_SEMANTIC_ROUTER = os.getenv("USE_SEMANTIC_ROUTER", "false").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
     LANGGRAPH_MAX_ITERATIONS = 20
     LANGGRAPH_TIMEOUT = 120  # seconds
     CHECKPOINT_ENABLED = os.getenv("CHECKPOINT_ENABLED", "false").lower() in {

@@ -239,16 +239,38 @@ class CachedMessageRepository(MessageRepository):
         Returns:
             List of Message entities (oldest first, chronological order)
         """
-        # If requesting more than cache limit, skip cache entirely
+        cache_key = self._cache_key(conversation_id)
+
+        # If requesting more than cache limit, go to DB but still populate cache
         # Cache only stores REDIS_CACHE_LIMIT messages (e.g., 15)
         # Large requests (e.g., limit=200 for frontend) must go to DB
         if limit > Config.REDIS_CACHE_LIMIT:
-            logger.debug(
-                f"Limit {limit} > cache limit {Config.REDIS_CACHE_LIMIT}, bypassing cache"
-            )
-            return await self._repo.get_by_conversation(conversation_id, limit)
+            messages = await self._repo.get_by_conversation(conversation_id, limit)
 
-        cache_key = self._cache_key(conversation_id)
+            # Also populate cache with most recent messages for future small requests
+            # This ensures subsequent save() calls can update an existing cache
+            try:
+                if messages:
+                    await self._redis.delete(cache_key)
+                    # Take only the most recent REDIS_CACHE_LIMIT messages for cache
+                    # messages from DB = [oldest, ..., newest] (chronological)
+                    recent_messages = messages[-Config.REDIS_CACHE_LIMIT:]
+                    # Reverse to get [newest, ..., oldest] for Redis storage
+                    messages_reversed = list(reversed(recent_messages))
+                    json_strings = [
+                        self._serialize_message(msg) for msg in messages_reversed
+                    ]
+                    # RPUSH adds elements to END of list in order given
+                    # Result: [newest, next_newest, ..., oldest]
+                    await self._redis.rpush(cache_key, *json_strings)
+                    await self._redis.expire(cache_key, Config.REDIS_CACHE_TTL)
+                    logger.debug(
+                        f"Cache populated for {cache_key} with {len(recent_messages)} messages"
+                    )
+            except Exception as e:
+                logger.warning(f"Redis cache write error for {cache_key}: {str(e)}")
+
+            return messages
 
         # 1. Try cache first (fast path) - only for small limits
         try:
@@ -287,7 +309,7 @@ class CachedMessageRepository(MessageRepository):
                 await self._redis.rpush(cache_key, *json_strings)
                 await self._redis.ltrim(cache_key, 0, Config.REDIS_CACHE_LIMIT - 1)
                 await self._redis.expire(cache_key, Config.REDIS_CACHE_TTL)
-                logger.debug(f"Cache POPULATED for {cache_key}")
+                logger.debug(f"Cache populated for {cache_key}")
         except Exception as e:
             logger.warning(f"Redis cache write error for {cache_key}: {str(e)}")
 
@@ -317,7 +339,7 @@ class CachedMessageRepository(MessageRepository):
             # LTRIM keeps only the most recent messages
             await self._redis.ltrim(cache_key, 0, Config.REDIS_CACHE_LIMIT - 1)
             await self._redis.expire(cache_key, Config.REDIS_CACHE_TTL)
-            logger.debug(f"Cache UPDATED for {cache_key}")
+            logger.debug(f"Cache updated for {cache_key}")
         except Exception as e:
             logger.warning(f"Redis cache update error: {str(e)}")
 

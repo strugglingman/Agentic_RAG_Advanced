@@ -186,8 +186,11 @@ def build_langgraph_agent(
         active_checkpointer = None
         logger.info("[DEBUG] Checkpointing disabled in langgraph_builder")
 
-    compiled_graph = (
-        graph.compile(active_checkpointer) if active_checkpointer else graph.compile()
+    interrupt_before_nodes = []
+    if Config.CHECKPOINT_ENABLED and active_checkpointer:
+        interrupt_before_nodes = ["tool_send_email"]
+    compiled_graph = graph.compile(
+        checkpointer=active_checkpointer, interrupt_before=interrupt_before_nodes
     )
 
     return compiled_graph

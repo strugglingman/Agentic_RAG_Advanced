@@ -170,32 +170,28 @@ IMPORTANT: Use ONLY these file_ids for attachments, NOT file_ids from conversati
 USER'S AVAILABLE FILES:
 {chr(10).join(file_list)}"""
 
-        return f"""You need to evaluate whether to call the send_email tool for this task.
+        return f"""You need to call the send_email tool for this task.
 
 Task: {task}{files_section}
 
-CRITICAL EMAIL POLICY (MUST FOLLOW):
-1. You MUST NOT send emails automatically without explicit user confirmation
-2. You may ONLY call send_email if the user has EXPLICITLY CONFIRMED:
-   - The recipient email address(es) - NEVER invent or guess addresses
-   - The intent to send the email
-3. If ANY of the following is true, DO NOT call the tool:
-   - No specific email address was provided by the user
-   - The email address looks like a placeholder (e.g., user@example.com, test@test.com)
-   - The user only asked for a document/file without mentioning email
-   - The user said "give me a link" or "send me a link" (this means download link, NOT email)
-4. If confirmation is missing or ambiguous:
-   - DO NOT call send_email
-   - Instead, respond asking for the recipient's email address and confirmation
+IMPORTANT: The system has a Human-in-the-Loop (HITL) confirmation mechanism.
+You should proceed to call the send_email tool - the user will be prompted to confirm
+before the email is actually sent. DO NOT ask for confirmation in your response.
 
-INSTRUCTIONS (ONLY if all conditions above are met):
-1. Extract recipient email addresses (must be explicitly provided by user)
-2. Determine the email subject
-3. Compose the email body
-4. For attachments: Use file_ids from "FILES CREATED IN THIS SESSION" section above (⭐ marked).
-   DO NOT use file_ids from conversation history - those may be outdated.
+EMAIL ADDRESS VALIDATION:
+- If a specific email address is provided in the task, use it
+- If the email looks like a placeholder (e.g., user@example.com, test@test.com), still proceed - the HITL dialog will show it to the user
+- If no email address is mentioned at all, extract it from the task context or use any email mentioned in the conversation
 
-If you cannot confirm a valid, user-provided email address, respond with a message asking for clarification instead of calling the tool."""
+INSTRUCTIONS:
+1. Extract recipient email address(es) from the task
+2. Determine an appropriate email subject based on the task
+3. Compose a professional email body
+4. For attachments: Include ALL file_ids from "FILES CREATED IN THIS SESSION" section above (⭐ marked).
+   - If multiple files were created/downloaded, attach ALL of them unless the user specifically requested only certain files.
+   - DO NOT use file_ids from conversation history - those may be outdated.
+
+CALL THE TOOL - the system will handle user confirmation before sending."""
 
     @staticmethod
     def fallback_prompt(query: str, tool_type: str) -> str:

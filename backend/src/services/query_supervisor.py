@@ -14,12 +14,14 @@ Usage:
 """
 
 from enum import Enum
-from typing import Tuple, List, Dict, Any
+from typing import Tuple, List, Dict, Any, Optional
+from dataclasses import dataclass
 import json
 import logging
+import re
+import uuid
 from langgraph.checkpoint.postgres import PostgresSaver
-from psycopg_pool import ConnectionPool
-from psycopg.rows import dict_row
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 import psycopg
 from src.config.settings import Config
 from src.services.langgraph_state import (
@@ -31,6 +33,38 @@ from src.services.langgraph_builder import build_langgraph_agent
 from src.services.llm_client import chat_completion_json
 
 logger = logging.getLogger(__name__)
+
+
+# ==================== HITL DATA STRUCTURES ====================
+
+
+@dataclass
+class HITLInterruptResult:
+    """Result when graph is interrupted for human confirmation."""
+
+    status: str  # "awaiting_confirmation"
+    action: str  # "send_email", etc.
+    thread_id: str  # Thread ID for resumption
+    details: Dict[str, Any]  # Action-specific details for confirmation UI
+    previous_steps: List[Dict[str, Any]]  # Results from completed steps
+
+
+@dataclass
+class QueryResult:
+    """
+    Result from process_query that can be either:
+    - A complete answer (answer + contexts)
+    - An HITL interrupt requiring confirmation
+    """
+
+    answer: str
+    contexts: List[Dict[str, Any]]
+    hitl_interrupt: Optional[HITLInterruptResult] = None
+
+    @property
+    def is_interrupted(self) -> bool:
+        """Check if this result requires human confirmation."""
+        return self.hitl_interrupt is not None
 
 
 class ExecutionRoute(str, Enum):
@@ -61,53 +95,81 @@ class QuerySupervisor:
         self.agent_service = AgentService(openai_client=openai_client)
         # Note: LangGraph agent is built per-request with RuntimeContext
 
-        # Initialize PostgreSQL checkpointer (cached for all requests)
-        self._checkpointer = None
-        self._connection_pool = None  # Store connection pool for cleanup
+        # Initialize PostgreSQL checkpointer settings
+        # We use AsyncPostgresSaver for async operations with ainvoke
+        self._checkpoint_conn_string = None
+        self._checkpoint_enabled = False
 
         if Config.CHECKPOINT_ENABLED:
-            if Config.CHECKPOINT_POSTGRES_DATABASE_URL and PostgresSaver and psycopg:
+            if Config.CHECKPOINT_POSTGRES_DATABASE_URL and psycopg:
                 try:
-                    # Setup tables first (needs autocommit for CREATE INDEX CONCURRENTLY)
+                    # Setup tables first using sync connection (needs autocommit for CREATE INDEX CONCURRENTLY)
                     with psycopg.connect(
                         Config.CHECKPOINT_POSTGRES_DATABASE_URL, autocommit=True
                     ) as setup_conn:
                         temp_saver = PostgresSaver(setup_conn)
                         temp_saver.setup()
 
-                    # Create connection pool with autocommit for checkpoint operations
-                    # This ensures each checkpoint write is committed immediately
-                    connection_kwargs = {
-                        "autocommit": True,
-                        "prepare_threshold": 0,  # Disable prepared statements for pgbouncer compatibility
-                        "row_factory": dict_row,  # Required: PostgresSaver accesses rows as dicts
-                    }
-                    self._connection_pool = ConnectionPool(
-                        conninfo=Config.CHECKPOINT_POSTGRES_DATABASE_URL,
-                        max_size=20,
-                        kwargs=connection_kwargs,
+                    # Store connection string for async checkpointer creation
+                    self._checkpoint_conn_string = (
+                        Config.CHECKPOINT_POSTGRES_DATABASE_URL
                     )
-                    self._checkpointer = PostgresSaver(self._connection_pool)
+                    self._checkpoint_enabled = True
 
                     print(
-                        "[OK] PostgreSQL checkpointer initialized with connection pool"
+                        "[OK] PostgreSQL checkpoint tables initialized, async checkpointer ready"
                     )
                 except Exception as e:
                     print(f"[WARN] Could not initialize PostgreSQL checkpointer: {e}")
                     print("  Falling back to in-memory checkpointer")
 
     def close(self):
-        """Close connection pool when shutting down."""
-        if self._connection_pool:
-            try:
-                self._connection_pool.close()
-                print("[OK] PostgreSQL connection pool closed")
-            except Exception as e:
-                print(f"[WARN] Error closing connection pool: {e}")
+        """Cleanup resources when shutting down."""
+        # AsyncPostgresSaver manages its own connections via context manager
+        pass
 
-    async def process_query(
-        self, query: str, context: Dict[str, Any]
-    ) -> Tuple[str, List[Dict[str, Any]]]:
+    async def _clear_checkpoint_for_thread(self, thread_id: str) -> None:
+        """
+        Clear checkpoint data for a thread before starting a NEW query.
+
+        Why this is needed:
+        - Checkpoints track state within a single workflow execution (for HITL)
+        - Each new query should start fresh - conversation history is passed separately
+        - Old checkpoint data can cause "invalid memory alloc" errors in PostgreSQL
+
+        Note: Do NOT call this for resume operations (HITL confirm/cancel).
+
+        Args:
+            thread_id: The thread ID to clear checkpoints for
+        """
+        if not self._checkpoint_enabled or not self._checkpoint_conn_string:
+            return
+
+        try:
+            async with await psycopg.AsyncConnection.connect(
+                self._checkpoint_conn_string
+            ) as conn:
+                async with conn.cursor() as cur:
+                    # Delete from checkpoint tables for this thread_id
+                    await cur.execute(
+                        "DELETE FROM checkpoint_writes WHERE thread_id = %s",
+                        (thread_id,),
+                    )
+                    await cur.execute(
+                        "DELETE FROM checkpoint_blobs WHERE thread_id = %s",
+                        (thread_id,),
+                    )
+                    await cur.execute(
+                        "DELETE FROM checkpoints WHERE thread_id = %s", (thread_id,)
+                    )
+                await conn.commit()
+                logger.debug(f"[CHECKPOINT] Cleared old data for thread_id={thread_id}")
+        except Exception as e:
+            logger.warning(
+                f"[CHECKPOINT] Failed to clear for thread_id={thread_id}: {e}"
+            )
+
+    async def process_query(self, query: str, context: Dict[str, Any]) -> QueryResult:
         """
         Main entry point - classify and route query to appropriate engine.
 
@@ -116,13 +178,178 @@ class QuerySupervisor:
             context: Execution context (vector_db, dept_id, user_id, etc.)
 
         Returns:
-            Tuple of (answer, contexts)
+            QueryResult containing answer, contexts, and optional HITL interrupt
         """
         route = self._classify_query(query)
         if route == ExecutionRoute.AGENT_SERVICE:
-            return await self._execute_agent_service(query, context)
+            answer, contexts = await self._execute_agent_service(query, context)
+            return QueryResult(answer=answer, contexts=contexts)
         else:
-            return await self._execute_langgraph(query, context)
+            answer, contexts, hitl_interrupt = await self._execute_langgraph(
+                query, context
+            )
+            return QueryResult(
+                answer=answer, contexts=contexts, hitl_interrupt=hitl_interrupt
+            )
+
+    async def resume_workflow(
+        self, thread_id: str, context: Dict[str, Any], confirmed: bool = True
+    ) -> QueryResult:
+        """
+        Resume an interrupted workflow after human confirmation.
+
+        Args:
+            thread_id: Thread ID of the interrupted workflow
+            context: Execution context (same as process_query)
+            confirmed: Whether user confirmed the action
+
+        Returns:
+            QueryResult with final answer or another HITL interrupt
+        """
+        if not confirmed:
+            # User cancelled - return current state without executing pending action
+            return await self._get_cancelled_result(thread_id, context)
+
+        # Create runtime context for resumption
+        runtime = create_runtime_context(
+            vector_db=context.get("vector_db"),
+            openai_client=self.openai_client,
+            dept_id=context.get("dept_id", ""),
+            user_id=context.get("user_id", ""),
+            conversation_id=context.get("conversation_id", ""),
+            request_data=context.get("request_data", {}),
+            conversation_history=context.get("conversation_history", []),
+            file_service=context.get("file_service"),
+            available_files=context.get("available_files", []),
+            attachment_file_ids=context.get("attachment_file_ids", []),
+        )
+
+        config = {"configurable": {"thread_id": thread_id}}
+
+        # Use AsyncPostgresSaver context manager for async operations
+        if self._checkpoint_enabled and self._checkpoint_conn_string:
+            async with AsyncPostgresSaver.from_conn_string(
+                self._checkpoint_conn_string
+            ) as checkpointer:
+                return await self._resume_with_checkpointer(
+                    runtime, config, thread_id, checkpointer
+                )
+        else:
+            return await self._resume_with_checkpointer(
+                runtime, config, thread_id, None
+            )
+
+    async def _resume_with_checkpointer(
+        self,
+        runtime,
+        config: Dict[str, Any],
+        thread_id: str,
+        checkpointer,
+    ) -> QueryResult:
+        """
+        Resume workflow execution with the given checkpointer.
+        """
+        # Build graph with checkpointer
+        langgraph_agent = build_langgraph_agent(runtime, checkpointer=checkpointer)
+
+        try:
+            # Resume from checkpoint using astream - pass None to continue from saved state
+            logger.info(f"[HITL] Resuming workflow with thread_id: {thread_id}")
+            final_state = None
+            async for event in langgraph_agent.astream(
+                None, config=config, stream_mode="values"
+            ):
+                final_state = event
+
+            logger.info("[HITL] Resume stream completed, checking for interrupt...")
+
+            # Check if interrupted again
+            snapshot = await langgraph_agent.aget_state(config)
+            if snapshot.next:
+                pending_node = snapshot.next[0] if snapshot.next else None
+                logger.info(
+                    f"[HITL] Graph interrupted again before node: {pending_node}"
+                )
+
+                hitl_result = self._extract_hitl_details(
+                    pending_node, snapshot.values, thread_id
+                )
+                if hitl_result:
+                    answer, contexts = self._extract_langgraph_results(snapshot.values)
+                    return QueryResult(
+                        answer=answer, contexts=contexts, hitl_interrupt=hitl_result
+                    )
+
+            # Normal completion
+            if final_state is None:
+                final_state = snapshot.values
+            answer, contexts = self._extract_langgraph_results(final_state)
+            return QueryResult(answer=answer, contexts=contexts)
+
+        except Exception as e:
+            logger.error(f"[HITL] Error resuming workflow: {e}")
+            raise
+
+    async def _get_cancelled_result(
+        self, thread_id: str, context: Dict[str, Any]
+    ) -> QueryResult:
+        """
+        Build result when user cancels a pending action.
+
+        Returns completed step results without executing the cancelled action.
+        """
+        # Create runtime to get graph
+        runtime = create_runtime_context(
+            vector_db=context.get("vector_db"),
+            openai_client=self.openai_client,
+            dept_id=context.get("dept_id", ""),
+            user_id=context.get("user_id", ""),
+            conversation_id=context.get("conversation_id", ""),
+            request_data=context.get("request_data", {}),
+            conversation_history=context.get("conversation_history", []),
+            file_service=context.get("file_service"),
+            available_files=context.get("available_files", []),
+            attachment_file_ids=context.get("attachment_file_ids", []),
+        )
+
+        config = {"configurable": {"thread_id": thread_id}}
+
+        # Use AsyncPostgresSaver context manager for async operations
+        if self._checkpoint_enabled and self._checkpoint_conn_string:
+            async with AsyncPostgresSaver.from_conn_string(
+                self._checkpoint_conn_string
+            ) as checkpointer:
+                return await self._build_cancelled_result(runtime, config, checkpointer)
+        else:
+            return await self._build_cancelled_result(runtime, config, None)
+
+    async def _build_cancelled_result(
+        self,
+        runtime,
+        config: Dict[str, Any],
+        checkpointer,
+    ) -> QueryResult:
+        """
+        Build cancelled result with the given checkpointer.
+        """
+        langgraph_agent = build_langgraph_agent(runtime, checkpointer=checkpointer)
+
+        snapshot = await langgraph_agent.aget_state(config)
+
+        # Build answer from completed steps
+        step_answers = snapshot.values.get("step_answers", [])
+        if step_answers:
+            answer_parts = []
+            for step_ans in step_answers:
+                task = step_ans.get("question", f"Step {step_ans.get('step', 0)}")
+                answer_parts.append(f"**{task}**\n{step_ans['answer']}")
+            final_answer = "\n\n".join(answer_parts)
+            final_answer += "\n\n*(Email action cancelled by user)*"
+        else:
+            final_answer = "Action cancelled by user."
+
+        _, contexts = self._extract_langgraph_results(snapshot.values)
+        return QueryResult(answer=final_answer, contexts=contexts)
 
     def _classify_query(self, query: str) -> ExecutionRoute:
         """
@@ -155,11 +382,13 @@ class QuerySupervisor:
         print(classification_data)
         classification = classification_data.get("classification", "simple")
 
-        return (
-            ExecutionRoute.LANGGRAPH
-            if classification == "complex" and Config.USE_LANGGRAPH
-            else ExecutionRoute.AGENT_SERVICE
-        )
+        return ExecutionRoute.LANGGRAPH
+
+        # return (
+        #     ExecutionRoute.LANGGRAPH
+        #     if classification == "complex" and Config.USE_LANGGRAPH
+        #     else ExecutionRoute.AGENT_SERVICE
+        # )
 
     def _get_classification_prompt(self, query: str) -> str:
         """
@@ -239,7 +468,7 @@ class QuerySupervisor:
 
     async def _execute_langgraph(
         self, query: str, context: Dict[str, Any]
-    ) -> Tuple[str, List[Dict[str, Any]]]:
+    ) -> Tuple[str, List[Dict[str, Any]], Optional[HITLInterruptResult]]:
         """
         Execute query using LangGraph (Plan-Execute pattern).
 
@@ -248,7 +477,9 @@ class QuerySupervisor:
             context: Execution context (should include 'thread_id' for checkpointing)
 
         Returns:
-            Tuple of (answer, contexts)
+            Tuple of (answer, contexts, hitl_interrupt)
+            - hitl_interrupt is None if completed normally
+            - hitl_interrupt contains details if interrupted for human confirmation
         """
         # Create runtime context with non-serializable objects
         runtime = create_runtime_context(
@@ -256,16 +487,12 @@ class QuerySupervisor:
             openai_client=self.openai_client,
             dept_id=context.get("dept_id", ""),
             user_id=context.get("user_id", ""),
+            conversation_id=context.get("conversation_id", ""),
             request_data=context.get("request_data", {}),
             conversation_history=context.get("conversation_history", []),
             file_service=context.get("file_service"),
             available_files=context.get("available_files", []),
             attachment_file_ids=context.get("attachment_file_ids", []),
-        )
-
-        # Build graph with runtime context bound to nodes, using cached checkpointer
-        langgraph_agent = build_langgraph_agent(
-            runtime, checkpointer=self._checkpointer
         )
 
         # Create serializable initial state (no runtime objects)
@@ -277,26 +504,226 @@ class QuerySupervisor:
         )
         config = {"configurable": {"thread_id": thread_id}}
 
-        try:
-            # Use ainvoke() for async graph execution (nodes are async)
-            final_state = await langgraph_agent.ainvoke(agent_state, config=config)
-            return self._extract_langgraph_results(final_state)
-        except (ValueError, EOFError) as e:
-            # Handle checkpoint corruption - likely pickle deserialization error
-            if "unexpected end" in str(e) or "EOFError" in type(e).__name__:
-                print(
-                    f"[ERROR] Checkpoint corruption detected for thread_id={thread_id}: {e}"
-                )
-                print("[FIX] Generating new thread_id to bypass corrupted checkpoint")
-                # Generate new thread_id to start fresh
-                import uuid
+        # Clear old checkpoint data before starting new query
+        # This prevents "invalid memory alloc" errors from corrupted checkpoint blobs
+        # Note: resume_workflow() does NOT call this - it needs existing checkpoints
+        await self._clear_checkpoint_for_thread(thread_id)
 
-                new_thread_id = str(uuid.uuid4())
-                config = {"configurable": {"thread_id": new_thread_id}}
-                final_state = await langgraph_agent.ainvoke(agent_state, config=config)
-                return self._extract_langgraph_results(final_state)
+        # Use AsyncPostgresSaver context manager for async operations
+        if self._checkpoint_enabled and self._checkpoint_conn_string:
+            async with AsyncPostgresSaver.from_conn_string(
+                self._checkpoint_conn_string
+            ) as checkpointer:
+                return await self._run_langgraph_with_checkpointer(
+                    runtime, agent_state, config, thread_id, checkpointer
+                )
+        else:
+            # No checkpointer - run without persistence
+            return await self._run_langgraph_with_checkpointer(
+                runtime, agent_state, config, thread_id, None
+            )
+
+    async def _run_langgraph_with_checkpointer(
+        self,
+        runtime,
+        agent_state: Dict[str, Any],
+        config: Dict[str, Any],
+        thread_id: str,
+        checkpointer,
+    ) -> Tuple[str, List[Dict[str, Any]], Optional[HITLInterruptResult]]:
+        """
+        Execute LangGraph with the given checkpointer.
+
+        Args:
+            runtime: Runtime context
+            agent_state: Initial state
+            config: Config with thread_id
+            thread_id: Thread ID for error messages
+            checkpointer: AsyncPostgresSaver instance or None
+
+        Returns:
+            Tuple of (answer, contexts, hitl_interrupt)
+        """
+        # Build graph with runtime context bound to nodes
+        langgraph_agent = build_langgraph_agent(runtime, checkpointer=checkpointer)
+
+        try:
+            # Use astream for better interrupt handling
+            # ainvoke() can hang when interrupt_before is triggered
+            logger.info(f"[HITL] Starting graph execution with thread_id: {thread_id}")
+            final_state = None
+            async for event in langgraph_agent.astream(
+                agent_state, config=config, stream_mode="values"
+            ):
+                final_state = event
+
+            logger.info("[HITL] Graph stream completed, checking for interrupt...")
+
+            # Check if graph was interrupted (HITL)
+            snapshot = await langgraph_agent.aget_state(config)
+            if snapshot.next:
+                # Graph was interrupted before a node
+                pending_node = snapshot.next[0] if snapshot.next else None
+                logger.info(f"[HITL] Graph interrupted before node: {pending_node}")
+
+                # Extract HITL details based on pending node
+                hitl_result = self._extract_hitl_details(
+                    pending_node, snapshot.values, thread_id
+                )
+                if hitl_result:
+                    # Return partial results with HITL interrupt
+                    # Build answer from completed steps (final_answer is not set yet)
+                    answer = self._build_partial_answer(snapshot.values)
+                    _, contexts = self._extract_langgraph_results(snapshot.values)
+                    return answer, contexts, hitl_result
             else:
+                logger.info("[HITL] Graph completed without interruption")
+
+            # Normal completion - no interrupt
+            if final_state is None:
+                final_state = snapshot.values
+            return self._extract_langgraph_results(final_state) + (None,)
+
+        except Exception as e:
+            # Auto-recovery for stale/corrupted checkpoints
+            error_str = str(e).lower()
+            error_type = type(e).__name__
+
+            is_checkpoint_error = any(
+                [
+                    "unexpected end" in error_str,
+                    "eoferror" in error_type.lower(),
+                    "pickle" in error_str,
+                    "deserialization" in error_str,
+                    "corrupt" in error_str,
+                    "invalid" in error_str and "state" in error_str,
+                    "invalid memory alloc" in error_str,  # PostgreSQL blob corruption
+                    "keyerror" in error_type.lower(),  # Missing state keys
+                    "typeerror" in error_type.lower()
+                    and "state" in error_str,  # State type mismatch
+                ]
+            )
+
+            if is_checkpoint_error:
+                logger.warning(
+                    f"[CHECKPOINT_RECOVERY] Stale/corrupted checkpoint detected for "
+                    f"thread_id={thread_id}: {error_type}: {e}"
+                )
+                logger.info(
+                    "[CHECKPOINT_RECOVERY] Auto-recovering with fresh thread_id..."
+                )
+
+                # Generate new thread_id to bypass corrupted checkpoint
+                new_thread_id = f"recovery_{uuid.uuid4()}"
+                new_config = {"configurable": {"thread_id": new_thread_id}}
+
+                # Retry with fresh state
+                final_state = None
+                async for event in langgraph_agent.astream(
+                    agent_state, config=new_config, stream_mode="values"
+                ):
+                    final_state = event
+
+                # Check for HITL after recovery
+                snapshot = await langgraph_agent.aget_state(new_config)
+                if snapshot.next:
+                    pending_node = snapshot.next[0] if snapshot.next else None
+                    logger.info(
+                        f"[CHECKPOINT_RECOVERY] HITL interrupt after recovery: {pending_node}"
+                    )
+                    hitl_result = self._extract_hitl_details(
+                        pending_node, snapshot.values, new_thread_id
+                    )
+                    if hitl_result:
+                        answer = self._build_partial_answer(snapshot.values)
+                        _, contexts = self._extract_langgraph_results(snapshot.values)
+                        return answer, contexts, hitl_result
+
+                if final_state is None:
+                    final_state = snapshot.values
+                return self._extract_langgraph_results(final_state) + (None,)
+            else:
+                # Re-raise non-checkpoint errors
                 raise
+
+    def _extract_hitl_details(
+        self, pending_node: str, state: Dict[str, Any], thread_id: str
+    ) -> Optional[HITLInterruptResult]:
+        """
+        Extract HITL details based on the pending node.
+
+        Args:
+            pending_node: Name of the node that was about to execute
+            state: Current graph state
+            thread_id: Thread ID for resumption
+
+        Returns:
+            HITLInterruptResult if this is an HITL interrupt, None otherwise
+        """
+        # Map node names to action types
+        node_to_action = {
+            "tool_send_email": "send_email",
+            # Future: add more tools as needed
+            # "tool_download_file": "download_file",
+            # "tool_create_documents": "create_documents",
+        }
+
+        action = node_to_action.get(pending_node)
+        if not action:
+            return None
+
+        # Extract action-specific details
+        details = {}
+        if action == "send_email":
+            details = self._extract_send_email_details(state)
+
+        # Get previous step results
+        previous_steps = state.get("step_answers", [])
+
+        return HITLInterruptResult(
+            status="awaiting_confirmation",
+            action=action,
+            thread_id=thread_id,
+            details=details,
+            previous_steps=previous_steps,
+        )
+
+    def _extract_send_email_details(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Extract email details from state for confirmation UI.
+
+        Args:
+            state: Current graph state
+
+        Returns:
+            Dict with email details (recipient, subject, attachments, etc.)
+        """
+        plan = state.get("plan", [])
+        current_step = state.get("current_step", 0)
+        step_task = plan[current_step] if current_step < len(plan) else ""
+
+        # Extract file_ids from previous steps (download_file, create_documents results)
+        tool_results = state.get("tool_results", {})
+        available_file_ids = []
+        for step_results in tool_results.values():
+            if isinstance(step_results, list):
+                for result in step_results:
+                    if isinstance(result, dict) and "file_id" in result:
+                        available_file_ids.append(result["file_id"])
+
+        # Try to parse email address from task description
+        recipient = None
+        email_pattern = r"[\w\.-]+@[\w\.-]+\.\w+"
+        matches = re.findall(email_pattern, step_task)
+        if matches:
+            recipient = matches[0]
+
+        return {
+            "task": step_task,
+            "recipient": recipient,
+            "available_attachments": available_file_ids,
+            "step_answers": state.get("step_answers", []),
+        }
 
     def _build_langgraph_initial_state(self, query: str) -> Dict[str, Any]:
         """
@@ -365,6 +792,38 @@ class QuerySupervisor:
             all_contexts = retrieved_docs + tool_results_list
 
         return final_answer, all_contexts
+
+    def _build_partial_answer(self, state: Dict[str, Any]) -> str:
+        """
+        Build a partial answer from completed steps when graph is interrupted for HITL.
+
+        This is used when the graph pauses for human confirmation - we want to show
+        what has been accomplished so far, not "No answer generated".
+
+        Args:
+            state: Current graph state with step_answers
+
+        Returns:
+            Partial answer string summarizing completed steps
+        """
+        step_answers = state.get("step_answers", [])
+
+        if not step_answers:
+            # No steps completed yet - this shouldn't happen normally
+            return ""
+
+        # Build answer from completed steps
+        answer_parts = []
+        for step_ans in step_answers:
+            task = step_ans.get("question", f"Step {step_ans.get('step', 0)}")
+            answer = step_ans.get("answer", "")
+            if answer:
+                answer_parts.append(f"**{task}** {answer}")
+
+        if answer_parts:
+            return "\n\n".join(answer_parts)
+
+        return ""
 
 
 # ==================== FACTORY FUNCTION ====================

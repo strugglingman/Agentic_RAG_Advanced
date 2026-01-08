@@ -24,6 +24,7 @@ class RuntimeContext(TypedDict):
     openai_client: Optional[Any]  # OpenAI client instance
     dept_id: Optional[str]  # Department ID for filtering
     user_id: Optional[str]  # User ID for filtering
+    conversation_id: Optional[str]  # Conversation ID for file scoping
     request_data: Optional[dict]  # Original request payload
     conversation_history: Optional[List[dict]]  # Pre-loaded conversation history
     file_service: Optional[Any]  # FileService for file operations (async)
@@ -81,6 +82,7 @@ def create_runtime_context(
     openai_client: Optional[Any] = None,
     dept_id: Optional[str] = None,
     user_id: Optional[str] = None,
+    conversation_id: Optional[str] = None,
     request_data: Optional[dict] = None,
     conversation_history: Optional[List[dict]] = None,
     file_service: Optional[Any] = None,
@@ -95,6 +97,7 @@ def create_runtime_context(
         openai_client: OpenAI client instance
         dept_id: Department ID for filtering
         user_id: User ID for filtering
+        conversation_id: Conversation ID for file scoping
         request_data: Original request payload
         conversation_history: Pre-loaded conversation history
         file_service: FileService for file operations (async)
@@ -109,6 +112,7 @@ def create_runtime_context(
         openai_client=openai_client,
         dept_id=dept_id,
         user_id=user_id,
+        conversation_id=conversation_id,
         request_data=request_data,
         conversation_history=conversation_history or [],
         file_service=file_service,
@@ -164,6 +168,7 @@ def create_initial_state_with_context(
     openai_client: Optional[Any] = None,
     dept_id: Optional[str] = None,
     user_id: Optional[str] = None,
+    conversation_id: Optional[str] = None,
     request_data: Optional[dict] = None,
     conversation_history: Optional[List[dict]] = None,
     file_service: Optional[Any] = None,
@@ -181,6 +186,7 @@ def create_initial_state_with_context(
         openai_client: OpenAI client instance
         dept_id: Department ID for filtering
         user_id: User ID for filtering
+        conversation_id: Conversation ID for file scoping
         request_data: Original request payload
         conversation_history: Pre-loaded conversation history
         file_service: FileService for file operations (async)
@@ -196,6 +202,7 @@ def create_initial_state_with_context(
         openai_client=openai_client,
         dept_id=dept_id,
         user_id=user_id,
+        conversation_id=conversation_id,
         request_data=request_data,
         conversation_history=conversation_history,
         file_service=file_service,

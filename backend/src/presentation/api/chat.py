@@ -78,6 +78,26 @@ class ChatMessageResponse(BaseModel):
     contexts: list[dict[str, Any]]
 
 
+class HITLInterruptResponse(BaseModel):
+    """Response when workflow is interrupted for human confirmation."""
+
+    status: str  # "awaiting_confirmation"
+    action: str  # "send_email", etc.
+    thread_id: str  # Thread ID for resumption
+    details: dict[str, Any]  # Action-specific details
+    previous_steps: list[dict[str, Any]]  # Completed step results
+    partial_answer: str  # Answer from completed steps
+    conversation_id: str
+
+
+class ResumeWorkflowRequest(BaseModel):
+    """Request to resume an interrupted workflow."""
+
+    thread_id: str
+    confirmed: bool  # True to proceed, False to cancel
+    conversation_id: Optional[str] = None
+
+
 # ==================== ROUTER ====================
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -146,7 +166,39 @@ async def chat_agent(
         # Execute handler
         result: SendMessageResult = await handler.execute(command)
 
-        # Stream the response
+        # Check for HITL interrupt
+        if result.requires_confirmation:
+            hitl = result.hitl_interrupt
+            hitl_response = {
+                "status": "awaiting_confirmation",
+                "action": hitl.action,
+                "thread_id": hitl.thread_id,
+                "details": hitl.details,
+                "previous_steps": hitl.previous_steps,
+                "partial_answer": result.answer,
+                "conversation_id": result.conversation_id.value,
+            }
+
+            # Stream partial answer + HITL marker
+            def generate_hitl():
+                # Stream partial answer from completed steps
+                for chunk in stream_text_smart(result.answer):
+                    yield chunk
+                # Append HITL interrupt info
+                yield f"\n__HITL__:{json.dumps(hitl_response)}"
+                # Append context from completed steps
+                yield f"\n__CONTEXT__:{json.dumps(result.contexts)}"
+
+            return StreamingResponse(
+                generate_hitl(),
+                media_type="text/plain",
+                headers={
+                    "X-Conversation-Id": result.conversation_id.value,
+                    "X-HITL-Required": "true",
+                },
+            )
+
+        # Normal response - stream the answer
         def generate():
             # Stream answer in chunks
             for chunk in stream_text_smart(result.answer):
@@ -244,4 +296,93 @@ async def chat_simple(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Chat error: {str(e)}",
+        )
+
+
+@router.post("/resume")
+@limiter.limit("30/minute;1000/day")
+@inject
+async def resume_workflow(
+    request: Request,
+    body: ResumeWorkflowRequest,
+    handler: FromDishka[SendMessageHandler],
+    current_user: AuthUser = Depends(get_current_user),
+):
+    """
+    Resume an interrupted workflow after human confirmation.
+
+    Called when user confirms or cancels a pending action (e.g., send_email).
+
+    Request body:
+    {
+        "thread_id": "uuid",
+        "confirmed": true/false,
+        "conversation_id": "uuid" (optional)
+    }
+
+    Returns streaming response with final answer.
+    """
+    try:
+        # Build context for resume (reuse handler's dependencies)
+        agent_context = {
+            "vector_db": handler.vector_db,
+            "dept_id": str(current_user.dept),
+            "user_id": str(current_user.email),
+            "conversation_id": body.conversation_id or "",
+            "conversation_history": [],  # Resume doesn't need history - state is in checkpoint
+            "file_service": handler.file_service,
+            "available_files": [],
+            "attachment_file_ids": [],
+        }
+
+        # Resume the workflow
+        query_result = await handler.query_supervisor.resume_workflow(
+            thread_id=body.thread_id,
+            context=agent_context,
+            confirmed=body.confirmed,
+        )
+
+        # Check for another HITL interrupt (unlikely but possible)
+        if query_result.hitl_interrupt:
+            hitl = query_result.hitl_interrupt
+            hitl_response = {
+                "status": "awaiting_confirmation",
+                "action": hitl.action,
+                "thread_id": hitl.thread_id,
+                "details": hitl.details,
+                "previous_steps": hitl.previous_steps,
+                "partial_answer": query_result.answer,
+                "conversation_id": body.conversation_id or "",
+            }
+
+            def generate_hitl():
+                for chunk in stream_text_smart(query_result.answer):
+                    yield chunk
+                yield f"\n__HITL__:{json.dumps(hitl_response)}"
+                yield f"\n__CONTEXT__:{json.dumps(query_result.contexts)}"
+
+            return StreamingResponse(
+                generate_hitl(),
+                media_type="text/plain",
+                headers={"X-HITL-Required": "true"},
+            )
+
+        # Normal completion
+        def generate():
+            for chunk in stream_text_smart(query_result.answer):
+                yield chunk
+            yield f"\n__CONTEXT__:{json.dumps(query_result.contexts)}"
+
+        return StreamingResponse(
+            generate(),
+            media_type="text/plain",
+        )
+
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except Exception as e:
+        logger.error(f"[HITL] Resume workflow error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Resume error: {str(e)}",
         )

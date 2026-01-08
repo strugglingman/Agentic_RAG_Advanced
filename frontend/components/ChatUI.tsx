@@ -15,6 +15,15 @@ type Context = { bm25: number; chunk: string; chunk_id: string; dept_id: string;
   ext: string; file_for_user: boolean; file_id: string; hybrid: number; page: number;
   rerank: number; sem_sim: number; size_kb: number; source: string; tags: string;
   upload_at: string; uploaded_at_ts: number; user_id: string};
+type HITLInterrupt = {
+  status: string;
+  action: string;
+  thread_id: string;
+  details: { task?: string; recipient?: string; available_attachments?: string[] };
+  previous_steps: Array<{ step?: number; question?: string; answer?: string }>;
+  partial_answer: string;
+  conversation_id: string;
+};
   
 const cls = (...s: Array<string | false | null | undefined>) => s.filter(Boolean).join(' ');
 const tstr = (msg: Msg) => {
@@ -45,6 +54,8 @@ export default function ChatPage() {
   const [language, setLanguage] = useState('en-US');
   const [attachments, setAttachments] = useState<File[]>([]);
   const [isDragging, setIsDragging] = useState(false);
+  const [hitlInterrupt, setHitlInterrupt] = useState<HITLInterrupt | null>(null);
+  const [isResuming, setIsResuming] = useState(false);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -154,6 +165,27 @@ export default function ChatPage() {
     }
   }
 
+  async function* streamResume(body: { thread_id: string; confirmed: boolean; conversation_id?: string }) {
+    const res = await fetch('/api/chat/resume', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(async () => ({ error: await res.text() }));
+      throw new Error(err.error || `HTTP ${res.status}`);
+    }
+    if (!res.body) throw new Error('No response body');
+
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      yield dec.decode(value, { stream: true });
+    }
+  }
+
   async function onSend() {
     if ((!input.trim() && attachments.length === 0) || streamingRef.current) return;
     const { flagged, error } = looksLikeInjection(input);
@@ -229,19 +261,20 @@ export default function ChatPage() {
     };
 
     let startContext = false;
+    let startHitl = false;
     let contextStr = '';
+    let hitlStr = '';
     try {
       setContexts([]);
+      setHitlInterrupt(null);
       for await (const chunk of streamChat(payload)) {
-        // Check if this chunk contains the context marker
-        if (chunk.includes('__CONTEXT__:')) {
-          startContext = true;
-          // Split the chunk: text before marker goes to message, rest goes to context
-          const contextIndex = chunk.indexOf('__CONTEXT__:');
-          const textPart = chunk.substring(0, contextIndex);
-          const contextPart = chunk.substring(contextIndex);
+        // Check for HITL marker first
+        if (chunk.includes('__HITL__:')) {
+          startHitl = true;
+          const hitlIndex = chunk.indexOf('__HITL__:');
+          const textPart = chunk.substring(0, hitlIndex);
+          const hitlPart = chunk.substring(hitlIndex);
 
-          // Add text part to message if it exists
           if (textPart) {
             setMessages(curr => {
               const copy = [...curr];
@@ -253,14 +286,38 @@ export default function ChatPage() {
               return copy;
             });
           }
+          hitlStr += hitlPart;
+        } else if (startHitl && !startContext) {
+          // Check if context marker appears in HITL mode
+          if (chunk.includes('__CONTEXT__:')) {
+            startContext = true;
+            const contextIndex = chunk.indexOf('__CONTEXT__:');
+            hitlStr += chunk.substring(0, contextIndex);
+            contextStr += chunk.substring(contextIndex);
+          } else {
+            hitlStr += chunk;
+          }
+        } else if (chunk.includes('__CONTEXT__:')) {
+          startContext = true;
+          const contextIndex = chunk.indexOf('__CONTEXT__:');
+          const textPart = chunk.substring(0, contextIndex);
+          const contextPart = chunk.substring(contextIndex);
 
-          // Start accumulating context
+          if (textPart) {
+            setMessages(curr => {
+              const copy = [...curr];
+              if (!copy.length) return copy;
+              copy[copy.length - 1] = {
+                ...copy[copy.length - 1],
+                content: copy[copy.length - 1].content + textPart,
+              };
+              return copy;
+            });
+          }
           contextStr += contextPart;
         } else if (startContext) {
-          // Already in context mode, add to context string
           contextStr += chunk;
         } else {
-          // Normal message chunk, add to message
           setMessages(curr => {
             const copy = [...curr];
             if (!copy.length) return copy;
@@ -280,6 +337,22 @@ export default function ChatPage() {
         return copy;
       });
     } finally {
+      // Parse HITL interrupt if present
+      if (hitlStr) {
+        hitlStr = hitlStr.substring(hitlStr.indexOf('__HITL__:') + '__HITL__:'.length).trim();
+        // Remove any trailing context marker from hitlStr
+        if (hitlStr.includes('__CONTEXT__:')) {
+          hitlStr = hitlStr.substring(0, hitlStr.indexOf('__CONTEXT__:')).trim();
+        }
+        try {
+          const hitlData = JSON.parse(hitlStr) as HITLInterrupt;
+          setHitlInterrupt(hitlData);
+          console.log('[HITL] Interrupt received:', hitlData);
+        } catch (e) {
+          console.error('Failed to parse HITL JSON:', e);
+        }
+      }
+
       if (contextStr) {
         contextStr = contextStr.substring(contextStr.indexOf('__CONTEXT__:') + '__CONTEXT__:'.length).trim();
         try {
@@ -293,7 +366,6 @@ export default function ChatPage() {
       }
 
       if (selectedConversation == null) {
-        // After first message, refresh conversation list
         try {
           const res = await fetch('/api/conversations');
           if (res.ok) {
@@ -329,6 +401,139 @@ export default function ChatPage() {
       recognition.stop();
     }
   };
+
+  // HITL handlers
+  const handleHitlResponse = async (confirmed: boolean) => {
+    if (!hitlInterrupt || isResuming) return;
+
+    setIsResuming(true);
+    streamingRef.current = true;
+    setBusy(true);
+
+    // Add a placeholder message for the resume response
+    const ts = Date.now();
+    setMessages(curr => [...curr, { role: 'assistant', content: '', ts }]);
+
+    let startContext = false;
+    let startHitl = false;
+    let contextStr = '';
+    let hitlStr = '';
+
+    try {
+      setContexts([]);
+      const resumePayload = {
+        thread_id: hitlInterrupt.thread_id,
+        confirmed,
+        conversation_id: hitlInterrupt.conversation_id || selectedConversation?.id,
+      };
+
+      for await (const chunk of streamResume(resumePayload)) {
+        // Check for HITL marker first (in case of chained confirmations)
+        if (chunk.includes('__HITL__:')) {
+          startHitl = true;
+          const hitlIndex = chunk.indexOf('__HITL__:');
+          const textPart = chunk.substring(0, hitlIndex);
+          const hitlPart = chunk.substring(hitlIndex);
+
+          if (textPart) {
+            setMessages(curr => {
+              const copy = [...curr];
+              if (!copy.length) return copy;
+              copy[copy.length - 1] = {
+                ...copy[copy.length - 1],
+                content: copy[copy.length - 1].content + textPart,
+              };
+              return copy;
+            });
+          }
+          hitlStr += hitlPart;
+        } else if (startHitl && !startContext) {
+          if (chunk.includes('__CONTEXT__:')) {
+            startContext = true;
+            const contextIndex = chunk.indexOf('__CONTEXT__:');
+            hitlStr += chunk.substring(0, contextIndex);
+            contextStr += chunk.substring(contextIndex);
+          } else {
+            hitlStr += chunk;
+          }
+        } else if (chunk.includes('__CONTEXT__:')) {
+          startContext = true;
+          const contextIndex = chunk.indexOf('__CONTEXT__:');
+          const textPart = chunk.substring(0, contextIndex);
+          const contextPart = chunk.substring(contextIndex);
+
+          if (textPart) {
+            setMessages(curr => {
+              const copy = [...curr];
+              if (!copy.length) return copy;
+              copy[copy.length - 1] = {
+                ...copy[copy.length - 1],
+                content: copy[copy.length - 1].content + textPart,
+              };
+              return copy;
+            });
+          }
+          contextStr += contextPart;
+        } else if (startContext) {
+          contextStr += chunk;
+        } else {
+          setMessages(curr => {
+            const copy = [...curr];
+            if (!copy.length) return copy;
+            copy[copy.length - 1] = {
+              ...copy[copy.length - 1],
+              content: copy[copy.length - 1].content + chunk,
+            };
+            return copy;
+          });
+        }
+      }
+    } catch (e: any) {
+      setMessages(curr => {
+        const copy = [...curr];
+        if (!copy.length) return copy;
+        copy[copy.length - 1] = { role: 'assistant', content: `Resume error: ${e?.message || 'Stream error'}`, ts: Date.now() };
+        return copy;
+      });
+    } finally {
+      // Parse HITL interrupt if present (chained confirmation)
+      if (hitlStr) {
+        hitlStr = hitlStr.substring(hitlStr.indexOf('__HITL__:') + '__HITL__:'.length).trim();
+        if (hitlStr.includes('__CONTEXT__:')) {
+          hitlStr = hitlStr.substring(0, hitlStr.indexOf('__CONTEXT__:')).trim();
+        }
+        try {
+          const hitlData = JSON.parse(hitlStr) as HITLInterrupt;
+          setHitlInterrupt(hitlData);
+          console.log('[HITL] Chained interrupt received:', hitlData);
+        } catch (e) {
+          console.error('Failed to parse HITL JSON:', e);
+          setHitlInterrupt(null);
+        }
+      } else {
+        setHitlInterrupt(null);
+      }
+
+      if (contextStr) {
+        contextStr = contextStr.substring(contextStr.indexOf('__CONTEXT__:') + '__CONTEXT__:'.length).trim();
+        try {
+          const contextRaw = JSON.parse(contextStr);
+          const contextArr = Array.isArray(contextRaw) ? contextRaw : [];
+          const isContext = (o: any): o is Context => o && typeof o === 'object' && 'chunk' in o && 'source' in o && 'page' in o;
+          setContexts(contextArr.filter(isContext));
+        } catch (e) {
+          console.error('Failed to parse context JSON:', e);
+        }
+      }
+
+      streamingRef.current = false;
+      setBusy(false);
+      setIsResuming(false);
+    }
+  };
+
+  const handleHitlConfirm = () => handleHitlResponse(true);
+  const handleHitlCancel = () => handleHitlResponse(false);
 
   // File upload handlers
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -562,6 +767,89 @@ export default function ChatPage() {
                     ))}
                   </div>
                 )}
+              </div>
+            )}
+            {/* HITL Confirmation Dialog */}
+            {hitlInterrupt && !busy && (
+              <div className="mt-6 rounded-xl border-2 border-amber-400 bg-amber-50 p-4 shadow-md">
+                <div className="flex items-start gap-3">
+                  <div className="flex-shrink-0">
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-amber-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+                      <line x1="12" y1="9" x2="12" y2="13" />
+                      <line x1="12" y1="17" x2="12.01" y2="17" />
+                    </svg>
+                  </div>
+                  <div className="flex-1">
+                    <h3 className="text-sm font-semibold text-amber-800">Action Confirmation Required</h3>
+                    <p className="mt-1 text-sm text-amber-700">
+                      {hitlInterrupt.action === 'send_email' ? 'The assistant wants to send an email.' : `Action: ${hitlInterrupt.action}`}
+                    </p>
+                    {hitlInterrupt.details && (
+                      <div className="mt-3 rounded-lg bg-white p-3 border border-amber-200">
+                        {hitlInterrupt.details.recipient && (
+                          <div className="text-sm">
+                            <span className="font-medium text-neutral-700">To: </span>
+                            <span className="text-neutral-600">{hitlInterrupt.details.recipient}</span>
+                          </div>
+                        )}
+                        {hitlInterrupt.details.task && (
+                          <div className="mt-1 text-sm">
+                            <span className="font-medium text-neutral-700">Task: </span>
+                            <span className="text-neutral-600">{hitlInterrupt.details.task}</span>
+                          </div>
+                        )}
+                        {hitlInterrupt.details.available_attachments && hitlInterrupt.details.available_attachments.length > 0 && (
+                          <div className="mt-2">
+                            <span className="text-sm font-medium text-neutral-700">Attachments:</span>
+                            <ul className="mt-1 list-disc list-inside text-sm text-neutral-600">
+                              {hitlInterrupt.details.available_attachments.map((att, idx) => (
+                                <li key={idx}>{att}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    <div className="mt-4 flex gap-3">
+                      <button
+                        type="button"
+                        onClick={handleHitlConfirm}
+                        disabled={isResuming}
+                        className="px-4 py-2 rounded-lg bg-green-600 text-white text-sm font-medium hover:bg-green-700 disabled:opacity-50 transition flex items-center gap-2"
+                      >
+                        {isResuming ? (
+                          <>
+                            <svg className="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                            </svg>
+                            <span>Processing...</span>
+                          </>
+                        ) : (
+                          <>
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                              <polyline points="20 6 9 17 4 12" />
+                            </svg>
+                            <span>Confirm & Send</span>
+                          </>
+                        )}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleHitlCancel}
+                        disabled={isResuming}
+                        className="px-4 py-2 rounded-lg bg-neutral-200 text-neutral-700 text-sm font-medium hover:bg-neutral-300 disabled:opacity-50 transition flex items-center gap-2"
+                      >
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <line x1="18" y1="6" x2="6" y2="18" />
+                          <line x1="6" y1="6" x2="18" y2="18" />
+                        </svg>
+                        <span>Cancel</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
               </div>
             )}
             {busy && (

@@ -86,10 +86,26 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class HITLInterruptInfo:
+    """Information about a pending HITL action requiring confirmation."""
+
+    action: str  # "send_email", etc.
+    thread_id: str  # Thread ID for resumption
+    details: dict[str, Any]  # Action-specific details for UI
+    previous_steps: list[dict[str, Any]]  # Completed step results
+
+
+@dataclass
 class SendMessageResult:
     answer: str
     contexts: list[dict[str, Any]]
     conversation_id: ConversationId
+    hitl_interrupt: Optional[HITLInterruptInfo] = None
+
+    @property
+    def requires_confirmation(self) -> bool:
+        """Check if this result requires human confirmation."""
+        return self.hitl_interrupt is not None
 
 
 @dataclass(frozen=True)
@@ -175,7 +191,7 @@ class SendMessageHandler(CommandHandler[SendMessageResult]):
             conversation_history=conversation_history,
         )
         logger.debug(
-            f"********************************available_files count: {len(available_files)} and attachment_file_ids count: {len(attachment_file_ids)}********************************"
+            f"&&&&&&&&&&&&&&&&&&&&&&&[SendMessage] available_files: {[f['id'] for f in available_files]}, attachments: {[a['file_id'] for a in attachment_file_ids]}"
         )
 
         agent_context = {
@@ -194,11 +210,25 @@ class SendMessageHandler(CommandHandler[SendMessageResult]):
             "attachment_file_ids": attachment_file_ids,
             "file_service": self.file_service,
         }
-        final_answer, contexts = await self.query_supervisor.process_query(
-            query, agent_context
-        )
+        query_result = await self.query_supervisor.process_query(query, agent_context)
+
+        # Check if HITL interrupt occurred
+        hitl_interrupt_info = None
+        if query_result.hitl_interrupt:
+            hitl = query_result.hitl_interrupt
+            hitl_interrupt_info = HITLInterruptInfo(
+                action=hitl.action,
+                thread_id=hitl.thread_id,
+                details=hitl.details,
+                previous_steps=hitl.previous_steps,
+            )
+            logger.info(
+                f"[HITL] Workflow interrupted for action: {hitl.action}, "
+                f"thread_id: {hitl.thread_id}"
+            )
+
         # Ensure all URLs in the answer are formatted as clickable markdown links
-        final_answer = format_urls_as_markdown(final_answer)
+        final_answer = format_urls_as_markdown(query_result.answer)
 
         assistant_message = Message.create(
             conversation_id=ConversationId(conversation_id),
@@ -209,8 +239,9 @@ class SendMessageHandler(CommandHandler[SendMessageResult]):
 
         return SendMessageResult(
             answer=final_answer,
-            contexts=contexts,
+            contexts=query_result.contexts,
             conversation_id=ConversationId(conversation_id),
+            hitl_interrupt=hitl_interrupt_info,
         )
 
     async def _process_attachments(
@@ -376,14 +407,20 @@ CRITICAL! Answer ONLY with: yes or no"""
                 limit=Config.FILE_DISCOVERY_INDEXED_LIMIT,
             )
 
-            # Get conversation files (chat attachments, recent downloads, created docs)
-            conv_files = await self.file_service.list_files(
-                user_email=user_email,
-                conversation_id=conversation_id,
-                dept_id=dept_id,
-                limit=Config.FILE_DISCOVERY_CONVERSATION_LIMIT,
-            )
-            # Combine: all indexed files + conversation files
+            # Get conversation-specific files (chat attachments, downloads, created docs)
+            # These are scoped to the current conversation only (no dept_id)
+            # Fetch each category separately to avoid getting uploaded files again
+            conv_files = []
+            for category in ["downloaded", "created", "chat"]:
+                category_files = await self.file_service.list_files(
+                    user_email=user_email,
+                    conversation_id=conversation_id,
+                    category=category,
+                    limit=Config.FILE_DISCOVERY_CONVERSATION_LIMIT,
+                )
+                conv_files.extend(category_files)
+
+            # Combine: all indexed files + conversation files (dedupe by id)
             all_files = {f["id"]: f for f in indexed_files}
             for f in conv_files:
                 all_files[f["id"]] = f

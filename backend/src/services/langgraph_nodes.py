@@ -32,6 +32,7 @@ from src.services.llm_client import (
     chat_completion_structured,
     chat_completion_with_tools,
 )
+from src.services.langgraph_routing import semantic_route_query
 from src.utils.safety import enforce_citations
 from src.utils.sanitizer import sanitize_text
 from src.config.settings import Config
@@ -512,16 +513,61 @@ def create_plan_node(
 
         query = state.get("query", "")
 
+        # ==================== SEMANTIC ROUTING (FAST PATH) ====================
+        # Try semantic router first for high-confidence deterministic routing
+        # This skips the LLM call entirely for obvious cases like travel queries
+        semantic_route, confidence = semantic_route_query(
+            query, confidence_threshold=0.6
+        )
+        if semantic_route and confidence >= 0.6:
+            # High confidence - use semantic route directly, skip LLM planning
+            logger.info(
+                f"[PLAN] Semantic router matched: route={semantic_route}, confidence={confidence:.3f}"
+            )
+
+            # Map semantic route to plan format
+            if semantic_route == "web_search":
+                plans = [f"web_search: {query}"]
+            elif semantic_route == "retrieve":
+                plans = [f"retrieve: {query}"]
+            elif semantic_route == "direct_answer":
+                plans = [f"direct_answer: {query}"]
+            elif semantic_route == "calculator":
+                plans = [f"calculator: {query}"]
+            else:
+                plans = [f"{semantic_route}: {query}"]
+
+            return {
+                "plan": plans,
+                "current_step": 0,
+                "iteration_count": state.get("iteration_count", 0) + 1,
+                "messages": state.get("messages", [])
+                + [
+                    AIMessage(
+                        content=f"[Semantic Router] Plan: {plans[0]} (confidence: {confidence:.2f})"
+                    )
+                ],
+            }
+
+        # ==================== LLM PLANNING (FALLBACK) ====================
+        # Semantic router didn't match with high confidence, use LLM planning
+        logger.info(
+            f"[PLAN] Semantic router not used or low confidence ({confidence:.3f}), using LLM planning"
+        )
+
         # Build conversation context summary for reference resolution
         conversation_history = runtime.get("conversation_history", [])
         conversation_context = ""
         if conversation_history:
             # Build a concise summary of recent conversation for context
-            recent_messages = conversation_history[-10:]  # Last 10 messages max
+            recent_messages = conversation_history[-20:]  # Last 10 messages max
+            logger.debug(
+                f"!!!!!!!!!!!!!!!!!!![PLAN] Building conversation history: {[msg['content'][:100] for msg in recent_messages]}"
+            )
             context_parts = []
             for msg in recent_messages:
                 role = msg.get("role", "user")
-                content = msg.get("content", "")[:500]  # Truncate long messages
+                content = msg.get("content", "")[:1500]  # Truncate long messages
                 context_parts.append(f"{role}: {content}")
             conversation_context = "\n".join(context_parts)
 
@@ -588,7 +634,7 @@ def create_plan_node(
                         "properties": {
                             "steps": {
                                 "type": "array",
-                                "description": "List of execution steps. One step per topic is usually sufficient.",
+                                "description": "List of execution steps. Use multiple steps when user requests chained actions (e.g., 'search and download', 'create and email').",
                                 "items": {
                                     "type": "object",
                                     "properties": {
@@ -1491,9 +1537,7 @@ def create_tool_download_file_node(
                 "openai_client": client,
                 "request_data": runtime.get("request_data") or {},
                 "file_service": runtime.get("file_service"),
-                "conversation_id": (runtime.get("request_data") or {}).get(
-                    "conversation_id"
-                ),
+                "conversation_id": runtime.get("conversation_id"),
             }
 
             result = await execute_tool_call(tool_name, tool_args, context)
@@ -1706,9 +1750,7 @@ def create_tool_create_documents_node(
                 "openai_client": client,
                 "request_data": runtime.get("request_data") or {},
                 "file_service": runtime.get("file_service"),
-                "conversation_id": (runtime.get("request_data") or {}).get(
-                    "conversation_id"
-                ),
+                "conversation_id": runtime.get("conversation_id"),
             }
 
             result = await execute_tool_call(tool_name, tool_args, context)
@@ -1893,7 +1935,7 @@ def create_tool_send_email_node(
             conversation_history = runtime.get("conversation_history", [])
             if conversation_history:
                 # Add recent history for context (last 10 messages max)
-                recent_history = conversation_history[-10:]
+                recent_history = conversation_history[-20:]
                 for h in recent_history:
                     messages.append(
                         {"role": h.get("role", "user"), "content": h.get("content", "")}
