@@ -28,7 +28,7 @@ class Config:
     # ==============================================================================
     # OpenAI API Settings
     # ==============================================================================
-    OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
+    OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
     OPENAI_SIMPLE_MODEL = os.getenv(
         "OPENAI_SIMPLE_MODEL", "gpt-4o-mini"
     )  # Fast and cheap for simple, classification questions.

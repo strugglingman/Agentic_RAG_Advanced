@@ -49,20 +49,7 @@ class RagasEvaluator:
             self._langsmith_client = Client(api_key=Config.LANGCHAIN_API_KEY)
 
     def setup_metrics(self):
-        """
-        Initialize Ragas metrics with configured LLM.
-
-        TODO Steps:
-        1. Import: from langchain_openai import ChatOpenAI, OpenAIEmbeddings
-        2. Create LLM wrapper:
-           self._llm = ChatOpenAI(model=self.config.llm_model)
-        3. Create embeddings wrapper:
-           self._embeddings = OpenAIEmbeddings(model=self.config.embedding_model)
-        4. Store metrics list (you can get from RAGMetrics.get_ragas_metrics() or use defaults)
-           self._metrics = [faithfulness, answer_relevancy, context_precision, context_recall]
-
-        NOTE: Ragas metrics will automatically use these LangChain wrappers during evaluation
-        """
+        """Initialize Ragas metrics with configured LLM and embeddings."""
         self._llm = ChatOpenAI(
             model=self.config.llm_model, temperature=0, api_key=Config.OPENAI_KEY
         )
@@ -81,21 +68,6 @@ class RagasEvaluator:
 
         Returns:
             dict with metric scores (faithfulness, answer_relevancy, etc.)
-
-        TODO Steps:
-        1. Call self.setup_metrics() if not already done
-        2. Convert dataset to HuggingFace Dataset format if needed
-           (Use dataset.to_ragas_dataset() if it's an EvalDataset)
-        3. Call ragas.evaluate():
-           result = evaluate(
-               dataset=hf_dataset,
-               metrics=self._metrics,
-               llm=self._llm,
-               embeddings=self._embeddings
-           )
-        4. Return result
-
-        IMPORTANT: Dataset must have exact column names Ragas expects!
         """
         if self._metrics is None or self._llm is None or self._embeddings is None:
             self.setup_metrics()
@@ -131,21 +103,6 @@ class RagasEvaluator:
 
         Returns:
             dict with metric scores for this single sample
-
-        TODO Steps:
-        1. Import: from datasets import Dataset
-        2. Create single-row HuggingFace Dataset:
-           data = {
-               'question': [question],
-               'answer': [answer],
-               'contexts': [contexts],  # Must be list of lists!
-               'ground_truth': [ground_truth]
-           }
-           single_dataset = Dataset.from_dict(data)
-        3. Call self.evaluate_dataset(single_dataset)
-        4. Return the scores dict
-
-        NOTE: contexts must be [["doc1", "doc2"]] not ["doc1", "doc2"]!
         """
         data = {
             "question": [question],
@@ -164,22 +121,6 @@ class RagasEvaluator:
         Args:
             results: Dict or DataFrame with evaluation results
             output_path: Path to save results (supports .json, .csv)
-
-        TODO Steps:
-        1. Create output directory if it doesn't exist: Path(output_path).parent.mkdir()
-        2. Check file extension:
-           - .json: Save as JSON with json.dump()
-           - .csv: Convert to pandas DataFrame and use df.to_csv()
-        3. Include metadata: timestamp, config settings, metric averages
-        4. Print confirmation message
-
-        Example JSON structure:
-        {
-            "config": {"llm_model": "gpt-4o-mini", ...},
-            "timestamp": "2024-01-01T12:00:00",
-            "results": [...],
-            "summary": {"avg_faithfulness": 0.85, ...}
-        }
         """
         try:
             Path(output_path).parent.mkdir(parents=True, exist_ok=True)

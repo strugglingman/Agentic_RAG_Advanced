@@ -51,54 +51,22 @@ class RAGMetrics:
         self._custom_metrics: dict[str, Callable] = {}
 
     def enable_metric(self, metric: MetricType):
-        """
-        Enable a specific metric.
-
-        TODO:
-        1. Check if metric is already in self._enabled_metrics
-        2. If not, append it to the list
-        """
+        """Enable a specific metric."""
         if metric not in self._enabled_metrics:
             self._enabled_metrics.append(metric)
 
     def disable_metric(self, metric: MetricType):
-        """
-        Disable a specific metric.
-
-        TODO:
-        1. Check if metric is in self._enabled_metrics
-        2. If yes, remove it from the list
-        """
+        """Disable a specific metric."""
         if metric in self._enabled_metrics:
             self._enabled_metrics.remove(metric)
 
     def add_custom_metric(self, name: str, fn: Callable):
-        """
-        Add a custom evaluation metric.
-
-        TODO:
-        1. Add the callable to self._custom_metrics dict with name as key
-        2. This is for metrics not included in Ragas by default
-        """
+        """Add a custom evaluation metric."""
         if name not in self._custom_metrics:
             self._custom_metrics[name] = fn
 
     def get_ragas_metrics(self) -> list:
-        """
-        Get list of Ragas metric objects for evaluation.
-
-        TODO: This is the MOST IMPORTANT method!
-        1. Import the actual ragas metric objects at the top of file
-        2. Create a mapping dict: MetricType -> ragas metric object
-           Example: {MetricType.FAITHFULNESS: faithfulness, ...}
-        3. Loop through self._enabled_metrics
-        4. For each enabled metric, get the corresponding ragas object from mapping
-        5. Return a list of ragas metric objects (not MetricType enums!)
-
-        Example return: [faithfulness, answer_relevancy, context_precision]
-
-        NOTE: ragas.evaluate() expects actual metric objects, not strings or enums!
-        """
+        """Get list of Ragas metric objects for evaluation."""
         enabled_ragas_metrics = []
         for metric in self._enabled_metrics:
             if metric == MetricType.FAITHFULNESS:

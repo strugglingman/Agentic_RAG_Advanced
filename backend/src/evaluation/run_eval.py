@@ -8,8 +8,10 @@ Usage:
 import argparse
 from pathlib import Path
 
-from .ragas_evaluator import RagasEvaluator, EvalConfig
-from .dataset import EvalDataset
+from src.evaluation.ragas_evaluator import RagasEvaluator, EvalConfig
+from src.evaluation.dataset import EvalDataset
+from src.config.settings import Config
+
 
 # from .metrics import RAGMetrics, MetricType
 
@@ -23,7 +25,7 @@ def parse_args():
         "--output", type=str, default="eval_results", help="Output directory"
     )
     parser.add_argument(
-        "--model", type=str, default="gpt-5.2", help="LLM for evaluation"
+        "--model", type=str, default=Config.OPENAI_MODEL, help="LLM for evaluation"
     )
     parser.add_argument(
         "--metrics", type=str, default="all", help="Comma-separated metrics or 'all'"
