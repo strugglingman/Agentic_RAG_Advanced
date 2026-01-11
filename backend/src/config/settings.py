@@ -155,8 +155,8 @@ class Config:
     AVG_HYBRID = float(os.getenv("AVG_HYBRID", "0.1"))
     MIN_SEM_SIM = float(os.getenv("MIN_SEM_SIM", "0.35"))
     AVG_SEM_SIM = float(os.getenv("AVG_SEM_SIM", "0.25"))
-    MIN_RERANK = float(os.getenv("MIN_RERANK", "0.45"))
-    AVG_RERANK = float(os.getenv("AVG_RERANK", "0.35"))
+    MIN_RERANK = float(os.getenv("MIN_RERANK", "0.3"))
+    AVG_RERANK = float(os.getenv("AVG_RERANK", "0.15"))
     ENFORCE_CITATIONS = os.getenv("ENFORCE_CITATIONS", "true").lower() in {
         "1",
         "true",
@@ -167,8 +167,11 @@ class Config:
     # ==============================================================================
     # Document Processing & Chunking
     # ==============================================================================
-    SENT_TARGET = int(os.getenv("SENT_TARGET", "1600"))
-    SENT_OVERLAP = int(os.getenv("SENT_OVERLAP", "250"))
+    CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "600"))
+    CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "120"))
+    CHUNKING_STRATEGY = os.getenv(
+        "CHUNKING_STRATEGY", "recursive"
+    )  # "recursive" or "semantic"
     TEXT_MAX = int(os.getenv("TEXT_MAX", "-1"))
 
     # ==============================================================================

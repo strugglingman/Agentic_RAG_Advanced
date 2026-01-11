@@ -12,6 +12,7 @@ import logging
 from typing import TYPE_CHECKING, Optional
 from dataclasses import dataclass
 from src.services.document_processor import read_text, make_chunks
+from src.services.langchain_processor import make_chunks_langchain
 from src.services.file_manager import FileManager
 from src.domain.entities.file_registry import FileRegistry
 from src.config.settings import Config
@@ -79,7 +80,9 @@ def ingest_one(
 
     # Chunking - now returns list of (page_num, chunk_text) tuples
     chunks_with_pages = make_chunks(
-        pages_text, target=Config.SENT_TARGET, overlap=Config.SENT_OVERLAP
+        pages_text,
+        target=Config.CHUNK_SIZE,
+        overlap=Config.CHUNK_OVERLAP,
     )
     filename = info.get("filename", os.path.basename(file_path))
 
@@ -253,7 +256,12 @@ def ingest_file(
         )
 
     # Chunking - returns list of (page_num, chunk_text) tuples
-    chunks_with_pages = make_chunks(pages_text)
+    chunks_with_pages = make_chunks_langchain(
+        pages_text,
+        chunk_size=Config.CHUNK_SIZE,
+        chunk_overlap=Config.CHUNK_OVERLAP,
+        strategy=Config.CHUNKING_STRATEGY,
+    )
 
     # Build chunk IDs, documents, and metadata for ChromaDB
     ids, docs, metas = [], [], []

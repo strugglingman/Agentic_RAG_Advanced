@@ -5,6 +5,7 @@ Supports multilingual document processing including:
 - Space-separated languages: English, Swedish, Finnish, Spanish, German, French
 - CJK languages: Chinese, Japanese (proper sentence splitting)
 """
+
 import os
 import re
 import csv
@@ -36,6 +37,7 @@ def _extract_with_pymupdf(file_path: str) -> list:
     """Extract text using PyMuPDF (fitz) - fast and reliable."""
     try:
         import fitz  # pymupdf
+
         doc = fitz.open(file_path)
         pages_text = []
         for page_num, page in enumerate(doc, start=1):
@@ -45,7 +47,9 @@ def _extract_with_pymupdf(file_path: str) -> list:
                 pages_text.append((page_num, text))
         doc.close()
         if pages_text:
-            logger.debug(f"[PDF] PyMuPDF extracted {len(pages_text)} pages from {file_path}")
+            logger.debug(
+                f"[PDF] PyMuPDF extracted {len(pages_text)} pages from {file_path}"
+            )
         return pages_text
     except Exception as e:
         logger.debug(f"[PDF] PyMuPDF failed for {file_path}: {e}")
@@ -61,6 +65,7 @@ def _extract_with_pdfplumber(file_path: str) -> list:
     """
     try:
         import pdfplumber
+
         pages_text = []
         with pdfplumber.open(file_path) as pdf:
             for page_num, page in enumerate(pdf.pages, start=1):
@@ -95,7 +100,8 @@ def _extract_with_pdfplumber(file_path: str) -> list:
                             for row in extracted:
                                 if row:
                                     row_text = " | ".join(
-                                        str(cell).strip() if cell else "" for cell in row
+                                        str(cell).strip() if cell else ""
+                                        for cell in row
                                     )
                                     rows.append(row_text)
                             if rows:
@@ -103,7 +109,9 @@ def _extract_with_pdfplumber(file_path: str) -> list:
 
                     # Combine text and tables
                     if table_texts:
-                        text = text + "\n\n[TABLE]\n" + "\n\n[TABLE]\n".join(table_texts)
+                        text = (
+                            text + "\n\n[TABLE]\n" + "\n\n[TABLE]\n".join(table_texts)
+                        )
                 else:
                     # No tables - just extract text normally
                     text = page.extract_text() or ""
@@ -113,7 +121,9 @@ def _extract_with_pdfplumber(file_path: str) -> list:
                     pages_text.append((page_num, text))
 
         if pages_text:
-            logger.debug(f"[PDF] pdfplumber extracted {len(pages_text)} pages from {file_path}")
+            logger.debug(
+                f"[PDF] pdfplumber extracted {len(pages_text)} pages from {file_path}"
+            )
         return pages_text
     except Exception as e:
         logger.debug(f"[PDF] pdfplumber failed for {file_path}: {e}")
@@ -124,6 +134,7 @@ def _extract_with_pypdf(file_path: str) -> list:
     """Extract text using pypdf - fallback option."""
     try:
         from pypdf import PdfReader
+
         reader = PdfReader(file_path)
         pages_text = []
         for page_num, page in enumerate(reader.pages, start=1):
@@ -132,7 +143,9 @@ def _extract_with_pypdf(file_path: str) -> list:
             if text:
                 pages_text.append((page_num, text))
         if pages_text:
-            logger.debug(f"[PDF] pypdf extracted {len(pages_text)} pages from {file_path}")
+            logger.debug(
+                f"[PDF] pypdf extracted {len(pages_text)} pages from {file_path}"
+            )
         return pages_text
     except Exception as e:
         logger.debug(f"[PDF] pypdf failed for {file_path}: {e}")
@@ -173,13 +186,13 @@ def read_text(file_path: str, text_max: int = 400000):
 
     if ext == ".pdf":
         return _extract_pdf_with_fallback(file_path)
-    
+
     if ext == ".csv":
         with open(file_path, "r", encoding="utf-8") as f:
             reader = csv.reader(f)
             all_rows = [",".join(row) for row in reader]
             return [(0, "\n".join(all_rows)[:text_max])]
-    
+
     if ext == ".json":
         with open(file_path, "r", encoding="utf-8") as f:
             try:
@@ -187,7 +200,7 @@ def read_text(file_path: str, text_max: int = 400000):
                 return [(0, json.dumps(data, indent=2)[:text_max])]
             except Exception:
                 return [(0, f.read()[:text_max])]
-    
+
     if ext == ".docx":
         doc = Document(file_path)
         # Iterate through document body in order (preserves paragraph/table sequence)
@@ -207,14 +220,16 @@ def read_text(file_path: str, text_max: int = 400000):
                     if table._element is element:
                         table_rows = []
                         for row in table.rows:
-                            row_text = " | ".join(cell.text.strip() for cell in row.cells)
+                            row_text = " | ".join(
+                                cell.text.strip() for cell in row.cells
+                            )
                             if row_text.strip():
                                 table_rows.append(row_text)
                         if table_rows:
                             text_parts.append("[TABLE]\n" + "\n".join(table_rows))
                         break
         return [(0, "\n\n".join(text_parts)[:text_max])]
-    
+
     with open(file_path, "r", encoding="utf-8") as f:
         return [(0, f.read()[:text_max])]
 
@@ -235,34 +250,37 @@ def sentence_split(text: str) -> list[str]:
 def make_chunks(pages_text: list, target: int = 400, overlap: int = 90) -> list[tuple]:
     """Split document into overlapping chunks"""
     all_chunks = []
-    
+
     for page_num, text in pages_text:
         chunks, buff, size = [], [], 0
         sentences = sentence_split(text)
-        
+
         for s in sentences:
             buff.append(s)
             if size + len(s) <= target:
                 size += len(s) + 1
             else:
                 if buff:
-                    chunks.append((page_num, ' '.join(buff)))
-                
+                    chunks.append((page_num, " ".join(buff)))
+
                 overlap_sentences = []
                 overlap_size = 0
                 for sent in reversed(buff):
-                    if overlap_size + len(sent) + (1 if overlap_sentences else 0) <= overlap:
+                    if (
+                        overlap_size + len(sent) + (1 if overlap_sentences else 0)
+                        <= overlap
+                    ):
                         overlap_sentences.insert(0, sent)
                         overlap_size += len(sent) + (1 if overlap_size > 0 else 0)
                     else:
                         break
-                
+
                 buff = overlap_sentences
                 size = sum(len(s) for s in buff) + max(0, len(buff) - 1)
-        
+
         if buff:
-            chunks.append((page_num, ' '.join(buff)))
-        
+            chunks.append((page_num, " ".join(buff)))
+
         all_chunks.extend(chunks)
-    
+
     return all_chunks
