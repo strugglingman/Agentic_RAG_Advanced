@@ -60,7 +60,7 @@ class ChunkingConfig:
         "percentile", "standard_deviation", "interquartile", "gradient"
     ] = "percentile"
     breakpoint_threshold_amount: float = 90.0
-    embedding_model: str = Config.LANGCHAIN_EMBEDDING_MODEL
+    embedding_model: str = Config.OPENAI_EMBEDDING_MODEL
 
 
 class LangChainProcessor:
@@ -130,7 +130,7 @@ def make_chunks_langchain(
     chunk_overlap: int = 120,
     strategy: str = "recursive",
     openai_api_key: Optional[str] = Config.OPENAI_KEY,
-    embedding_model: str = Config.LANGCHAIN_EMBEDDING_MODEL,
+    embedding_model: str = Config.OPENAI_EMBEDDING_MODEL,
 ) -> list[tuple[int, str]]:
     """
     Drop-in replacement for document_processor.make_chunks().

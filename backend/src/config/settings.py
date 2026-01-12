@@ -53,9 +53,6 @@ class Config:
     LANGCHAIN_ENDPOINT = os.getenv(
         "LANGCHAIN_ENDPOINT", "https://eu.api.smith.langchain.com"
     )
-    LANGCHAIN_EMBEDDING_MODEL = os.getenv(
-        "LANGCHAIN_EMBEDDING_MODEL", "text-embedding-3-small"
-    )
 
     # ==============================================================================
     # LangGraph Configuration
@@ -147,6 +144,7 @@ class Config:
     }
     TOP_K = int(os.getenv("TOP_K", "8"))
     CANDIDATES = int(os.getenv("CANDIDATES", "50"))
+    # Lower this in multilingual settings (e.g., 0.3)
     FUSE_ALPHA = float(os.getenv("FUSE_ALPHA", "0.5"))
 
     # Quality thresholds for hybrid search and reranking

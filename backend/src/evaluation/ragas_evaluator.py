@@ -32,7 +32,7 @@ class EvalConfig:
     """Configuration for Ragas evaluation."""
 
     llm_model: str = Config.OPENAI_MODEL
-    embedding_model: str = Config.LANGCHAIN_EMBEDDING_MODEL
+    embedding_model: str = Config.OPENAI_EMBEDDING_MODEL
     batch_size: int = 10
 
 

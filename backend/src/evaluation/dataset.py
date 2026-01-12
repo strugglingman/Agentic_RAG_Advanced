@@ -93,7 +93,7 @@ class EvalDataset:
         generator = TestsetGenerator.from_langchain(
             llm=ChatOpenAI(model=Config.OPENAI_MODEL, api_key=Config.OPENAI_KEY),
             embedding_model=OpenAIEmbeddings(
-                model=Config.LANGCHAIN_EMBEDDING_MODEL, api_key=Config.OPENAI_KEY
+                model=Config.OPENAI_EMBEDDING_MODEL, api_key=Config.OPENAI_KEY
             ),
         )
 
