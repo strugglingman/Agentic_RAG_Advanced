@@ -136,7 +136,7 @@ def main():
     parser.add_argument(
         "--output",
         type=str,
-        default="eval_results",
+        default="src/evaluation/eval_results",
         help="Output directory for results",
     )
     parser.add_argument(
@@ -158,13 +158,13 @@ def main():
     parser.add_argument(
         "--dept-id",
         type=str,
-        default="MYHB|software|ml",
+        default="EVAL|test|evaluation",
         help="Department ID for retrieval filtering",
     )
     parser.add_argument(
         "--user-id",
         type=str,
-        default="strugglingman@gmail.com",
+        default="eval@test.com",
         help="User ID for retrieval filtering",
     )
     parser.add_argument(
@@ -186,7 +186,7 @@ def main():
     # Initialize clients
     print("Initializing OpenAI client and VectorDB...")
     client = OpenAI(api_key=Config.OPENAI_KEY)
-    vector_db = VectorDB(path="../../chroma_db", embedding_provider="openai")
+    vector_db = VectorDB(path="chroma_db", embedding_provider="openai")
 
     # Load test data
     print(f"Loading test data from {args.data}...")

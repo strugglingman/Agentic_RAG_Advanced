@@ -5,6 +5,8 @@ __pycache__/
 .env
 uploads/
 chroma_db/
+eval_data/
+eval_results/
 
 # Node
 node_modules/

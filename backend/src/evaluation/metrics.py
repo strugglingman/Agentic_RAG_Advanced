@@ -7,6 +7,7 @@ This module manages which Ragas metrics to use for evaluation.
 from dataclasses import dataclass
 from enum import Enum
 from typing import Callable, Optional
+import numpy as np
 from ragas.metrics import (
     faithfulness,
     answer_relevancy,
@@ -101,6 +102,6 @@ class RAGMetrics:
                 r[m] for r in results if m in r and isinstance(r[m], (int, float))
             ]
             if values:
-                aggregated[m] = sum(values) / len(values)
+                aggregated[m] = float(np.nanmean(values))
 
         return aggregated

@@ -34,13 +34,34 @@ _reranker = None
 
 
 def norm(xs):
-    """Normalize a list of scores to [0, 1] range."""
+    """Normalize a list of scores to [0, 1] range using min-max scaling."""
     if not xs:
         return []
     mn, mx = min(xs), max(xs)
     if mx - mn < 1e-9:
         return [0.5 for _ in xs]
     return [(x - mn) / (mx - mn) for x in xs]
+
+
+def sigmoid_normalize(scores):
+    """
+    Normalize raw reranker scores to [0, 1] using sigmoid function.
+
+    BGE reranker outputs unbounded scores (can be negative or > 1).
+    Sigmoid maps them to probability-like [0, 1] range:
+    - Negative scores → < 0.5
+    - Score of 0 → 0.5
+    - Positive scores → > 0.5
+    - Large positive → close to 1.0
+
+    Args:
+        scores: numpy array or list of raw reranker scores
+
+    Returns:
+        numpy array of normalized scores in [0, 1]
+    """
+    scores_arr = np.array(scores)
+    return 1 / (1 + np.exp(-scores_arr))
 
 
 def unique_snippet(ctx, prefix=150):
@@ -341,7 +362,7 @@ def retrieve(
         metas = res["metadatas"][0] if res.get("metadatas") else []
         dists = res["distances"][0] if res.get("distances") else []
 
-        print(f"Retrieved {len(docs)} documents for query: {query}")
+        logger.debug(f"Retrieved {len(docs)} documents for query: {query}")
 
         if not docs:
             return [], "No relevant documents found"
@@ -379,7 +400,7 @@ def retrieve(
         # Run BM25 and combine semantic + BM25 scores if hybrid
         if use_hybrid:
             if not _bm25 or user_id != user_previous or dept_id != dept_previous:
-                print("BM25 index not built, building now...")
+                logger.debug("BM25 index not built, building now...")
                 build_bm25(vector_db, dept_id, user_id)
                 dept_previous = dept_id
                 user_previous = user_id
@@ -540,11 +561,22 @@ def retrieve(
                 count = min(len(ctx_candidates), Config.CANDIDATES)
                 ctx_for_rerank = ctx_candidates[:count]
                 rerank_inputs = [(query, item["chunk"]) for item in ctx_for_rerank]
-                rerank_scores = reranker.predict(rerank_inputs)
+                rerank_scores_raw = reranker.predict(rerank_inputs)
 
-                # Apply confidence gating on rerank scores
+                # Normalize raw reranker scores to [0, 1] using sigmoid
+                # BGE reranker outputs unbounded scores; sigmoid maps them to probabilities
+                rerank_scores = sigmoid_normalize(rerank_scores_raw)
+
+                if Config.SHOW_SCORES:
+                    logger.debug(
+                        f"Reranker raw scores: min={min(rerank_scores_raw):.3f}, "
+                        f"max={max(rerank_scores_raw):.3f} -> "
+                        f"normalized: min={min(rerank_scores):.3f}, max={max(rerank_scores):.3f}"
+                    )
+
+                # Apply confidence gating on normalized rerank scores
                 max_rerank_score = (
-                    max(rerank_scores)
+                    float(max(rerank_scores))
                     if rerank_scores is not None and len(rerank_scores) > 0
                     else 0
                 )
@@ -555,7 +587,7 @@ def retrieve(
                         "No relevant documents found after applying rerank confidence threshold.",
                     )
 
-                # Apply coverage check on rerank scores
+                # Apply coverage check on normalized rerank scores
                 covered = coverage_ok(
                     scores=rerank_scores.tolist(),
                     topk=min(len(rerank_scores), top_k),
@@ -577,7 +609,7 @@ def retrieve(
                     {**item, "rerank": float(score)} for score, item in ranked_pair
                 ]
             except Exception as e:
-                print(f"Rerank error: {e}")
+                logger.error(f"Rerank error: {e}")
                 return [], f"Rerank failed: {str(e)}"
 
         final_chunks = ctx_candidates[:top_k]
