@@ -19,7 +19,7 @@ export async function GET(req: Request) {
             return NextResponse.json({ error: error.message }, { status: error.status });
         }
     }
-    const r = await fetch(`${process.env.FLASK_URL}/conversations`, {
+    const r = await fetch(`${process.env.FASTAPI_URL}/conversations`, {
         headers: {
             'Authorization': `Bearer ${token}`,
             'X-Correlation-ID': randomUUID(),

@@ -7,8 +7,9 @@ import sys
 # Add backend directory to path
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__) + '/..'))
 
-# Import from new modular structure
-from src.app import create_app
+# Import FastAPI app
+from fastapi.testclient import TestClient
+from src.fastapi_app import create_fastapi_app
 
 SERVICE_AUTH_SECRET = os.getenv("SERVICE_AUTH_SECRET", "test-secret")
 AUD = os.getenv("SERVICE_AUTH_AUDIENCE", "your_service_audience")
@@ -35,17 +36,14 @@ def _service_token(email="user@example.com", dept="eng", sid="test-sid"):
 
 @pytest.fixture()
 def app():
-    """Create and configure a new app instance for each test."""
-    # Create app with testing configuration
-    flask_app, limiter, collection = create_app('testing')
-    flask_app.config.update(TESTING=True)
-    return flask_app
+    """Create and configure a new FastAPI app instance for each test."""
+    return create_fastapi_app()
 
 
 @pytest.fixture()
 def client(app):
-    """A test client for the app."""
-    return app.test_client()
+    """A test client for the FastAPI app."""
+    return TestClient(app)
 
 
 @pytest.fixture()

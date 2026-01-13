@@ -26,7 +26,7 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: "Unable to mint service token" }, { status: 500 });
     }
 
-    const r = await fetch(`${process.env.FLASK_URL}/chat/agent`, {
+    const r = await fetch(`${process.env.FASTAPI_URL}/chat/agent`, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',

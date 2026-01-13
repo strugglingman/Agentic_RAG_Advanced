@@ -20,7 +20,7 @@ export async function GET(req: Request) {
             return NextResponse.json({ error: error.message }, { status: error.status });
         }
     }
-    const r = await fetch(`${process.env.FLASK_URL}/files`, {
+    const r = await fetch(`${process.env.FASTAPI_URL}/files`, {
         headers: {
             'Authorization': `Bearer ${token}`,
             'X-Correlation-ID': randomUUID(),

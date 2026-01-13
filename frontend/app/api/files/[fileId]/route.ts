@@ -8,12 +8,12 @@ export const runtime = 'nodejs';
 
 /**
  * GET /api/files/[fileId]
- * Proxy route to Flask backend's unified file download endpoint
+ * Proxy route to FastAPI backend's unified file download endpoint
  *
  * This route:
  * 1. Authenticates the user via NextAuth session
  * 2. Mints a service token for backend authentication
- * 3. Proxies the request to Flask backend: /files/{fileId}
+ * 3. Proxies the request to FastAPI backend: /files/{fileId}
  * 4. Streams the file response back to the client
  *
  * Unified file access - works for ALL file types:
@@ -54,8 +54,8 @@ export async function GET(
   // Extract file ID from route parameter
   const { fileId } = params;
 
-  // Proxy request to Flask backend's unified file endpoint
-  const backendUrl = `${process.env.FLASK_URL}/files/${fileId}`;
+  // Proxy request to FastAPI backend's unified file endpoint
+  const backendUrl = `${process.env.FASTAPI_URL}/files/${fileId}`;
 
   try {
     const response = await fetch(backendUrl, {

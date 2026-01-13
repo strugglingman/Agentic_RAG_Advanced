@@ -19,7 +19,7 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
             return NextResponse.json({ error: error.message }, { status: error.status });
         }
     }
-    const r = await fetch(`${process.env.FLASK_URL}/conversations/${params.id}`, {
+    const r = await fetch(`${process.env.FASTAPI_URL}/conversations/${params.id}`, {
         headers: {
             'Authorization': `Bearer ${token}`,
             'X-Correlation-ID': randomUUID(),
@@ -45,7 +45,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string; }}
     }
 
     const payload = await req.json();
-    const r = await fetch(`${process.env.FLASK_URL}/conversations/${params.id}`, {
+    const r = await fetch(`${process.env.FASTAPI_URL}/conversations/${params.id}`, {
         method: 'PATCH',
         headers: {
             'Authorization': `Bearer ${token}`,
@@ -73,7 +73,7 @@ export async function DELETE(req: Request, { params }: { params: { id: string }}
         }
     }
 
-    const r = await fetch(`${process.env.FLASK_URL}/conversations/${params.id}`, {
+    const r = await fetch(`${process.env.FASTAPI_URL}/conversations/${params.id}`, {
         method: 'DELETE',
         headers: {
             'Authorization': `Bearer ${token}`,
