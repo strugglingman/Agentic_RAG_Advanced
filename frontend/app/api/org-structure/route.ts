@@ -5,7 +5,7 @@ export const runtime = 'nodejs';
 
 export async function GET() {
     try {
-        const r = await fetch(`${process.env.FLASK_URL}/org-structure`, {
+        const r = await fetch(`${process.env.FASTAPI_URL}/org-structure`, {
             headers: {
                 'X-Correlation-ID': randomUUID(),
             }

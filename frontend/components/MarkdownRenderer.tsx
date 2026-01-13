@@ -21,10 +21,8 @@ export function MarkdownRenderer({ content }: MarkdownRendererProps) {
       components={{
         // Customize link rendering for download links
         a: ({ node, ...props }) => {
-          // Backend now returns unified API format:
-          // - Uploaded files: /api/files/{file_id}
-          // - Other files: /api/downloads/{userId}/{filename}
-          // Both already have /api prefix, no conversion needed
+          // Backend returns unified API format: /api/files/{file_id}
+          // All file types (uploaded, downloaded, created) use this format
           const href = props.href || '';
 
           return (
