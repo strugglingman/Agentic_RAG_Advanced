@@ -25,6 +25,10 @@ Usage:
 """
 
 from typing import Any, Optional
+from httpx import Timeout
+
+# Default timeout: 120 seconds for LLM requests (can be slow for complex queries)
+DEFAULT_TIMEOUT = Timeout(120.0, connect=10.0)
 
 
 def chat_completion(
@@ -34,6 +38,7 @@ def chat_completion(
     temperature: float = 0.1,
     max_tokens: int = 4096,
     stop: Optional[list[str]] = None,
+    timeout: Optional[Timeout] = None,
 ) -> Any:
     """Basic chat completion.
 
@@ -44,6 +49,7 @@ def chat_completion(
         temperature: Sampling temperature
         max_tokens: Max tokens to generate
         stop: Optional stop sequences
+        timeout: Request timeout (default: 120s total, 10s connect)
 
     Returns:
         OpenAI ChatCompletion response
@@ -54,6 +60,7 @@ def chat_completion(
         temperature=temperature,
         max_completion_tokens=max_tokens,
         stop=stop,
+        timeout=timeout or DEFAULT_TIMEOUT,
     )
 
 
@@ -67,6 +74,7 @@ def chat_completion_with_tools(
     tool_choice: str = "auto",
     stop: Optional[list[str]] = None,
     parallel_tool_calls: bool = False,
+    timeout: Optional[Timeout] = None,
 ) -> Any:
     """Chat completion with tool/function calling.
 
@@ -79,6 +87,8 @@ def chat_completion_with_tools(
         max_tokens: Max tokens to generate
         tool_choice: "auto", "none", or specific tool
         stop: Optional stop sequences
+        parallel_tool_calls: Whether to allow parallel tool calls
+        timeout: Request timeout (default: 120s total, 10s connect)
 
     Returns:
         OpenAI ChatCompletion response
@@ -92,6 +102,7 @@ def chat_completion_with_tools(
         max_completion_tokens=max_tokens,
         stop=stop,
         parallel_tool_calls=parallel_tool_calls,
+        timeout=timeout or DEFAULT_TIMEOUT,
     )
 
 
@@ -101,6 +112,7 @@ def chat_completion_json(
     model: str,
     temperature: float = 0.1,
     max_tokens: int = 4096,
+    timeout: Optional[Timeout] = None,
 ) -> Any:
     """Chat completion with JSON response format.
 
@@ -110,6 +122,7 @@ def chat_completion_json(
         model: Model name
         temperature: Sampling temperature
         max_tokens: Max tokens to generate
+        timeout: Request timeout (default: 120s total, 10s connect)
 
     Returns:
         OpenAI ChatCompletion response with JSON content
@@ -120,6 +133,7 @@ def chat_completion_json(
         temperature=temperature,
         max_completion_tokens=max_tokens,
         response_format={"type": "json_object"},
+        timeout=timeout or DEFAULT_TIMEOUT,
     )
 
 
@@ -130,6 +144,7 @@ def chat_completion_structured(
     model: str,
     temperature: float = 0.1,
     max_tokens: int = 4096,
+    timeout: Optional[Timeout] = None,
 ) -> Any:
     """Chat completion with structured output (JSON schema).
 
@@ -141,6 +156,7 @@ def chat_completion_structured(
         model: Model name
         temperature: Sampling temperature
         max_tokens: Max tokens to generate
+        timeout: Request timeout (default: 120s total, 10s connect)
 
     Returns:
         OpenAI ChatCompletion response matching schema
@@ -151,6 +167,7 @@ def chat_completion_structured(
         temperature=temperature,
         max_completion_tokens=max_tokens,
         response_format=schema,
+        timeout=timeout or DEFAULT_TIMEOUT,
     )
 
 
@@ -160,6 +177,7 @@ def chat_completion_stream(
     model: str,
     temperature: float = 0.1,
     max_tokens: int = 4096,
+    timeout: Optional[Timeout] = None,
 ) -> Any:
     """Chat completion with streaming response.
 
@@ -169,6 +187,7 @@ def chat_completion_stream(
         model: Model name
         temperature: Sampling temperature
         max_tokens: Max tokens to generate
+        timeout: Request timeout (default: 120s total, 10s connect)
 
     Returns:
         OpenAI streaming response iterator
@@ -179,6 +198,7 @@ def chat_completion_stream(
         temperature=temperature,
         max_completion_tokens=max_tokens,
         stream=True,
+        timeout=timeout or DEFAULT_TIMEOUT,
     )
 
 
