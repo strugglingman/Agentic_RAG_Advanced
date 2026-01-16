@@ -37,12 +37,16 @@ class VectorDB:
                 api_key=api_key,
                 model_name=Config.OPENAI_EMBEDDING_MODEL,
             )
-            logger.info(f"[VectorDB] Using OpenAI embeddings: {Config.OPENAI_EMBEDDING_MODEL}")
+            logger.info(
+                f"[VectorDB] Using OpenAI embeddings: {Config.OPENAI_EMBEDDING_MODEL}"
+            )
         else:
             self.embedding_fun = SentenceTransformerEmbeddingFunction(
                 model_name=Config.EMBEDDING_MODEL_NAME,
             )
-            logger.info(f"[VectorDB] Using local embeddings: {Config.EMBEDDING_MODEL_NAME}")
+            logger.info(
+                f"[VectorDB] Using local embeddings: {Config.EMBEDDING_MODEL_NAME}"
+            )
 
         self.client = chromadb.PersistentClient(path=path)
         self.collection = self.client.get_or_create_collection(
@@ -73,6 +77,32 @@ class VectorDB:
     def get(self, include: list = None):
         """Get all documents"""
         return self.collection.get(include=include or ["documents", "metadatas"])
+
+    def delete_by_file_id(self, file_id: str) -> int:
+        """
+        Delete all chunks belonging to a specific file.
+
+        Args:
+            file_id: The FileRegistry ID (cuid) to delete chunks for
+
+        Returns:
+            Number of chunks deleted
+        """
+        # First, get the IDs of chunks with this file_id
+        results = self.collection.get(
+            where={"file_id": file_id}, include=[]  # ids only
+        )
+        chunk_ids = results.get("ids", [])
+
+        if chunk_ids:
+            self.collection.delete(ids=chunk_ids)
+            logger.info(
+                f"[VectorDB] Deleted {len(chunk_ids)} chunks for file_id={file_id}"
+            )
+            return len(chunk_ids)
+
+        logger.info(f"[VectorDB] No chunks found for file_id={file_id}")
+        return 0
 
     def delete_collection(self):
         """Delete the entire collection (useful for re-indexing with new embeddings)"""

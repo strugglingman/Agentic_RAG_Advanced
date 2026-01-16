@@ -65,7 +65,7 @@ class ListFilesQuery(Query[ListFilesResult]):
     user_email: UserEmail
     dept_id: DeptId
     category: Optional[str] = None
-    limit: int = 100
+    limit: int = Config.FILE_LIST_LIMIT_IN_UPLOAD_PAGE
 
 
 # ==================== HANDLER ====================
@@ -134,6 +134,11 @@ class ListFilesHandler(QueryHandler[ListFilesResult]):
         if not ingested and file.metadata:
             ingested = file.metadata.get("ingested", False)
 
+        # Get file_for_user from metadata (default False = shared)
+        file_for_user = False
+        if file.metadata:
+            file_for_user = file.metadata.get("file_for_user", False)
+
         return FileInfoDTO(
             file_id=file.id or "",
             filename=file.original_name,
@@ -143,4 +148,5 @@ class ListFilesHandler(QueryHandler[ListFilesResult]):
             upload_at=upload_at,
             tags=tags,
             ingested=ingested,
+            file_for_user=file_for_user,
         )

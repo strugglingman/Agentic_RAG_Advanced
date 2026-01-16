@@ -7,17 +7,9 @@ from src.application.commands.files.upload_file import (
     UploadFileHandler,
     UploadFileResult,
 )
-from src.application.commands.files.ingest_document import (
-    IngestDocumentCommand,
-    IngestDocumentHandler,
-    IngestDocumentResult,
-)
 
 __all__ = [
     "UploadFileCommand",
     "UploadFileHandler",
     "UploadFileResult",
-    "IngestDocumentCommand",
-    "IngestDocumentHandler",
-    "IngestDocumentResult",
 ]

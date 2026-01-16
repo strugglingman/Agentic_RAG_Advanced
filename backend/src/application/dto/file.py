@@ -40,3 +40,4 @@ class FileInfoDTO(BaseModel):
     upload_at: Optional[str] = None
     tags: Optional[list[str]] = None
     ingested: bool = False
+    file_for_user: bool = False  # True if user-specific, False if shared

@@ -129,6 +129,10 @@ class Config:
     REDIS_CACHE_TTL: int = int(os.getenv("REDIS_CACHE_TTL", "3600"))
     REDIS_CACHE_LIMIT: int = int(os.getenv("REDIS_CACHE_LIMIT", "15"))
 
+    # Agent session state TTL (how long to remember active file IDs between messages)
+    # Default: 1 hour - matches typical conversation session length
+    AGENT_STATE_TTL: int = int(os.getenv("AGENT_STATE_TTL", "3600"))
+
     # Slack conversation mapping TTL (how long to remember channel → conversation_id mapping)
     SLACK_CONV_TTL: int = int(os.getenv("SLACK_CONV_TTL", "86400"))  # 24 hours
 
@@ -192,6 +196,9 @@ class Config:
     ).split(",")
     FOLDER_SHARED = os.getenv("FOLDER_SHARED", "shared")
     DEPT_SPLIT = os.getenv("DEPT_SPLIT", "|")
+    FILE_LIST_LIMIT_IN_UPLOAD_PAGE = int(
+        os.getenv("FILE_LIST_LIMIT_IN_UPLOAD_PAGE", "500")
+    )
 
     # ==============================================================================
     # Authentication & Authorization
@@ -216,7 +223,6 @@ class Config:
     # ==============================================================================
     # MCP (Model Context Protocol) Settings
     # ==============================================================================
-    USE_MCP = os.getenv("USE_MCP", "false").lower() in {"1", "true", "yes", "on"}
     MCP_TRIGGER_THRESHOLD = float(os.getenv("MCP_TRIGGER_THRESHOLD", "0.6"))
     MCP_SERVER_COMMAND = os.getenv(
         "MCP_SERVER_COMMAND", "npx -y @modelcontextprotocol/server-brave-search"

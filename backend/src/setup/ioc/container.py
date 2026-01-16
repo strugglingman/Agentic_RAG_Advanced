@@ -44,7 +44,9 @@ from src.infrastructure.persistence import (
     PrismaFileRegistryRepository,
 )
 from src.infrastructure.cache import create_redis_client, CachedMessageRepository
+from src.infrastructure.jobs import IngestJobStore
 from src.infrastructure.storage import FileStorageService
+from src.services.agent_state import AgentSessionStateStore
 
 logger = logging.getLogger(__name__)
 from src.application.services import FileService
@@ -64,7 +66,6 @@ from src.application.commands.chat.send_message import (
 )
 from src.application.commands.files import (
     UploadFileHandler,
-    IngestDocumentHandler,
 )
 from src.application.queries.files import (
     ListFilesHandler,
@@ -117,6 +118,28 @@ class AppProvider(Provider):
         except Exception as e:
             logger.warning(f"[Redis] Unavailable, caching disabled: {e}")
             return None
+
+    # ==================== JOB STORE ====================
+
+    @provide(scope=Scope.APP)
+    def get_ingest_job_store(self, redis_client: Optional[Redis]) -> Optional[IngestJobStore]:
+        """Provide IngestJobStore for tracking active ingestion jobs."""
+        if redis_client:
+            return IngestJobStore(redis_client)
+        return None
+
+    @provide(scope=Scope.APP)
+    def get_agent_state_store(
+        self, redis_client: Optional[Redis]
+    ) -> Optional[AgentSessionStateStore]:
+        """
+        Provide AgentSessionStateStore for persisting agent state across messages.
+
+        Returns None if Redis unavailable - agent will fall back to per-request state.
+        """
+        if redis_client:
+            return AgentSessionStateStore(redis_client)
+        return None
 
     # ==================== DATABASE ====================
 
@@ -235,6 +258,7 @@ class AppProvider(Provider):
         file_service: FileService,
         vector_db: VectorDB,
         openai_client: OpenAI,
+        agent_state_store: Optional[AgentSessionStateStore],
     ) -> SendMessageHandler:
         return SendMessageHandler(
             conv_repo=conversation_repository,
@@ -243,6 +267,7 @@ class AppProvider(Provider):
             file_service=file_service,
             vector_db=vector_db,
             openai_client=openai_client,
+            agent_state_store=agent_state_store,
         )
 
     @provide(scope=Scope.REQUEST)
@@ -289,15 +314,6 @@ class AppProvider(Provider):
     @provide(scope=Scope.REQUEST)
     def get_get_org_structure_handler(self) -> GetOrgStructureHandler:
         return GetOrgStructureHandler()
-
-    @provide(scope=Scope.REQUEST)
-    def get_ingest_document_handler(
-        self,
-        file_registry_repository: FileRegistryRepository,
-        vector_db: VectorDB,
-    ) -> IngestDocumentHandler:
-        """Provide IngestDocumentHandler."""
-        return IngestDocumentHandler(file_registry_repository, vector_db)
 
 
 async def create_container() -> AsyncContainer:

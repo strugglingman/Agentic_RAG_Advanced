@@ -3,12 +3,11 @@ import { authOptions } from "@/lib/auth";
 import { NextResponse } from 'next/server';
 import { mintServiceToken, ServiceAuthError } from '@/lib/service-auth';
 import { randomUUID } from 'crypto';
-import { config } from 'process';
 
-export const runtime = 'nodejs'
+export const runtime = 'nodejs';
 
-// Ingestion can take a long time with semantic chunking - 5 minute timeout
-const INGEST_TIMEOUT_MS = process.env.INGEST_TIMEOUT_MS ? parseInt(process.env.INGEST_TIMEOUT_MS) : 5 * 60 * 1000;
+// Ingestion can take a long time with semantic chunking - 10 minute timeout for SSE
+const INGEST_TIMEOUT_MS = process.env.INGEST_TIMEOUT_MS ? parseInt(process.env.INGEST_TIMEOUT_MS) : 10 * 60 * 1000;
 
 export async function POST(req: Request) {
     const session = await getServerSession(authOptions);
@@ -16,7 +15,7 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const body = await req.text()
+    const body = await req.text();
     let token: string = "";
     try {
         token = mintServiceToken({ email: session?.user?.email, dept: session?.user?.dept });
@@ -40,13 +39,28 @@ export async function POST(req: Request) {
                     'Content-Type': 'application/json',
                     'Authorization': `Bearer ${token}`,
                     'X-Correlation-ID': randomUUID(),
+                    'Accept': 'text/event-stream',
                 },
                 signal: controller.signal,
             },
-        )
+        );
         clearTimeout(timeoutId);
-        const ct = r.headers.get('Content-Type') ?? 'application/json'
-        return new Response(r.body, { status: r.status, headers: { 'Content-Type': ct } })
+
+        // Forward SSE stream with job ID header
+        const jobId = r.headers.get('X-Job-ID');
+        const headers: Record<string, string> = {
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive',
+        };
+        if (jobId) {
+            headers['X-Job-ID'] = jobId;
+        }
+
+        return new Response(r.body, {
+            status: r.status,
+            headers,
+        });
     } catch (error: any) {
         clearTimeout(timeoutId);
         if (error.name === 'AbortError') {

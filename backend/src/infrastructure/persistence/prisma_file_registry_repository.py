@@ -284,15 +284,15 @@ class PrismaFileRegistryRepository(FileRegistryRepository):
 
     async def get_uningested_files(
         self,
-        file_id: Optional[FileId],
+        file_ids: Optional[list[FileId]],
         user_email: UserEmail,
         dept_id: DeptId,
     ) -> list[FileRegistry]:
         """
         Get files that have not been ingested/indexed yet.
 
-        If file_id is provided, returns only that file (if uningested and accessible).
-        If file_id is None, returns all uningested files accessible to user.
+        If file_ids is a list, returns only those files (if uningested and accessible).
+        If file_ids is None, returns all uningested files accessible to user.
 
         Access control same as get_accessible_files:
         - User's own files (user_email matches)
@@ -304,9 +304,9 @@ class PrismaFileRegistryRepository(FileRegistryRepository):
             "category": "uploaded",  # Only uploaded files are ingestable
         }
 
-        # If specific file_id provided, add to filter
-        if file_id:
-            where_clause["id"] = file_id.value
+        # If specific file_ids provided, use IN filter
+        if file_ids:
+            where_clause["id"] = {"in": [fid.value for fid in file_ids]}
 
         records = await self._prisma.fileregistry.find_many(
             where=where_clause,

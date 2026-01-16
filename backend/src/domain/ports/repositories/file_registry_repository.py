@@ -4,7 +4,7 @@ Implementation: src/infrastructure/persistence/prisma_file_registry_repository.p
 """
 
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import Optional, List
 
 from src.domain.entities.file_registry import FileRegistry
 from src.domain.value_objects.file_id import FileId
@@ -122,13 +122,13 @@ class FileRegistryRepository(ABC):
 
     @abstractmethod
     async def get_uningested_files(
-        self, file_id: Optional[FileId], user_email: UserEmail, dept_id: DeptId
+        self, file_ids: Optional[List[FileId]], user_email: UserEmail, dept_id: DeptId
     ) -> list[FileRegistry]:
         """
         Get files that have not been ingested/indexed yet.
 
         Args:
-            file_id: File ID to check
+            file_ids: List of file IDs to check, or None for all uningested files
             user_email: User's email for ownership check
             dept_id: User's department ID for shared access check
 

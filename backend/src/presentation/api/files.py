@@ -5,6 +5,7 @@ Endpoints:
 - POST /upload - Upload a file (multipart/form-data)
 - GET /files - List files for current user
 - GET /files/{file_id} - Download a file by ID
+- DELETE /files/{file_id} - Delete a file (with optional vector removal)
 
 List Files Endpoint Guidelines:
 ================================
@@ -54,8 +55,12 @@ from src.application.queries.files import (
 )
 from src.application.dto.file import FileInfoDTO
 from src.domain.value_objects.file_id import FileId
+from src.domain.ports.repositories import FileRegistryRepository
+from src.services.vector_db import VectorDB
 from src.presentation.dependencies.auth import AuthUser, get_current_user
 from src.config.settings import Config
+from typing import Optional
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -249,3 +254,127 @@ async def download_file(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to download file",
         )
+
+
+# ==================== DELETE FILES ENDPOINT ====================
+class DeleteFilesRequest(BaseModel):
+    """
+    Request body for file deletion.
+
+    Examples:
+        {"file_ids": ["cuid123"]}  - Delete single file
+        {"file_ids": ["cuid1", "cuid2", "cuid3"]}  - Batch delete
+    """
+    file_ids: list[str]
+    remove_vectors: bool = False  # If True, also remove chunks from ChromaDB
+
+
+class DeleteFileResult(BaseModel):
+    """Result for a single file deletion."""
+    file_id: str
+    success: bool
+    message: str
+    chunks_deleted: int = 0
+
+
+class DeleteFilesResponse(BaseModel):
+    """Response model for batch file deletion."""
+    success: bool
+    total_deleted: int
+    total_chunks_deleted: int
+    results: list[DeleteFileResult]
+
+
+@files_router.post("/delete", response_model=DeleteFilesResponse)
+@inject
+async def delete_files(
+    request: DeleteFilesRequest,
+    file_repo: FromDishka[FileRegistryRepository],
+    vector_db: FromDishka[VectorDB],
+    current_user: AuthUser = Depends(get_current_user),
+):
+    """
+    Delete multiple files by their IDs.
+
+    Args:
+        request.file_ids: List of file IDs to delete
+        request.remove_vectors: If True, also remove chunks from ChromaDB
+
+    Access control:
+        - Only file owner can delete (user_email must match)
+
+    Steps for each file:
+        1. Verify user owns the file
+        2. If remove_vectors=True, delete chunks from ChromaDB
+        3. Delete file from disk
+        4. Delete record from database
+    """
+    results: list[DeleteFileResult] = []
+    total_deleted = 0
+    total_chunks = 0
+
+    for file_id in request.file_ids:
+        try:
+            # Get file with access check
+            file = await file_repo.get_accessible_file(
+                file_id=FileId(file_id),
+                user_email=current_user.email,
+                dept_id=current_user.dept,
+            )
+
+            if not file:
+                results.append(DeleteFileResult(
+                    file_id=file_id,
+                    success=False,
+                    message="File not found or access denied",
+                ))
+                continue
+
+            # Only owner can delete
+            if file.user_email.value != current_user.email.value:
+                results.append(DeleteFileResult(
+                    file_id=file_id,
+                    success=False,
+                    message="Only file owner can delete the file",
+                ))
+                continue
+
+            chunks_deleted = 0
+
+            # Delete from ChromaDB if requested
+            if request.remove_vectors:
+                chunks_deleted = vector_db.delete_by_file_id(file_id)
+                total_chunks += chunks_deleted
+
+            # Delete file from disk
+            file_path = file.storage_path.value
+            if os.path.exists(file_path):
+                os.remove(file_path)
+                logger.info(f"[Files] Deleted file from disk: {file_path}")
+
+            # Delete from database
+            await file_repo.delete(FileId(file_id))
+            logger.info(f"[Files] Deleted file record: {file_id}")
+
+            total_deleted += 1
+            results.append(DeleteFileResult(
+                file_id=file_id,
+                success=True,
+                message="Deleted" + (f" ({chunks_deleted} chunks)" if chunks_deleted else ""),
+                chunks_deleted=chunks_deleted,
+            ))
+
+        except Exception as e:
+            logger.error(f"Delete file error for {file_id}: {e}")
+            results.append(DeleteFileResult(
+                file_id=file_id,
+                success=False,
+                message=str(e),
+            ))
+
+    return DeleteFilesResponse(
+        success=total_deleted > 0,
+        total_deleted=total_deleted,
+        total_chunks_deleted=total_chunks,
+        results=results,
+    )
