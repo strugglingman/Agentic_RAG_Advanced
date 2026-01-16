@@ -79,6 +79,7 @@ from src.application.services import FileService
 from src.services.query_supervisor import QuerySupervisor
 from src.services.vector_db import VectorDB
 from src.services.llm_client import chat_completion
+from src.services.agent_state import AgentSessionStateStore
 from src.utils.safety import looks_like_injection
 from src.config.settings import Config
 
@@ -127,6 +128,7 @@ class SendMessageHandler(CommandHandler[SendMessageResult]):
         file_service: FileService,
         vector_db: Optional[VectorDB] = None,
         openai_client: Optional[OpenAI] = None,
+        agent_state_store: Optional[AgentSessionStateStore] = None,
     ):
         self.conv_repo = conv_repo
         self.msg_repo = msg_repo
@@ -134,6 +136,7 @@ class SendMessageHandler(CommandHandler[SendMessageResult]):
         self.file_service = file_service
         self.vector_db = vector_db
         self.openai_client = openai_client
+        self.agent_state_store = agent_state_store
 
     async def execute(self, command: SendMessageCommand) -> SendMessageResult:
         query = command.content.strip()
@@ -191,7 +194,7 @@ class SendMessageHandler(CommandHandler[SendMessageResult]):
             conversation_history=conversation_history,
         )
         logger.debug(
-            f"&&&&&&&&&&&&&&&&&&&&&&&[SendMessage] available_files: {[f['id'] for f in available_files]}, attachments: {[a['file_id'] for a in attachment_file_ids]}"
+            f"=============[SendMessage] available_files: {[f['id'] for f in available_files]}, attachments: {[a['file_id'] for a in attachment_file_ids]}"
         )
 
         agent_context = {
@@ -209,6 +212,7 @@ class SendMessageHandler(CommandHandler[SendMessageResult]):
             "available_files": available_files,
             "attachment_file_ids": attachment_file_ids,
             "file_service": self.file_service,
+            "_state_store": self.agent_state_store,  # Redis persistence for agent state
         }
         query_result = await self.query_supervisor.process_query(query, agent_context)
 

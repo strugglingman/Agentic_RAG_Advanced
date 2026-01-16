@@ -14,11 +14,13 @@ ReAct Loop:
 import json
 import logging
 import base64
+import re
 from typing import Dict, Any, List, Optional, Tuple
 from openai import OpenAI
 from langsmith import traceable
 from src.services.agent_tools import ALL_TOOLS, execute_tool_call
 from src.services.llm_client import chat_completion_with_tools, chat_completion
+from src.services.agent_state import AgentSessionState, AgentSessionStateStore, FileReference
 from src.config.settings import Config
 from src.utils.stream_utils import stream_text_smart
 from src.utils.safety import enforce_citations
@@ -83,18 +85,67 @@ class AgentService:
         # Initialize context tracking
         context["_retrieved_contexts"] = []
 
-        messages = await self._build_initial_messages(query, context, messages_history)
-        for _ in range(self.max_iterations):
-            res = self._call_llm(messages)
+        # Load agent session state from Redis (enterprise pattern: explicit state)
+        conv_id = context.get("conversation_id", "unknown")
+        state_store: Optional[AgentSessionStateStore] = context.get("_state_store")
+
+        if state_store:
+            # Load persisted state from Redis
+            session_state = await state_store.load(conv_id)
             logger.debug(
-                f"In AgentService.run, LLM tool_calls: {res.choices[0].message.tool_calls}"
+                f"[AGENT] Loaded session state: {len(session_state.active_file_ids)} "
+                f"active files from Redis"
             )
+        else:
+            # Fallback: create fresh state (no persistence)
+            session_state = AgentSessionState(conversation_id=conv_id)
+            logger.debug("[AGENT] No state store - using ephemeral session state")
+
+        context["_session_state"] = session_state
+
+        # If user attached files in this message, treat like producer tool:
+        # Clear old state and add attachments (they are "new files" for this turn)
+        attachment_file_ids = context.get("attachment_file_ids", [])
+        if attachment_file_ids:
+            session_state.active_file_ids = []
+            for att in attachment_file_ids:
+                session_state.active_file_ids.append(
+                    FileReference(
+                        file_id=att["file_id"],
+                        filename=att["filename"],
+                        source="chat_attachment",
+                    )
+                )
+            # Already cleared, so producer tools should append, not clear again
+            context["_first_producer_tool_this_turn"] = False
+            logger.debug(
+                f"[AGENT] Added {len(attachment_file_ids)} chat attachments to session state"
+            )
+        else:
+            # No attachments - first producer tool will clear old state
+            context["_first_producer_tool_this_turn"] = True
+
+        messages = await self._build_initial_messages(
+            query, context, messages_history, session_state
+        )
+        for _ in range(self.max_iterations):
+            logger.debug(
+                f"In AgentService.run, LLM messages: {messages[0]['content'][:600]}........"
+            )
+            res = self._call_llm(messages)
             if self._has_tool_calls(res):
                 assistant_message = res.choices[0].message
+                logger.debug(
+                    f"In AgentService.run, LLM has {len(res.choices[0].message.tool_calls)} tool_calls: {res.choices[0].message.tool_calls}"
+                )
                 tool_results = await self._execute_tools(res, context)
                 messages = self._append_tool_results(
                     messages, assistant_message, tool_results
                 )
+                # Option A: Re-inject updated state into system message
+                # After producer tools (download_file, search_documents, create_documents)
+                # update session_state, the next LLM call needs to see the new <active_files>
+                messages = self._update_system_message_state(messages, session_state)
             elif res.choices[0].message.content:
                 answer = self._get_final_answer(res)
                 contexts = context.get("_retrieved_contexts", [])
@@ -111,6 +162,14 @@ class AgentService:
                         logger.warning(
                             "[AGENT] Some sentences dropped due to missing citations"
                         )
+
+                # Save session state to Redis (persist for next message)
+                if state_store and session_state.active_file_ids:
+                    await state_store.save(session_state)
+                    logger.debug(
+                        f"[AGENT] Saved session state: "
+                        f"{len(session_state.active_file_ids)} active files to Redis"
+                    )
 
                 return answer, contexts
             else:
@@ -177,6 +236,7 @@ class AgentService:
             model=self.model,
             temperature=self.temperature,
             tool_choice="auto",
+            parallel_tool_calls=False,  # Sequential execution for same-turn dependencies
         )
 
         return response
@@ -221,6 +281,7 @@ class AgentService:
            b. Parse arguments (JSON string to dict)
            c. Call execute_tool_call(name, args, context)
            d. Build tool result message
+           e. Update session state for producer tools
         3. Return list of tool result messages
 
         Tool result message format:
@@ -234,21 +295,195 @@ class AgentService:
         if tool_calls is None:
             return []
         tool_responses = []
+        session_state: AgentSessionState = context.get("_session_state")
+
         for tool_call in tool_calls:
             tool_name = tool_call.function.name
             tool_args = json.loads(tool_call.function.arguments)
+
+            # For send_email: filter attachments to only allow valid file IDs
+            # Valid sources: session state (producer tools) + chat attachments
+            # This prevents LLM from using stale/corrupted file_ids from conversation history
+            if tool_name == "send_email":
+                llm_attachments = tool_args.get("attachments", [])
+
+                # Build set of valid file IDs
+                valid_file_ids = set()
+
+                # 1. Session state (from producer tools: search, download, create)
+                if session_state and session_state.active_file_ids:
+                    for f in session_state.active_file_ids:
+                        valid_file_ids.add(f.file_id)
+
+                # 2. Chat attachments (user uploaded in this message)
+                for att in context.get("attachment_file_ids", []):
+                    valid_file_ids.add(att.get("file_id"))
+
+                logger.debug(f"[AGENT] Valid file IDs for send_email: {valid_file_ids}")
+
+                if valid_file_ids:
+                    # Filter: keep only IDs that exist in valid sources
+                    filtered = [a for a in llm_attachments if a in valid_file_ids]
+
+                    if filtered != llm_attachments:
+                        logger.info(
+                            f"[AGENT] send_email: LLM attachments={llm_attachments}, "
+                            f"filtered to valid={filtered}"
+                        )
+
+                    # Use filtered list, or fallback to all valid files if none valid
+                    tool_args["attachments"] = (
+                        filtered if filtered else list(valid_file_ids)
+                    )
+
             result = await execute_tool_call(tool_name, tool_args, context)
             tool_responses.append(
                 {"role": "tool", "tool_call_id": tool_call.id, "content": result}
             )
 
+            # Update session state for producer tools (enterprise pattern)
+            if session_state:
+                self._update_state_from_tool(tool_name, result, context, session_state)
+
         return tool_responses
+
+    def _update_state_from_tool(
+        self,
+        tool_name: str,
+        result: str,
+        context: Dict[str, Any],
+        session_state: AgentSessionState,
+    ) -> None:
+        """
+        Update session state after producer tool execution.
+
+        Producer tools: search_documents, download_file, create_documents
+        These tools produce file references that should be tracked in state.
+
+        Key behavior:
+        - First producer tool in turn: CLEAR old state, then add new files
+        - Subsequent producer tools in same turn: APPEND to state
+        - Non-producer tools (send_email, calculator): state unchanged
+
+        This ensures:
+        - "Download X and email it" → uses NEW files only
+        - "Email previous files" (no producer tool) → uses OLD state from Redis
+        """
+        producer_tools = {"search_documents", "download_file", "create_documents"}
+
+        # Clear state on FIRST producer tool call this turn
+        if tool_name in producer_tools:
+            if context.get("_first_producer_tool_this_turn", False):
+                session_state.active_file_ids = []
+                context["_first_producer_tool_this_turn"] = False
+                logger.debug(
+                    f"[STATE] Cleared old state for first producer tool this turn: {tool_name}"
+                )
+
+        if tool_name == "search_documents":
+            # Get contexts from the context dict (set by execute_search_documents)
+            contexts = context.get("_retrieved_contexts", [])
+            if contexts:
+                session_state.update_from_search(contexts)
+                logger.debug(
+                    f"[STATE] Updated from search_documents: "
+                    f"{len(session_state.active_file_ids)} files"
+                )
+
+        elif tool_name == "download_file":
+            # Parse file_id from result string
+            # Format: "File ID: cmjg8yrab0000xspw5ip79qcb"
+            self._extract_and_update_file_ids(result, session_state, "download")
+
+        elif tool_name == "create_documents":
+            # Parse file_id from result string
+            self._extract_and_update_file_ids(result, session_state, "create")
+
+    def _extract_and_update_file_ids(
+        self,
+        result: str,
+        session_state: AgentSessionState,
+        tool_type: str,
+    ) -> None:
+        """
+        Extract file IDs from tool result text and update state.
+
+        Parses patterns like:
+        - "File ID: cmjg8yrab0000xspw5ip79qcb"
+        - "Download: [filename.pdf](/api/files/xxx)"
+        """
+        # Pattern: File ID: <id>
+        file_id_pattern = r"File ID:\s*([a-zA-Z0-9_-]{15,30})"
+        # Pattern: [filename](url) to get filename
+        filename_pattern = r"Download:\s*\[([^\]]+)\]"
+
+        file_ids = re.findall(file_id_pattern, result)
+        filenames = re.findall(filename_pattern, result)
+
+        # Pair them up (file_ids and filenames should align)
+        for i, file_id in enumerate(file_ids):
+            filename = filenames[i] if i < len(filenames) else f"file_{i+1}"
+            if tool_type == "download":
+                session_state.update_from_download(file_id, filename)
+            else:
+                session_state.update_from_create(file_id, filename)
+
+        if file_ids:
+            logger.debug(
+                f"[STATE] Updated from {tool_type}: "
+                f"{len(session_state.active_file_ids)} files total"
+            )
+
+    def _update_system_message_state(
+        self,
+        messages: List[Dict[str, str]],
+        session_state: AgentSessionState,
+    ) -> List[Dict[str, str]]:
+        """
+        Re-inject updated state into system message (Option A).
+
+        After producer tools (download_file, search_documents, create_documents)
+        update the session_state, this method updates messages[0] so the LLM
+        sees the new <active_files> in the next iteration.
+
+        This is essential for same-turn tool dependencies:
+        - Iteration 1: download_file → state updated with new file_id
+        - Iteration 2: LLM sees new <active_files> → can use correct file_id for send_email
+        """
+        if not messages:
+            return messages
+
+        # Get fresh state injection XML
+        new_state_injection = session_state.to_xml_injection()
+
+        # Find where the static system prompt starts (after any existing state injection)
+        current_content = messages[0].get("content", "")
+        static_prompt_marker = "You are a careful assistant with access to tools."
+
+        if static_prompt_marker in current_content:
+            # Extract the static part (everything from marker onwards)
+            static_part_start = current_content.find(static_prompt_marker)
+            static_content = current_content[static_part_start:]
+            # Rebuild with new state injection
+            messages[0]["content"] = new_state_injection + static_content
+            logger.debug(
+                f"[AGENT] Re-injected state: {len(session_state.active_file_ids)} active files"
+            )
+        else:
+            # Fallback: just prepend (shouldn't happen normally)
+            logger.warning(
+                "[AGENT] Could not find static prompt marker, prepending state"
+            )
+            messages[0]["content"] = new_state_injection + current_content
+
+        return messages
 
     async def _build_initial_messages(
         self,
         query: str,
         context: Dict[str, Any],
         messages_history: Optional[List[Dict[str, str]]] = None,
+        session_state: Optional[AgentSessionState] = None,
     ) -> List[Dict[str, str]]:
         """
         Build initial messages list for the agent.
@@ -257,16 +492,22 @@ class AgentService:
             query: User's question
             context: System context (includes file_service for file operations)
             messages_history: Previous conversation messages
+            session_state: Agent session state with active file IDs
 
         Returns:
             List of messages in OpenAI format
         """
+        # Inject active_file_ids at prompt TOP (enterprise pattern)
+        # This structured XML injection overrides LLM's tendency to recall from history
+        state_injection = ""
+        if session_state:
+            state_injection = session_state.to_xml_injection()
 
         # System message matching original chat.py logic
         system_msg = {
             "role": "system",
             "content": (
-                "You are a careful assistant with access to tools. "
+                state_injection + "You are a careful assistant with access to tools. "
                 "Analyze each question and decide which tools (if any) are needed to answer it accurately. "
                 "\n\n"
                 "Guidelines:\n"
@@ -413,20 +654,17 @@ class AgentService:
                     "The user has access to the following files that you can reference:\n\n"
                     + "\n\n".join(file_list_parts)
                     + "\n\nIMPORTANT - File Operations:\n"
-                    "- When user asks to 'email the policy' or 'send that file', check the Available Files list above\n"
+                    "- When user asks to 'email the policy' or 'send that file', check <active_files> section at the top first, then Available Files list\n"
                     "- CRITICAL: When you use search_documents and find content from a source file, ALWAYS check if that file is in the Available Files list above\n"
                     "- If the source file has a download link shown (e.g., 'download: [filename.pdf](/api/files/...)'), you MUST include that link in your response\n"
                     "- When user asks 'give me the link' or 'return me the link' for a document you found via RAG search, copy the download markdown link from Available Files\n"
-                    "- CRITICAL - For send_email attachments: ALWAYS use the full file_id exactly as shown\n"
-                    "  • When you download/create a file, look for 'File ID: cmjg...' in the tool response\n"
-                    "  • Copy the ENTIRE file_id (e.g., 'cmjg8yrab0000xspw5ip79qcb') - it's a long alphanumeric string\n"
-                    "  • ✅ CORRECT: attachments=['cmjg984710000layjyzdkyc9i']  (full file_id)\n"
-                    "  • ❌ WRONG: attachments=['7132106021010130.shtm']  (filename)\n"
-                    "  • ❌ WRONG: attachments=['/api/downloads/user/file.pdf']  (URL)\n"
-                    "- Each file_id starts with letters like 'cm' or 'cl' followed by many characters (20-25 chars total)\n"
-                    "- If you cannot find file_id, use category:filename format like 'downloaded:report.pdf'\n"
-                    "- Example: User asks 'What's our vacation policy?' → You search and find info from 'company_policy.pdf' → "
-                    "Check Available Files → If it shows 'download: [company_policy.pdf](/api/files/abc123)' → Include that link in your response\n"
+                    "- CRITICAL - For send_email attachments:\n"
+                    "  • If <active_files> section exists at the top, use file_ids from there (PREFERRED - most accurate)\n"
+                    "  • Otherwise, use file_ids from Available Files list above\n"
+                    "  • file_ids are long alphanumeric strings like 'cmjg8yrab0000xspw5ip79qcb' (20-25 chars)\n"
+                    "  • ✅ CORRECT: attachments=['cmjg984710000layjyzdkyc9i']\n"
+                    "  • ❌ WRONG: attachments=['report.pdf'] (filename)\n"
+                    "  • ❌ WRONG: attachments=['/api/files/xxx'] (URL)\n"
                 )
 
         # Process just-uploaded chat attachments for inline content analysis

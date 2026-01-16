@@ -66,6 +66,7 @@ def chat_completion_with_tools(
     max_tokens: int = 4096,
     tool_choice: str = "auto",
     stop: Optional[list[str]] = None,
+    parallel_tool_calls: bool = False,
 ) -> Any:
     """Chat completion with tool/function calling.
 
@@ -90,6 +91,7 @@ def chat_completion_with_tools(
         temperature=temperature,
         max_completion_tokens=max_tokens,
         stop=stop,
+        parallel_tool_calls=parallel_tool_calls,
     )
 
 
