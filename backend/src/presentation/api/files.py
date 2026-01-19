@@ -36,6 +36,7 @@ Download File Endpoint Guidelines:
 3. Return file using FileResponse from fastapi.responses
 """
 
+import asyncio
 import json
 import logging
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status
@@ -265,12 +266,14 @@ class DeleteFilesRequest(BaseModel):
         {"file_ids": ["cuid123"]}  - Delete single file
         {"file_ids": ["cuid1", "cuid2", "cuid3"]}  - Batch delete
     """
+
     file_ids: list[str]
     remove_vectors: bool = False  # If True, also remove chunks from ChromaDB
 
 
 class DeleteFileResult(BaseModel):
     """Result for a single file deletion."""
+
     file_id: str
     success: bool
     message: str
@@ -279,6 +282,7 @@ class DeleteFileResult(BaseModel):
 
 class DeleteFilesResponse(BaseModel):
     """Response model for batch file deletion."""
+
     success: bool
     total_deleted: int
     total_chunks_deleted: int
@@ -323,33 +327,43 @@ async def delete_files(
             )
 
             if not file:
-                results.append(DeleteFileResult(
-                    file_id=file_id,
-                    success=False,
-                    message="File not found or access denied",
-                ))
+                results.append(
+                    DeleteFileResult(
+                        file_id=file_id,
+                        success=False,
+                        message="File not found or access denied",
+                    )
+                )
                 continue
 
             # Only owner can delete
             if file.user_email.value != current_user.email.value:
-                results.append(DeleteFileResult(
-                    file_id=file_id,
-                    success=False,
-                    message="Only file owner can delete the file",
-                ))
+                results.append(
+                    DeleteFileResult(
+                        file_id=file_id,
+                        success=False,
+                        message="Only file owner can delete the file",
+                    )
+                )
                 continue
 
             chunks_deleted = 0
 
             # Delete from ChromaDB if requested
             if request.remove_vectors:
-                chunks_deleted = vector_db.delete_by_file_id(file_id)
+                chunks_deleted = await asyncio.get_running_loop().run_in_executor(
+                    None,
+                    vector_db.delete_by_file_id,
+                    file_id,
+                )
                 total_chunks += chunks_deleted
 
             # Delete file from disk
             file_path = file.storage_path.value
             if os.path.exists(file_path):
-                os.remove(file_path)
+                await asyncio.get_running_loop().run_in_executor(
+                    None, os.remove, file_path
+                )
                 logger.info(f"[Files] Deleted file from disk: {file_path}")
 
             # Delete from database
@@ -357,20 +371,25 @@ async def delete_files(
             logger.info(f"[Files] Deleted file record: {file_id}")
 
             total_deleted += 1
-            results.append(DeleteFileResult(
-                file_id=file_id,
-                success=True,
-                message="Deleted" + (f" ({chunks_deleted} chunks)" if chunks_deleted else ""),
-                chunks_deleted=chunks_deleted,
-            ))
+            results.append(
+                DeleteFileResult(
+                    file_id=file_id,
+                    success=True,
+                    message="Deleted"
+                    + (f" ({chunks_deleted} chunks)" if chunks_deleted else ""),
+                    chunks_deleted=chunks_deleted,
+                )
+            )
 
         except Exception as e:
             logger.error(f"Delete file error for {file_id}: {e}")
-            results.append(DeleteFileResult(
-                file_id=file_id,
-                success=False,
-                message=str(e),
-            ))
+            results.append(
+                DeleteFileResult(
+                    file_id=file_id,
+                    success=False,
+                    message=str(e),
+                )
+            )
 
     return DeleteFilesResponse(
         success=total_deleted > 0,
