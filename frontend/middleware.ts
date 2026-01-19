@@ -21,11 +21,15 @@ export default withAuth(
 
 export const config = {
   matcher: [
-    // Protected routes
+    // Protected pages
     "/chat/:path*",
     "/upload/:path*",
-    "/api/chat",
-    "/api/upload",
-    "/api/ingest",
+    // Protected API routes
+    "/api/chat/:path*",
+    "/api/upload/:path*",
+    "/api/ingest/:path*",
+    "/api/files/:path*",
+    "/api/conversations/:path*",
+    "/api/org-structure/:path*",
   ],
 };
