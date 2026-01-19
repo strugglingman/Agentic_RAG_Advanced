@@ -5,7 +5,6 @@ import io
 import sys
 from pathlib import Path
 from contextvars import ContextVar
-from flask import has_request_context, g
 from src.config.settings import Config
 
 # Context variable to store correlation ID across async/thread boundaries
@@ -18,19 +17,8 @@ class CorrelationIdFilter(logging.Filter):
     """Logging filter to add correlation ID to log records."""
 
     def filter(self, record):
-        # Try contextvars first (works across threads/async)
+        # Use contextvars (works across threads/async in FastAPI)
         correlation_id = correlation_id_var.get()
-
-        # Fallback to Flask's g if available
-        if (
-            correlation_id == "NO Correlation ID"
-            and has_request_context()
-            and hasattr(g, "identity")
-        ):
-            g_identity = g.identity
-            if isinstance(g_identity, dict):
-                correlation_id = g_identity.get("correlation_id", "NO Correlation ID")
-
         record.correlation_id = correlation_id
         return True
 
@@ -77,6 +65,10 @@ class DescendingFileHandler(RotatingFileHandler):
 
 
 def setup_logging(level: str = "INFO", log_file: str | None = None):
+    # Ensure UTF-8 mode is enabled for subprocesses (uvicorn reload)
+    os.environ["PYTHONIOENCODING"] = "utf-8"
+    os.environ["PYTHONUTF8"] = "1"
+
     # Set up root logger
     root = logging.getLogger()
     root.setLevel(logging.WARNING)  # Set root to WARNING to avoid too much noise
@@ -84,11 +76,21 @@ def setup_logging(level: str = "INFO", log_file: str | None = None):
     root.addFilter(CorrelationIdFilter())
 
     # Handle both raw stdout and already-wrapped stdout (from run.py UTF-8 setup)
-    if hasattr(sys.stdout, "buffer"):
-        # Raw stdout - wrap with UTF-8
-        stream = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
+    # On Windows, we need to ensure UTF-8 encoding with error handling
+    if sys.platform == "win32":
+        try:
+            if hasattr(sys.stdout, "buffer"):
+                stream = io.TextIOWrapper(
+                    sys.stdout.buffer,
+                    encoding="utf-8",
+                    errors="replace",  # Replace unencodable chars instead of crashing
+                    line_buffering=True,
+                )
+            else:
+                stream = sys.stdout
+        except Exception:
+            stream = sys.stdout
     else:
-        # Already wrapped stdout - use as-is
         stream = sys.stdout
 
     logger_handler = logging.StreamHandler(stream)

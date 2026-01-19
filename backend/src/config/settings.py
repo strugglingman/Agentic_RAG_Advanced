@@ -18,9 +18,8 @@ class Config:
     LOG_PATH: str = os.getenv("LOG_PATH", "logs/app.log")
 
     # ==============================================================================
-    # Flask Application Settings
+    # Application Settings
     # ==============================================================================
-    SECRET_KEY = os.getenv("FLASK_SECRET", "default-secret-key")
     TESTING = os.getenv("TESTING", "false").lower() in {"1", "true", "yes", "on"}
     DEBUG = os.getenv("DEBUG", "false").lower() in {"1", "true", "yes", "on"}
     MAX_CONTENT_LENGTH = int(float(os.getenv("MAX_UPLOAD_MB", "25")) * 1024 * 1024)
@@ -438,5 +437,5 @@ config = {
 def get_config(env=None):
     """Get configuration based on environment"""
     if env is None:
-        env = os.getenv("FLASK_ENV", "development")
+        env = os.getenv("ENV", "development")
     return config.get(env, config["default"])
