@@ -7,6 +7,7 @@ Endpoints:
 - GET /ingest/active - Get list of files currently being ingested
 """
 
+import asyncio
 import json
 import logging
 import uuid
@@ -164,11 +165,13 @@ async def ingest_documents(
                     break
 
                 # Ingest the file
-                result = ingest_file(
-                    vector_db=vector_db,
-                    file=file,
-                    user_email=current_user.email.value,
-                    dept_id=current_user.dept.value,
+                result = await asyncio.get_running_loop().run_in_executor(
+                    None,
+                    ingest_file,
+                    vector_db,
+                    file,
+                    current_user.email.value,
+                    current_user.dept.value,
                 )
 
                 results.append(
@@ -209,10 +212,14 @@ async def ingest_documents(
                 )
 
             # Build BM25 index if we ingested anything
-            if ingested_count > 0 and not cancelled:
+            if ingested_count > 0:
                 try:
-                    build_bm25(
-                        vector_db, current_user.dept.value, current_user.email.value
+                    await asyncio.get_running_loop().run_in_executor(
+                        None,
+                        build_bm25,
+                        vector_db,
+                        current_user.dept.value,
+                        current_user.email.value,
                     )
                 except Exception as e:
                     logger.error(f"Failed to rebuild BM25: {e}")
