@@ -1,0 +1,48 @@
+# Virtual environment (pip install creates fresh in container)
+.venv/
+venv/
+env/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environment files (use env_file in docker-compose, not COPY)
+.env
+.env.local
+.env*.local
+
+# Data directories (should be volume-mounted for persistence)
+chroma_db/
+uploads/
+downloads/
+logs/
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Git
+.git/
+.gitignore
+
+# Temp files
+*.log
+*.tmp
+tmp*/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Windows-specific requirements (we use requirements.linux.txt)
+requirements.txt

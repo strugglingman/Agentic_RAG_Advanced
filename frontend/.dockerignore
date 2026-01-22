@@ -1,6 +1,37 @@
+# Dependencies (npm ci installs fresh)
 node_modules
+
+# Build output (npm run build creates fresh)
 .next
+
+# Git
 .git
-.env*.local
+.gitignore
+
+# Environment files (use docker-compose environment)
+.env
 .env.local
+.env*.local
+
+# Logs
 *.log
+npm-debug.log*
+
+# IDE
+.vscode
+.idea
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# TypeScript cache
+*.tsbuildinfo
+tsconfig.tsbuildinfo
+
+# Test coverage
+coverage
+
+# Misc
+*.md
+!README.md

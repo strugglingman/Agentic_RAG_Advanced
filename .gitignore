@@ -20,9 +20,10 @@ venv/
 .pytest_cache/
 
 # ---- Environment / Secrets ----
-# Ignore real env files but allow committed example template
+# Ignore real env files but allow committed example templates
 .env*
 !.env.example
+!.env.docker.example
 *.env.local
 .env.local
 .env.development.local

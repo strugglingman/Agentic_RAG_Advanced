@@ -1,5 +1,26 @@
-version: '3.9'
 services:
+  # =============================================================================
+  # PostgreSQL Database
+  # =============================================================================
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # =============================================================================
+  # Redis Cache
+  # =============================================================================
   redis:
     image: redis:7-alpine
     ports:
@@ -7,32 +28,63 @@ services:
     command: redis-server --appendonly yes
     volumes:
       - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
+  # =============================================================================
+  # Backend (FastAPI)
+  # =============================================================================
   backend:
     build: ./backend
     env_file: ./backend/.env
-    ports: ["5001:5001"]
+    ports:
+      - "5001:5001"
     volumes:
       - ./backend/uploads:/app/uploads
+      - ./backend/downloads:/app/downloads
       - ./backend/chroma_db:/app/chroma_db
+      - ./backend/logs:/app/logs
     depends_on:
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      # Override database URLs to use container hostnames
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?schema=chatbot
+      - CHECKPOINT_POSTGRES_DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      - REDIS_URL=redis://redis:6379
+      - SERVICE_AUTH_SECRET=${SERVICE_AUTH_SECRET}
 
+  # =============================================================================
+  # Frontend (Next.js)
+  # =============================================================================
   frontend:
     build: ./frontend
-    ports: ["3000:3000"]
+    ports:
+      - "3000:3000"
     environment:
-      - FLASK_URL=http://backend:5001
+      - FASTAPI_URL=http://backend:5001
       - NEXTAUTH_URL=http://localhost:3000
-      # NEXTAUTH_SECRET should be provided via .env (never commit real secrets)
       - NEXTAUTH_SECRET=${NEXTAUTH_SECRET}
-      # Use an env var for the database URL instead of hard-coding credentials.
-      - DATABASE_URL=${DATABASE_URL}
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?schema=chatbot
       - AUTH_TRUST_HOST=true
+      # Service-to-service authentication (must match backend values)
+      - SERVICE_AUTH_SECRET=${SERVICE_AUTH_SECRET}
+      - SERVICE_AUTH_ISSUER=${SERVICE_AUTH_ISSUER}
+      - SERVICE_AUTH_AUDIENCE=${SERVICE_AUTH_AUDIENCE}
+      # Upload and ingestion settings
+      - UPLOAD_FILE_LIMIT_MB=25
+      - INGEST_TIMEOUT_MS=600000
     depends_on:
-      - backend
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      backend:
+        condition: service_started
+      postgres:
+        condition: service_healthy
 
 volumes:
+  postgres_data:
   redis_data:

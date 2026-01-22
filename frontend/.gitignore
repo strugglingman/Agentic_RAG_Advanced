@@ -1,5 +1,9 @@
 node_modules
-# Keep environment variables out of version control
-.env
+
+# Keep secrets out of version control
+# .env is the template (safe to commit)
+# .env.local contains real secrets (never commit)
+.env.local
+.env.*.local
 
 /generated/prisma
