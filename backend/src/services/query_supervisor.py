@@ -382,13 +382,11 @@ class QuerySupervisor:
         print(classification_data)
         classification = classification_data.get("classification", "simple")
 
-        return ExecutionRoute.LANGGRAPH
-
-        # return (
-        #     ExecutionRoute.LANGGRAPH
-        #     if classification == "complex" and Config.USE_LANGGRAPH
-        #     else ExecutionRoute.AGENT_SERVICE
-        # )
+        return (
+            ExecutionRoute.LANGGRAPH
+            if classification == "complex" and Config.USE_LANGGRAPH
+            else ExecutionRoute.AGENT_SERVICE
+        )
 
     def _get_classification_prompt(self, query: str) -> str:
         """

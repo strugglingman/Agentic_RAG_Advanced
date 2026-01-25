@@ -397,6 +397,19 @@ def retrieve(
 
         ctx_candidates = []
 
+        # Early quality check on raw semantic scores (before normalization masks poor quality)
+        # This applies to both hybrid and semantic-only paths
+        max_raw_sim = max(sims_raw) if sims_raw else 0.0
+        raw_sem_threshold = (
+            Config.MIN_SEM_SIM * Config.RERANKER_THRESHOLD_RELAXATION
+            if use_reranker
+            else Config.MIN_SEM_SIM
+        )
+        if Config.SHOW_SCORES:
+            logger.debug(
+                f"Raw semantic: max={max_raw_sim:.3f}, threshold={raw_sem_threshold:.3f}"
+            )
+
         # Run BM25 and combine semantic + BM25 scores if hybrid
         if use_hybrid:
             if not _bm25 or user_id != user_previous or dept_id != dept_previous:
@@ -482,16 +495,47 @@ def retrieve(
                         1 - Config.FUSE_ALPHA
                     ) * item.get("sem_sim", 0.0)
 
-                # Confidence gate on hybrid
-                # When reranker is enabled, use relaxed thresholds to let more candidates through
-                # The reranker will do the final filtering with its more accurate scores
+                # Confidence gate on hybrid using raw scores check
+                # Professional approach: Check raw scores independently using OR logic
+                # - If raw semantic passes threshold OR raw BM25 has significant matches, proceed
+                # - This prevents min-max normalization from masking poor absolute quality
+
+                # Get raw BM25 max score (before normalization)
+                max_raw_bm25 = (
+                    max(_bm25_scores[i] for i in top_indexes)
+                    if top_indexes.size > 0
+                    else 0.0
+                )
+
+                # Raw quality gate: at least one retrieval method should have good quality
+                # Semantic: use raw cosine similarity threshold
+                # BM25: raw scores above MIN_RAW_BM25 indicate meaningful keyword overlap
+                raw_sem_passes = max_raw_sim >= raw_sem_threshold
+                raw_bm25_passes = max_raw_bm25 >= Config.MIN_RAW_BM25
+
+                if Config.SHOW_SCORES:
+                    logger.debug(
+                        f"Hybrid raw quality: sem_max={max_raw_sim:.3f} (threshold={raw_sem_threshold:.3f}, passes={raw_sem_passes}), "
+                        f"bm25_max={max_raw_bm25:.3f} (threshold={Config.MIN_RAW_BM25}, passes={raw_bm25_passes})"
+                    )
+
+                # Fail fast if NEITHER method found quality results
+                if not raw_sem_passes and not raw_bm25_passes:
+                    return (
+                        [],
+                        "No relevant documents found: both semantic and keyword search returned low-quality results.",
+                    )
+
+                # Secondary check: fused hybrid score
                 max_hybrid = (
                     max(item.get("hybrid", 0) for item in ctx_candidates)
                     if ctx_candidates
                     else 0
                 )
                 hybrid_threshold = (
-                    Config.MIN_HYBRID * 0.5 if use_reranker else Config.MIN_HYBRID
+                    Config.MIN_HYBRID * Config.RERANKER_THRESHOLD_RELAXATION
+                    if use_reranker
+                    else Config.MIN_HYBRID
                 )
                 if max_hybrid < hybrid_threshold:
                     return (
@@ -522,10 +566,7 @@ def retrieve(
             # Confidence gate on semantic-only (already normalized in ctx_original)
             ctx_candidates = [item for item in ctx_original]
             # When reranker is enabled, use relaxed thresholds
-            sem_threshold = (
-                Config.MIN_SEM_SIM * 0.5 if use_reranker else Config.MIN_SEM_SIM
-            )
-            if max(sims_raw) < sem_threshold:
+            if max_raw_sim < raw_sem_threshold:
                 return (
                     [],
                     "No relevant documents found after applying semantic confidence threshold.",

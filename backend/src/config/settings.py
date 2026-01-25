@@ -158,12 +158,34 @@ class Config:
     AVG_SEM_SIM = float(os.getenv("AVG_SEM_SIM", "0.25"))
     MIN_RERANK = float(os.getenv("MIN_RERANK", "0.3"))
     AVG_RERANK = float(os.getenv("AVG_RERANK", "0.15"))
+    # Relaxation factor for pre-reranker thresholds (0.5-1.0)
+    # Lower = more relaxed (let more candidates through to reranker)
+    # Higher = stricter (filter more before reranking)
+    # 0.75 is moderate: trusts reranker but filters obvious garbage
+    RERANKER_THRESHOLD_RELAXATION = float(
+        os.getenv("RERANKER_THRESHOLD_RELAXATION", "0.75")
+    )
+    # Raw BM25 threshold for meaningful keyword matches
+    # BM25 raw scores > 2.0 typically indicate meaningful keyword overlap
+    # Used in hybrid search to gate quality before normalization masks issues
+    MIN_RAW_BM25 = float(os.getenv("MIN_RAW_BM25", "2.0"))
     ENFORCE_CITATIONS = os.getenv("ENFORCE_CITATIONS", "true").lower() in {
         "1",
         "true",
         "yes",
         "on",
     }
+
+    # ==============================================================================
+    # Retrieval Decomposition Settings
+    # ==============================================================================
+    DECOMPOSITION_ENABLED = os.getenv("DECOMPOSITION_ENABLED", "false").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    DECOMPOSITION_MAX_WORKERS = int(os.getenv("DECOMPOSITION_MAX_WORKERS", "8"))
 
     # ==============================================================================
     # Document Processing & Chunking

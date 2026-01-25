@@ -15,7 +15,8 @@ import json
 import logging
 from langchain_core.messages import AIMessage
 from src.services.langgraph_state import AgentState, RuntimeContext
-from src.services.retrieval import retrieve, build_where
+from src.services.retrieval import build_where
+from src.services.retrieval_decomposition import retrieve_with_decomposition
 from src.services.agent_tools import execute_tool_call
 from src.services.retrieval_evaluator import RetrievalEvaluator
 from src.models.evaluation import (
@@ -187,7 +188,9 @@ def _optimize_step_query(step_query: str, tool_type: str, openai_client) -> str:
     """
     Optimize a planner-generated step query for the target tool.
 
-    This is FORMAT refinement (verbose → concise), NOT semantic refinement.
+    For "retrieve": Balanced optimization - expand abbreviations AND remove filler words.
+    For "web_search": Shorten to stay under Tavily 400 char limit.
+
     Skip if refined_query exists (handled by refine_node).
 
     Args:
@@ -203,18 +206,39 @@ def _optimize_step_query(step_query: str, tool_type: str, openai_client) -> str:
 
     try:
         if tool_type == "retrieve":
-            prompt = f"""Convert this verbose search query into a concise natural question for document retrieval.
+            # Balanced optimization: expand abbreviations + remove filler words
+            prompt = f"""Optimize this query for document retrieval.
 
 Input: {step_query}
 
-Rules:
-1. Output a clear question (under 80 chars)
-2. Keep core intent and key entities
-3. Remove filler words
+Tasks (do ALL):
+1. EXPAND common abbreviations and acronyms:
+   - PTO → PTO paid time off
+   - Q1/Q2/Q3/Q4 → Q1 first quarter (keep both forms)
+   - YoY → YoY year over year
+   - HR → HR human resources
+   - ROI → ROI return on investment
+   - KPI → KPI key performance indicator
+   - OKR → OKR objectives key results
+   - Rev → revenue
+   - FY → FY fiscal year
 
-Output ONLY the refined question."""
+2. REMOVE filler phrases (if present):
+   - "Can you help me find..."
+   - "I would like to know..."
+   - "Search for information about..."
+   - "Tell me about..."
+
+3. KEEP important terms:
+   - Names, dates, numbers, percentages
+   - Domain-specific keywords
+   - Key entities
+
+Output a clear query (under 120 chars) with abbreviations expanded.
+Output ONLY the optimized query, nothing else."""
 
         elif tool_type == "web_search":
+            # Shorten for Tavily 400 char limit
             prompt = f"""Shorten this web search query while keeping key information.
 
 Input: {step_query}
@@ -233,7 +257,7 @@ Output ONLY the shortened query."""
             model=Config.OPENAI_MODEL,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.1,
-            max_tokens=100,
+            max_tokens=150,
         )
 
         optimized = response.choices[0].message.content.strip().strip('"').strip("'")
@@ -821,6 +845,7 @@ def create_retrieve_node(
                     step_query = step_query.replace(keyword, "").strip()
 
             # Use refined query if available (from refinement loop), otherwise optimize step query
+            openai_client = runtime.get("openai_client")
             if state.get("refined_query"):
                 # Already in semantic refinement loop - use refined_query directly
                 query = state.get("refined_query")
@@ -829,7 +854,6 @@ def create_retrieve_node(
                 )
             else:
                 # First call - optimize verbose planner query for retrieval
-                openai_client = runtime.get("openai_client")
                 logger.info(f"[RETRIEVE] Optimizing step_query: '{step_query}'")
                 query = _optimize_step_query(
                     step_query, "retrieve", openai_client
@@ -837,9 +861,10 @@ def create_retrieve_node(
                 logger.info(f"[RETRIEVE] Optimized query: '{query}'")
 
             where = build_where(request_data, dept_id, user_id)
-            ctx, err = retrieve(
-                query=query,
+            ctx, _ = retrieve_with_decomposition(
                 vector_db=vector_db,
+                openai_client=openai_client,
+                query=query,
                 dept_id=dept_id,
                 user_id=user_id,
                 top_k=Config.TOP_K,
@@ -2385,35 +2410,88 @@ def create_generate_node(
             contexts = []
             context_num = 1
 
+            # Track if decomposition was used (for instructions later)
+            has_decomposition = False
+            num_sub_queries = 0
+
             # Iterate through all contexts for this step
             for step_ctx in step_ctx_list:
                 if step_ctx["type"] == "retrieval":
                     # Retrieved documents from this step only
                     docs = step_ctx.get("docs", [])
-                    for doc in docs:
-                        chunk = doc.get("chunk", str(doc))
-                        source = doc.get("source", "unknown")
-                        page = doc.get("page", 0)
 
-                        header = f"Context {context_num} (Source: {source}"
-                        if page > 0:
-                            header += f", Page: {page}"
-                        header += "):\n"
+                    # Check if contexts have sub_query labels (indicates decomposition was used)
+                    sub_queries = set(
+                        d.get("sub_query") for d in docs if d.get("sub_query")
+                    )
+                    has_decomposition = len(sub_queries) > 1
+                    num_sub_queries = len(sub_queries)
 
-                        score_info = ""
-                        if doc.get("hybrid") is not None:
-                            score_info += f"Hybrid score: {doc['hybrid']:.2f}"
-                        if doc.get("rerank") is not None:
+                    if has_decomposition:
+                        # Group contexts by sub-query for clearer presentation to LLM
+                        # Get the original query from state
+                        original_query = state.get("query", "")
+                        contexts.append(
+                            f'Original Query: "{original_query}"\n'
+                            f"Decomposed into {num_sub_queries} sub-queries for better retrieval:\n"
+                        )
+
+                        for sq in sub_queries:
+                            sq_docs = [d for d in docs if d.get("sub_query") == sq]
+                            contexts.append(
+                                f'=== Sub-query: "{sq}" ({len(sq_docs)} results) ===\n'
+                            )
+
+                            for doc in sq_docs:
+                                chunk = doc.get("chunk", str(doc))
+                                source = doc.get("source", "unknown")
+                                page = doc.get("page", 0)
+
+                                header = f"Context {context_num} (Source: {source}"
+                                if page > 0:
+                                    header += f", Page: {page}"
+                                header += "):\n"
+
+                                score_info = ""
+                                if doc.get("hybrid") is not None:
+                                    score_info += f"Hybrid score: {doc['hybrid']:.2f}"
+                                if doc.get("rerank") is not None:
+                                    if score_info:
+                                        score_info += ", "
+                                    score_info += f"Rerank score: {doc['rerank']:.2f}"
+
+                                context_entry = f"{header}{chunk}"
+                                if score_info:
+                                    context_entry += f"\n{score_info}"
+
+                                contexts.append(context_entry)
+                                context_num += 1
+                    else:
+                        # Original flat format (no decomposition or single sub-query)
+                        for doc in docs:
+                            chunk = doc.get("chunk", str(doc))
+                            source = doc.get("source", "unknown")
+                            page = doc.get("page", 0)
+
+                            header = f"Context {context_num} (Source: {source}"
+                            if page > 0:
+                                header += f", Page: {page}"
+                            header += "):\n"
+
+                            score_info = ""
+                            if doc.get("hybrid") is not None:
+                                score_info += f"Hybrid score: {doc['hybrid']:.2f}"
+                            if doc.get("rerank") is not None:
+                                if score_info:
+                                    score_info += ", "
+                                score_info += f"Rerank score: {doc['rerank']:.2f}"
+
+                            context_entry = f"{header}{chunk}"
                             if score_info:
-                                score_info += ", "
-                            score_info += f"Rerank score: {doc['rerank']:.2f}"
+                                context_entry += f"\n{score_info}"
 
-                        context_entry = f"{header}{chunk}"
-                        if score_info:
-                            context_entry += f"\n{score_info}"
-
-                        contexts.append(context_entry)
-                        context_num += 1
+                            contexts.append(context_entry)
+                            context_num += 1
 
                 elif step_ctx["type"] == "tool":
                     # Tool result from this step only
@@ -2448,6 +2526,17 @@ def create_generate_node(
                 context_type = ContextType.DOCUMENT
 
             system_prompt = GenerationPrompts.get_system_prompt(context_type)
+
+            # Add decomposition instructions if query was decomposed
+            if has_decomposition and not is_web_search:
+                decomp_instruction = (
+                    f"\n\nDECOMPOSITION INSTRUCTIONS:\n"
+                    f"- The original query was decomposed into {num_sub_queries} sub-queries for better retrieval.\n"
+                    f"- Contexts are grouped by sub-query above.\n"
+                    f"- Use information from ALL sub-query groups to fully answer the ORIGINAL query.\n"
+                    f"- When comparing entities, ensure you include data from each relevant sub-query group."
+                )
+                system_prompt += decomp_instruction
 
             # Add source file download links for retrieved documents
             # Match retrieved doc sources with available_files to provide links

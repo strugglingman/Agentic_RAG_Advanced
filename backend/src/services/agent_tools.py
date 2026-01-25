@@ -23,7 +23,8 @@ from urllib.parse import urlparse
 import urllib.parse
 import requests
 from langsmith import traceable
-from src.services.retrieval import retrieve, build_where
+from src.services.retrieval import build_where
+from src.services.retrieval_decomposition import retrieve_with_decomposition
 from src.config.settings import Config
 from src.utils.safety import scrub_context
 from src.services.retrieval_evaluator import RetrievalEvaluator
@@ -60,14 +61,6 @@ SEARCH_DOCUMENTS_SCHEMA = {
                         "For example: 'Q1 2024 revenue', 'employee vacation policy', 'sales targets'"
                     ),
                 },
-                "top_k": {
-                    "type": "integer",
-                    "description": (
-                        "Number of document chunks to retrieve. "
-                        "Use 3-5 for quick lookups, 8-10 for comprehensive answers. Default is 5."
-                    ),
-                    "default": 5,
-                },
             },
             "required": ["query"],
         },
@@ -83,7 +76,6 @@ def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
     Args:
         args: Arguments from LLM containing:
             - query (str): Search query
-            - top_k (int, optional): Number of results to return
 
         context: System context containing:
             - vector_db: VectorDB instance
@@ -105,8 +97,9 @@ def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
     4. Return best contexts found
     """
     query = args.get("query", "")
-    top_k = args.get("top_k", 5)
+    top_k = Config.TOP_K
     vector_db = context.get("vector_db", None)
+    client = context.get("openai_client", None)
     dept_id = context.get("dept_id", "")
     user_id = context.get("user_id", "")
     use_hybrid = context.get("use_hybrid", Config.USE_HYBRID)
@@ -116,14 +109,18 @@ def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
         return "Error: No organization ID or user ID provided"
     if not vector_db:
         return "Error: No vector database available"
+    if not client:
+        return "Error: No OpenAI client available"
+
     try:
         # Build where clause
         where = build_where(request_data, dept_id, user_id)
 
         # Initial retrieval
         current_query = query
-        ctx, _ = retrieve(
+        ctx, _ = retrieve_with_decomposition(
             vector_db=vector_db,
+            openai_client=client,
             query=current_query,
             dept_id=dept_id,
             user_id=user_id,
@@ -145,7 +142,6 @@ def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
 
         if Config.USE_SELF_REFLECTION:
             config = ReflectionConfig.from_settings(Config)
-            client = context.get("openai_client", None)
             evaluator = RetrievalEvaluator(config=config, openai_client=client)
 
             # Initial evaluation
@@ -247,8 +243,9 @@ def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
                     current_query = refined_query
 
                     # Retrieve with refined query
-                    ctx, _ = retrieve(
+                    ctx, _ = retrieve_with_decomposition(
                         vector_db=vector_db,
+                        openai_client=client,
                         query=current_query,
                         dept_id=dept_id,
                         user_id=user_id,
@@ -290,15 +287,26 @@ def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
                         f"Recommendation: {eval_result.recommendation.value}"
                     )
 
+                    # Early exit if quality is now good enough (ANSWER recommendation)
+                    if eval_result.should_answer:
+                        print(
+                            f"[QUERY_REFINER] Quality achieved ANSWER level (confidence: {eval_result.confidence:.2f}), stopping refinement early"
+                        )
+                        break
+
                 # Log final status
                 if refinement_count > 0:
-                    if refinement_count >= max_attempts:
+                    if (
+                        refinement_count >= max_attempts
+                        and not eval_result.should_answer
+                    ):
+                        # Only show clarification if quality is STILL poor after all attempts
                         print(
-                            f"[QUERY_REFINER] Max refinement attempts ({max_attempts}) reached"
+                            f"[QUERY_REFINER] Max refinement attempts ({max_attempts}) reached, quality still {eval_result.quality.value}"
                         )
 
                         # =================================================================
-                        # Progressive Fallback: max attempts reached → clarification
+                        # Progressive Fallback: max attempts reached AND still poor → clarification
                         # =================================================================
                         clarifier = ClarificationHelper(openai_client=client)
                         clarification_msg = clarifier.generate_clarification(
@@ -308,11 +316,17 @@ def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
                             context_hint="uploaded documents",
                         )
                         print(
-                            f"[CLARIFICATION] Max attempts reached, returning clarification"
+                            f"[CLARIFICATION] Max attempts reached with poor quality, suggesting clarification"
+                        )
+                    elif eval_result.should_answer:
+                        print(
+                            f"[QUERY_REFINER] Refinement successful after {refinement_count} attempt(s), "
+                            f"quality: {eval_result.quality.value}, confidence: {eval_result.confidence:.2f}"
                         )
                     else:
                         print(
-                            f"[QUERY_REFINER] Refinement complete after {refinement_count} attempt(s)"
+                            f"[QUERY_REFINER] Refinement ended after {refinement_count} attempt(s), "
+                            f"quality: {eval_result.quality.value}"
                         )
 
                     # Store history in context for debugging (optional)
@@ -322,34 +336,79 @@ def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
         for c in ctx:
             c["chunk"] = scrub_context(c.get("chunk", ""))
 
-        # Format contexts for LLM using the same high-quality formatting as build_prompt()
-        # This creates detailed context headers with source, page, file_id, and scores
-        # file_id is included for accurate matching with available_files but should not appear in final answers
-        context_str = "\n\n".join(
-            (
-                f"Context {i+1} (Source: {c.get('source', 'unknown')}"
-                + (f", Page: {c['page']}" if c.get("page", 0) > 0 else "")
-                + (f", file_id: {c['file_id']}" if c.get("file_id") else "")
-                + f"):\n{c.get('chunk', '')}\n"
-                + (
-                    f"Hybrid score: {c['hybrid']:.2f}"
-                    if c.get("hybrid") is not None
-                    else ""
+        # Format contexts for LLM - group by sub-query if decomposition was used
+        # Check if contexts have sub_query labels (indicates decomposition was used)
+        sub_queries = set(c.get("sub_query") for c in ctx if c.get("sub_query"))
+        has_decomposition = len(sub_queries) > 1
+
+        if has_decomposition:
+            # Group contexts by sub-query for clearer presentation to LLM
+            context_str = f"Original Query: \"{query}\"\n"
+            context_str += f"Decomposed into {len(sub_queries)} sub-queries for better retrieval:\n\n"
+
+            context_idx = 1
+            for sq in sub_queries:
+                sq_contexts = [c for c in ctx if c.get("sub_query") == sq]
+                context_str += f"=== Sub-query: \"{sq}\" ({len(sq_contexts)} results) ===\n\n"
+
+                for c in sq_contexts:
+                    context_str += (
+                        f"Context {context_idx} (Source: {c.get('source', 'unknown')}"
+                        + (f", Page: {c['page']}" if c.get("page", 0) > 0 else "")
+                        + (f", file_id: {c['file_id']}" if c.get("file_id") else "")
+                        + f"):\n{c.get('chunk', '')}\n"
+                        + (
+                            f"Hybrid score: {c['hybrid']:.2f}"
+                            if c.get("hybrid") is not None
+                            else ""
+                        )
+                        + (
+                            f", Rerank score: {c['rerank']:.2f}"
+                            if c.get("rerank") is not None
+                            else ""
+                        )
+                        + "\n\n"
+                    )
+                    context_idx += 1
+        else:
+            # Original flat format (no decomposition or single sub-query)
+            context_str = "\n\n".join(
+                (
+                    f"Context {i+1} (Source: {c.get('source', 'unknown')}"
+                    + (f", Page: {c['page']}" if c.get("page", 0) > 0 else "")
+                    + (f", file_id: {c['file_id']}" if c.get("file_id") else "")
+                    + f"):\n{c.get('chunk', '')}\n"
+                    + (
+                        f"Hybrid score: {c['hybrid']:.2f}"
+                        if c.get("hybrid") is not None
+                        else ""
+                    )
+                    + (
+                        f", Rerank score: {c['rerank']:.2f}"
+                        if c.get("rerank") is not None
+                        else ""
+                    )
                 )
-                + (
-                    f", Rerank score: {c['rerank']:.2f}"
-                    if c.get("rerank") is not None
-                    else ""
-                )
+                for i, c in enumerate(ctx)
             )
-            for i, c in enumerate(ctx)
-        )
 
         # Return formatted contexts with instructions for the LLM
+        # Build instructions based on whether decomposition was used
+        if has_decomposition:
+            decomp_instruction = (
+                f"- The original query was decomposed into {len(sub_queries)} sub-queries for better retrieval. "
+                f"Contexts are grouped by sub-query above.\n"
+                f"- Use information from ALL sub-query groups to fully answer the ORIGINAL query.\n"
+                f"- When comparing entities, ensure you include data from each relevant sub-query group.\n"
+            )
+        else:
+            decomp_instruction = ""
+
         result = (
             f"Found {len(ctx)} relevant document(s):\n\n"
             f"{context_str}\n\n"
             f"Instructions for DOCUMENT CONTEXTS ABOVE (Context 1-{len(ctx)}):\n"
+            f"{decomp_instruction}"
             f"- CRITICAL: Every sentence MUST include at least one citation like [1], [2] that refers to the numbered Context items\n"
             f"- Place bracket citations [n] IMMEDIATELY AFTER each sentence\n"
             f"- Example: 'The revenue was $50M [1]. Sales increased by 20% [2].'\n"

@@ -83,6 +83,7 @@ class RagasEvaluator:
                 metrics=self._metrics,
                 llm=self._llm,
                 embeddings=self._embeddings,
+                batch_size=self.config.batch_size,
             )
 
             return result
@@ -114,13 +115,14 @@ class RagasEvaluator:
 
         return self.evaluate_dataset(single_dataset)
 
-    def export_results(self, results, output_path: str):
+    def export_results(self, results, output_path: str, runtime_config: dict = None):
         """
         Export evaluation results to file.
 
         Args:
             results: Dict or DataFrame with evaluation results
             output_path: Path to save results (supports .json, .csv)
+            runtime_config: Optional dict with runtime parameters (top_k, hybrid, etc.)
         """
         try:
             Path(output_path).parent.mkdir(parents=True, exist_ok=True)
@@ -132,12 +134,18 @@ class RagasEvaluator:
                 raise ValueError(
                     "Results must be a pandas DataFrame or have to_pandas() method"
                 )
+            config_data = {
+                "llm_model": self.config.llm_model,
+                "embedding_model": self.config.embedding_model,
+                "batch_size": self.config.batch_size,
+            }
+
+            # Add runtime config if provided
+            if runtime_config:
+                config_data.update(runtime_config)
+
             data = {
-                "config": {
-                    "llm_model": self.config.llm_model,
-                    "embedding_model": self.config.embedding_model,
-                    "batch_size": self.config.batch_size,
-                },
+                "config": config_data,
                 "results": results_dict,
                 "timestamp": datetime.now().isoformat(),
                 "averages": (
