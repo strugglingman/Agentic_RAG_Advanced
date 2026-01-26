@@ -128,11 +128,27 @@ class AgentService:
         messages = await self._build_initial_messages(
             query, context, messages_history, session_state
         )
-        for _ in range(self.max_iterations):
+
+        # Enterprise RAG: Force retrieval first before allowing other tools
+        # This ensures internal documents are always checked before using LLM knowledge
+        retrieval_done = False
+
+        for iteration in range(self.max_iterations):
             logger.debug(
                 f"In AgentService.run, LLM messages: {messages[0]['content'][:600]}........"
             )
-            res = self._call_llm(messages)
+
+            # First iteration: Force search_documents tool call
+            # Subsequent iterations: Let LLM decide (auto)
+            if not retrieval_done and iteration == 0:
+                logger.info("[AGENT] Forcing search_documents as first tool call (enterprise RAG)")
+                res = self._call_llm(
+                    messages,
+                    tool_choice={"type": "function", "function": {"name": "search_documents"}}
+                )
+                retrieval_done = True
+            else:
+                res = self._call_llm(messages)
             if self._has_tool_calls(res):
                 assistant_message = res.choices[0].message
                 logger.debug(
@@ -219,12 +235,16 @@ class AgentService:
 
         yield "Error: Maximum iterations reached without final answer."
 
-    def _call_llm(self, messages: List[Dict[str, str]]) -> Any:
+    def _call_llm(self, messages: List[Dict[str, str]], tool_choice: Any = "auto") -> Any:
         """
         Call OpenAI API with tools (non-streaming).
 
         Args:
             messages: Conversation history
+            tool_choice: Tool selection mode. Options:
+                - "auto": LLM decides whether to call tools (default)
+                - "required": Must call at least one tool
+                - {"type": "function", "function": {"name": "tool_name"}}: Force specific tool
 
         Returns:
             OpenAI chat completion response
@@ -235,7 +255,7 @@ class AgentService:
             tools=self.tools,
             model=self.model,
             temperature=self.temperature,
-            tool_choice="auto",
+            tool_choice=tool_choice,
             parallel_tool_calls=False,  # Sequential execution for same-turn dependencies
         )
 

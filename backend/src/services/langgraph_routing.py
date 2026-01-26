@@ -212,6 +212,9 @@ def route_after_planning(state: AgentState) -> str:
     """
     Decide what to do after planning.
 
+    ENTERPRISE RAG: On the first step (current_step == 0), always route to retrieve
+    to check internal documents first, regardless of what the planner decided.
+
     Plan format is "tool_name: description", so we extract the tool name
     by splitting on ":" and do exact match.
 
@@ -227,6 +230,11 @@ def route_after_planning(state: AgentState) -> str:
     current_step = state.get("current_step", 0)
 
     logger.info(f"[ROUTE_AFTER_PLANNING] plan={plan}, current_step={current_step}")
+
+    # ENTERPRISE RAG: Force retrieval on first step to check internal documents first
+    if current_step == 0:
+        logger.info("[ROUTE_AFTER_PLANNING] Enterprise RAG: Forcing retrieve on first step")
+        return "retrieve"
 
     if not plan:
         logger.info("[ROUTE_AFTER_PLANNING] No plan, returning error")
@@ -246,7 +254,9 @@ def route_after_planning(state: AgentState) -> str:
     else:
         tool_name = step.strip().lower()
 
-    logger.info(f"[ROUTE_AFTER_PLANNING] step='{step}', extracted tool_name='{tool_name}'")
+    logger.info(
+        f"[ROUTE_AFTER_PLANNING] step='{step}', extracted tool_name='{tool_name}'"
+    )
 
     # Exact match on tool name (defined in planning.py Available Tools)
     tool_to_node = {
@@ -265,7 +275,9 @@ def route_after_planning(state: AgentState) -> str:
         return node
 
     # Fallback: if unclear, try retrieval first (safer default)
-    logger.info(f"[ROUTE_AFTER_PLANNING] No exact match for '{tool_name}', fallback to retrieve")
+    logger.info(
+        f"[ROUTE_AFTER_PLANNING] No exact match for '{tool_name}', fallback to retrieve"
+    )
     return "retrieve"
 
 
