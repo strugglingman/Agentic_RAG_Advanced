@@ -234,21 +234,21 @@ Tasks (do ALL):
    - Domain-specific keywords
    - Key entities
 
-Output a clear query (under 120 chars) with abbreviations expanded.
+Output the optimized query with abbreviations expanded. Do not truncate or shorten entity names.
 Output ONLY the optimized query, nothing else."""
 
         elif tool_type == "web_search":
-            # Shorten for Tavily 400 char limit
-            prompt = f"""Shorten this web search query while keeping key information.
+            # Optimize for web search - focus on keywords
+            prompt = f"""Optimize this query for web search.
 
 Input: {step_query}
 
 Rules:
-1. Output under 150 characters
-2. Keep essential keywords
-3. Remove redundant descriptions
+1. Keep essential keywords and entity names intact
+2. Remove filler phrases and redundant descriptions
+3. Do not truncate or shorten entity names
 
-Output ONLY the shortened query."""
+Output ONLY the optimized query."""
         else:
             return step_query
 
@@ -257,7 +257,7 @@ Output ONLY the shortened query."""
             model=Config.OPENAI_MODEL,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.1,
-            max_tokens=150,
+            max_tokens=300,
         )
 
         optimized = response.choices[0].message.content.strip().strip('"').strip("'")
