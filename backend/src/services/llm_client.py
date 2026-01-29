@@ -26,11 +26,13 @@ Usage:
 
 from typing import Any, Optional
 from httpx import Timeout
+from langsmith import traceable
 
 # Default timeout: 120 seconds for LLM requests (can be slow for complex queries)
 DEFAULT_TIMEOUT = Timeout(120.0, connect=10.0)
 
 
+@traceable(run_type="llm", name="chat_completion")
 def chat_completion(
     client,
     messages: list[dict],
@@ -64,6 +66,7 @@ def chat_completion(
     )
 
 
+@traceable(run_type="llm", name="chat_completion_with_tools")
 def chat_completion_with_tools(
     client,
     messages: list[dict],
@@ -106,6 +109,7 @@ def chat_completion_with_tools(
     )
 
 
+@traceable(run_type="llm", name="chat_completion_json")
 def chat_completion_json(
     client,
     messages: list[dict],
@@ -137,6 +141,7 @@ def chat_completion_json(
     )
 
 
+@traceable(run_type="llm", name="chat_completion_structured")
 def chat_completion_structured(
     client,
     messages: list[dict],
@@ -171,6 +176,7 @@ def chat_completion_structured(
     )
 
 
+@traceable(run_type="llm", name="chat_completion_stream")
 def chat_completion_stream(
     client,
     messages: list[dict],
