@@ -29,6 +29,7 @@ from src.presentation.api import (
     files_router,
     org_router,
     ingest_router,
+    metrics_router,
 )
 from src.adapters.slack.slack_routes import router as slack_router
 
@@ -231,6 +232,7 @@ def create_fastapi_app() -> FastAPI:
     app.include_router(org_router)  # GET /org-structure
     app.include_router(ingest_router)  # POST /ingest
     app.include_router(slack_router)  # Slack integration routes
+    app.include_router(metrics_router)  # Prometheus /metrics endpoint
 
     return app
 
