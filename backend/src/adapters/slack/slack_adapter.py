@@ -17,7 +17,7 @@ from src.config.settings import Config
 logger = logging.getLogger(__name__)
 
 # Regex to find file links like [filename.pdf](/api/files/xxx) or [text](/api/files/xxx)
-FILE_LINK_PATTERN = re.compile(r'\[([^\]]+)\]\(/api/files/([a-zA-Z0-9_-]+)\)')
+FILE_LINK_PATTERN = re.compile(r"\[([^\]]+)\]\(/api/files/([a-zA-Z0-9_-]+)\)")
 
 SLACK_CONV_KEY_PREFIX = "slack:conv:"
 
@@ -37,8 +37,7 @@ class SlackBotAdapter(BaseBotAdapter):
     async def handle_message(self, event: dict) -> None:
         """Handle incoming message from Slack.
 
-        Normal attachments are encoded as base64 and sent in /chat request body.
-        For RAG document ingestion, users should use /ingest command instead.
+        Attachments are encoded as base64 and sent in /chat request body.
         """
         if self._is_bot_message(event):
             logger.debug("Ignoring bot message to prevent loops")
@@ -57,11 +56,13 @@ class SlackBotAdapter(BaseBotAdapter):
             attachments = []
             downloaded = await self._file_handler.download_files_from_event(event)
             for content, filename, mime_type in downloaded:
-                attachments.append({
-                    "filename": filename,
-                    "mime_type": mime_type or "application/octet-stream",
-                    "data": base64.b64encode(content).decode("utf-8"),
-                })
+                attachments.append(
+                    {
+                        "filename": filename,
+                        "mime_type": mime_type or "application/octet-stream",
+                        "data": base64.b64encode(content).decode("utf-8"),
+                    }
+                )
 
             # Get existing conversation or None for new
             conv_key = self._identity_resolver.get_conversation_key(
@@ -74,7 +75,9 @@ class SlackBotAdapter(BaseBotAdapter):
 
             logger.info(
                 "[SLACK] Calling /chat endpoint for user=%s, conv=%s, attachments=%d",
-                bot_user.user_email, existing_conv_id or "new", len(attachments)
+                bot_user.user_email,
+                existing_conv_id or "new",
+                len(attachments),
             )
 
             # Call backend /chat endpoint with base64 attachments
@@ -87,7 +90,9 @@ class SlackBotAdapter(BaseBotAdapter):
 
             logger.info(
                 "[SLACK] Chat response received: conv_id=%s, answer_len=%d, contexts=%d",
-                conv_id, len(answer) if answer else 0, len(contexts) if contexts else 0
+                conv_id,
+                len(answer) if answer else 0,
+                len(contexts) if contexts else 0,
             )
 
             # Store new conversation mapping
@@ -125,67 +130,6 @@ class SlackBotAdapter(BaseBotAdapter):
                     error_msg += f" (HTTP {e.response.status_code})"
                 if hasattr(e, "args") and e.args:
                     error_msg += f": {e.args[0]}" if e.args[0] else ""
-            error_response = BotResponse(text="", error=error_msg)
-            await self.send_response(channel_id, error_response, thread_id=message_ts)
-
-    async def handle_ingest_command(self, event: dict) -> None:
-        """Handle /ingest slash command or file ingestion request."""
-        channel_id = event.get("channel", "")
-        message_ts = event.get("ts", "")
-
-        try:
-            bot_user = await self._identity_resolver.resolve_identity(event)
-            auth_token = self.generate_auth_token(bot_user.user_email, bot_user.dept_id)
-
-            files = event.get("files", [])
-            if not files:
-                response = BotResponse(text="", error="No files attached to ingest.")
-                await self.send_response(channel_id, response, thread_id=message_ts)
-                return
-
-            await self._show_typing(channel_id, message_ts)
-
-            results = []
-            downloaded = await self._file_handler.download_files_from_event(event)
-            for content, filename, _ in downloaded:
-                file_id, upload_msg = await self.upload_file_to_backend(
-                    file_content=content,
-                    filename=filename,
-                    auth_token=auth_token,
-                    file_for_user=False,
-                )
-                if not file_id:
-                    results.append(f":x: {filename}: Upload failed - {upload_msg}")
-                    continue
-
-                # Call /ingest endpoint - returns IngestResponse format
-                ingest_result = await self.ingest_file(file_id, auth_token)
-
-                # Parse IngestResponse: {success, message, total_chunks, results: [...]}
-                if ingest_result.get("success"):
-                    total_chunks = ingest_result.get("total_chunks", 0)
-                    results.append(
-                        f":white_check_mark: {filename}: Indexed ({total_chunks} chunks)"
-                    )
-                else:
-                    # Get error from results array or fallback to message
-                    file_results = ingest_result.get("results", [])
-                    error = ingest_result.get("message", "Unknown error")
-                    if file_results and file_results[0].get("error"):
-                        error = file_results[0].get("error")
-                    results.append(f":x: {filename}: {error}")
-
-            await self._remove_typing(channel_id, message_ts)
-
-            response_text = "*Ingestion Results:*\n" + "\n".join(results)
-            response = BotResponse(text=response_text)
-            await self.send_response(channel_id, response, thread_id=message_ts)
-
-        except Exception as e:
-            logger.exception("Error handling ingest: %s", e)
-            await self._remove_typing(channel_id, message_ts)
-            # Ensure we get a meaningful error message
-            error_msg = str(e) if str(e) and str(e) != "None" else type(e).__name__
             error_response = BotResponse(text="", error=error_msg)
             await self.send_response(channel_id, error_response, thread_id=message_ts)
 
@@ -306,7 +250,7 @@ class SlackBotAdapter(BaseBotAdapter):
 
         Converts [filename.pdf](/api/files/xxx) to just "filename.pdf"
         """
-        return FILE_LINK_PATTERN.sub(r'\1', text)
+        return FILE_LINK_PATTERN.sub(r"\1", text)
 
     async def _upload_files_to_slack(
         self,
@@ -330,7 +274,9 @@ class SlackBotAdapter(BaseBotAdapter):
                     file_id, auth_token
                 )
                 if not content:
-                    logger.warning("Failed to download file %s for Slack upload", file_id)
+                    logger.warning(
+                        "Failed to download file %s for Slack upload", file_id
+                    )
                     continue
 
                 # Use display_name if filename is generic
@@ -344,7 +290,9 @@ class SlackBotAdapter(BaseBotAdapter):
                     filename=filename,
                     thread_ts=thread_ts,
                 )
-                logger.info("Uploaded file %s to Slack channel %s", filename, channel_id)
+                logger.info(
+                    "Uploaded file %s to Slack channel %s", filename, channel_id
+                )
 
             except Exception as e:
                 logger.error("Failed to upload file %s to Slack: %s", file_id, e)

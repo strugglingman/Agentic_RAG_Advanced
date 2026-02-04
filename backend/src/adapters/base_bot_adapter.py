@@ -1,10 +1,8 @@
 """Base Bot Adapter - Abstract base classes for all bot adapters (Slack, Teams, etc.)."""
 
 from datetime import datetime, timezone, timedelta
-import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Optional
 import logging
 import jwt
 import httpx
@@ -75,11 +73,6 @@ class BaseBotAdapter(ABC):
     @abstractmethod
     async def handle_message(self, event: dict) -> None:
         """Handle incoming message from platform."""
-        ...
-
-    @abstractmethod
-    async def handle_ingest_command(self, event: dict) -> None:
-        """Handle /ingest command or file ingestion request."""
         ...
 
     @abstractmethod
@@ -155,46 +148,6 @@ class BaseBotAdapter(ABC):
                 data.get("contexts", []),
             )
 
-    async def upload_file_to_backend(
-        self,
-        file_content: bytes,
-        filename: str,
-        auth_token: str,
-        tags: Optional[list[str]] = None,
-        file_for_user: bool = False,
-    ) -> tuple[str, str]:
-        """
-        Upload file to the /upload endpoint.
-
-        Returns:
-            tuple: (file_id, message) - file_id is empty string on failure
-        """
-        async with httpx.AsyncClient(timeout=120) as client:
-            files = {"file": (filename, file_content)}
-            data = {
-                "tags": json.dumps(tags) if tags else "",
-                "file_for_user": "1" if file_for_user else "0",
-            }
-            response = await client.post(
-                f"{self.backend_url}/upload",
-                files=files,
-                data=data,
-                headers={"Authorization": f"Bearer {auth_token}"},
-            )
-
-            if response.status_code >= 400:
-                error_detail = response.text
-                try:
-                    error_data = response.json()
-                    error_detail = error_data.get("detail", error_detail)
-                except Exception:
-                    pass
-                logger.error(f"Upload failed ({response.status_code}): {error_detail}")
-                return "", error_detail
-
-            result = response.json()
-            return result.get("file_id", ""), result.get("msg", "")
-
     async def download_file_from_backend(
         self, file_id: str, auth_token: str
     ) -> tuple[bytes, str, str]:
@@ -220,51 +173,12 @@ class BaseBotAdapter(ABC):
             if "filename=" in content_disp:
                 # Parse filename="xxx.pdf" or filename*=UTF-8''xxx.pdf
                 import re
+
                 match = re.search(r'filename[*]?=["\']?([^"\';\n]+)', content_disp)
                 if match:
                     filename = match.group(1)
 
-            content_type = response.headers.get("content-type", "application/octet-stream")
-            return response.content, filename, content_type
-
-    async def ingest_file(self, file_id: str, auth_token: str) -> dict:
-        """
-        Call the /ingest endpoint to index file into vector DB.
-
-        Returns:
-            dict: Ingest result matching IngestResponse format:
-            {
-                "success": bool,
-                "message": str,
-                "total_files": int,
-                "ingested_files": int,
-                "total_chunks": int,
-                "results": [
-                    {
-                        "file_id": str,
-                        "filename": str,
-                        "chunks_count": int,
-                        "success": bool,
-                        "error": str | None
-                    }
-                ]
-            }
-        """
-        async with httpx.AsyncClient(timeout=120) as client:
-            response = await client.post(
-                f"{self.backend_url}/ingest",
-                json={"file_id": file_id},
-                headers={"Authorization": f"Bearer {auth_token}"},
+            content_type = response.headers.get(
+                "content-type", "application/octet-stream"
             )
-
-            if response.status_code >= 400:
-                error_detail = response.text
-                try:
-                    error_data = response.json()
-                    error_detail = error_data.get("detail", error_detail)
-                except (ValueError, KeyError):
-                    pass
-                logger.error(f"Ingest failed ({response.status_code}): {error_detail}")
-                return {"success": False, "message": error_detail, "results": []}
-
-            return response.json()
+            return response.content, filename, content_type
