@@ -283,13 +283,13 @@ def main():
     parser.add_argument(
         "--dept-id",
         type=str,
-        default="EVAL|test|evaluation",
+        default="MYHB|software|ml",
         help="Department ID for retrieval filtering",
     )
     parser.add_argument(
         "--user-id",
         type=str,
-        default="eval@test.com",
+        default="strugglingman@gmail.com",
         help="User ID for retrieval filtering",
     )
     parser.add_argument(

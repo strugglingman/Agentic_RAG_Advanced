@@ -243,14 +243,14 @@ def main():
     parser.add_argument(
         "--dept-id",
         type=str,
-        default="EVAL|test|evaluation",
-        help="Department ID for ingested documents (default: EVAL|test|evaluation)",
+        default="MYHB|software|ml",
+        help="Department ID for ingested documents (default: MYHB|software|ml)",
     )
     parser.add_argument(
         "--user-id",
         type=str,
-        default="eval@test.com",
-        help="User ID for ingested documents (default: eval@test.com)",
+        default="strugglingman@gmail.com",
+        help="User ID for ingested documents (default: strugglingman@gmail.com)",
     )
     parser.add_argument(
         "--clear",
