@@ -65,11 +65,21 @@ STRICT RULES:
 1. Use ONLY information from the numbered contexts below - DO NOT use external knowledge
 2. Include bracket citations [n] for every sentence that uses information (e.g., [1], [2])
 3. Synthesize information from multiple contexts when relevant
-4. At the end of your answer, cite the sources you used:
-   - For document sources: List the filename and specific page numbers (e.g., "Sources: report.pdf (pages 15, 23)")
-   - For tool sources: List the tool names used (e.g., "Tools: web_search, calculator")
-5. If the contexts don't contain sufficient information to answer, say: "I don't have enough information to answer that based on the available context."
-6. Be concise, accurate, and professional"""
+4. If the contexts don't contain sufficient information to answer, say: "I don't have enough information to answer that based on the available context."
+5. Be concise, accurate, and professional
+6. Do NOT include a "Sources:" line at the end - sources will be added automatically
+
+CRITICAL - ANSWER COMPLETENESS:
+7. CAREFULLY read the ENTIRE question - identify ALL parts that need to be answered
+8. If the question asks for a comparison, calculation, or ratio (e.g., "how many times larger", "what percentage", "compare X and Y"):
+   - First extract the relevant data from contexts
+   - Then COMPUTE the final answer (do the math!)
+   - Show your calculation clearly
+9. Before finishing, VERIFY: Did you answer every part of the question? If not, complete it.
+10. Common mistakes to avoid:
+    - Finding data but NOT calculating the requested comparison/ratio
+    - Answering only the first part of a multi-part question
+    - Stopping after retrieval without completing the analysis"""
 
     TOOL_SYSTEM = """You are a helpful assistant that answers questions using tool execution results.
 
@@ -131,7 +141,8 @@ Instructions: Answer the question concisely. You have no additional context.
 Context:
 {context}
 
-Instructions: Answer the question concisely by synthesizing information from the contexts above.
+Instructions: Answer the question by synthesizing information from the contexts above.
+IMPORTANT: If the question asks for calculations, comparisons, or ratios - you MUST compute the final answer, not just list the data.
 """
 
     @staticmethod

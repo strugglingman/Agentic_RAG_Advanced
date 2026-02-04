@@ -1,6 +1,6 @@
 from __future__ import annotations
 import re
-from typing import Iterable, Tuple, List, Dict
+from typing import Iterable, Tuple, List, Dict, Any
 
 # --- 1) Enhanced prompt-injection heuristics with categorization ---
 DANGEROUS_PATTERNS: Dict[str, List[str]] = {
@@ -237,3 +237,77 @@ def enforce_citations(answer: str, valid_ids: List[int]) -> Tuple[str, bool]:
         result = f"{result}\n\n{sources_line}" if result else sources_line
 
     return result, all_supported
+
+
+def add_sources_from_citations(
+    answer: str,
+    contexts: List[Dict[str, Any]]
+) -> Tuple[str, List[str]]:
+    """
+    Extract citation numbers from answer and append accurate Sources line.
+
+    This replaces LLM-generated "Sources:" with programmatic extraction,
+    ensuring the Sources line matches the actual citations used.
+
+    Args:
+        answer: The LLM response text (may contain [1], [2] citations)
+        contexts: List of context dicts with 'filename' or 'source' keys
+
+    Returns:
+        (answer_with_sources, list_of_cited_filenames)
+    """
+    if not answer or not contexts:
+        return answer, []
+
+    # Extract all citation numbers from the answer
+    cited_nums = sorted({int(m.group(1)) for m in CIT_RE.finditer(answer)})
+
+    if not cited_nums:
+        return answer, []
+
+    # Map citation numbers to filenames (1-indexed)
+    cited_files = []
+    for num in cited_nums:
+        idx = num - 1  # Convert to 0-indexed
+        if 0 <= idx < len(contexts):
+            ctx = contexts[idx]
+            filename = ctx.get("filename") or ctx.get("source") or f"Context {num}"
+            if filename not in cited_files:
+                cited_files.append(filename)
+
+    if not cited_files:
+        return answer, []
+
+    # Remove any existing Sources: line (in case LLM still added one)
+    answer_clean = SOURCES_LINE.sub("", answer).strip()
+
+    # Add accurate Sources line
+    sources_line = f"Sources: {', '.join(cited_files)}"
+    final_answer = f"{answer_clean}\n\nSources: {', '.join(cited_files)}"
+
+    return final_answer, cited_files
+
+
+def renumber_citations(answer: str, offset: int) -> str:
+    """
+    Renumber all [n] citations in an answer by adding an offset.
+
+    Used for multi-step queries to ensure global citation numbering
+    matches the combined all_contexts order sent to frontend.
+
+    Args:
+        answer: Text with [n] citations
+        offset: Number to add to each citation (e.g., 3 means [1] -> [4])
+
+    Returns:
+        Answer with renumbered citations
+    """
+    if offset == 0 or not answer:
+        return answer
+
+    def replace_citation(match):
+        old_num = int(match.group(1))
+        new_num = old_num + offset
+        return f"[{new_num}]"
+
+    return CIT_RE.sub(replace_citation, answer)

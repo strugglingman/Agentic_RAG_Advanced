@@ -147,6 +147,18 @@ class Config:
     }
     TOP_K = int(os.getenv("TOP_K", "8"))
     CANDIDATES = int(os.getenv("CANDIDATES", "50"))
+
+    # Force internal document retrieval as first step (Enterprise RAG pattern)
+    # When True: Always search internal documents before using LLM knowledge
+    # When False: Let LLM decide when to search (more flexible, may skip internal docs)
+    FORCE_INTERNAL_RETRIEVAL = os.getenv(
+        "FORCE_INTERNAL_RETRIEVAL", "false"
+    ).lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
     # Lower this in multilingual settings (e.g., 0.3)
     FUSE_ALPHA = float(os.getenv("FUSE_ALPHA", "0.5"))
 

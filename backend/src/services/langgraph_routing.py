@@ -231,9 +231,10 @@ def route_after_planning(state: AgentState) -> str:
 
     logger.info(f"[ROUTE_AFTER_PLANNING] plan={plan}, current_step={current_step}")
 
-    # ENTERPRISE RAG: Force retrieval on first step to check internal documents first
-    if current_step == 0:
-        logger.info("[ROUTE_AFTER_PLANNING] Enterprise RAG: Forcing retrieve on first step")
+    # ENTERPRISE RAG: Optionally force retrieval on first step
+    # Controlled by Config.FORCE_INTERNAL_RETRIEVAL (default: True)
+    if Config.FORCE_INTERNAL_RETRIEVAL and current_step == 0:
+        logger.info("[ROUTE_AFTER_PLANNING] FORCE_INTERNAL_RETRIEVAL=true, forcing retrieve on first step")
         return "retrieve"
 
     if not plan:

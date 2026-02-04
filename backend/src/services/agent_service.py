@@ -20,10 +20,15 @@ from openai import OpenAI
 from langsmith import traceable
 from src.services.agent_tools import ALL_TOOLS, execute_tool_call
 from src.services.llm_client import chat_completion_with_tools, chat_completion
-from src.services.agent_state import AgentSessionState, AgentSessionStateStore, FileReference
+from src.services.agent_state import (
+    AgentSessionState,
+    AgentSessionStateStore,
+    FileReference,
+)
 from src.config.settings import Config
 from src.utils.stream_utils import stream_text_smart
-from src.utils.safety import enforce_citations
+from src.utils.safety import enforce_citations, add_sources_from_citations
+from src.observability.metrics import increment_query_routing
 
 logger = logging.getLogger(__name__)
 
@@ -129,22 +134,29 @@ class AgentService:
             query, context, messages_history, session_state
         )
 
-        # Enterprise RAG: Force retrieval first before allowing other tools
-        # This ensures internal documents are always checked before using LLM knowledge
+        # When True: Always search internal documents first
+        # When False: Let LLM decide when to search (may skip internal docs)
+        force_retrieval = Config.FORCE_INTERNAL_RETRIEVAL
         retrieval_done = False
+        logger.info(f"[AGENT] FORCE_INTERNAL_RETRIEVAL={force_retrieval}")
 
         for iteration in range(self.max_iterations):
-            logger.debug(
-                f"In AgentService.run, LLM messages: {messages[0]['content'][:600]}........"
-            )
+            # logger.debug(
+            #     f"In AgentService.run, LLM messages: {messages[0]['content'][:600]}........"
+            # )
 
-            # First iteration: Force search_documents tool call
+            # First iteration: Optionally force search_documents tool call
             # Subsequent iterations: Let LLM decide (auto)
-            if not retrieval_done and iteration == 0:
-                logger.info("[AGENT] Forcing search_documents as first tool call (enterprise RAG)")
+            if force_retrieval and not retrieval_done and iteration == 0:
+                logger.info(
+                    "[AGENT] Forcing search_documents as first tool call (FORCE_INTERNAL_RETRIEVAL=true)"
+                )
                 res = self._call_llm(
                     messages,
-                    tool_choice={"type": "function", "function": {"name": "search_documents"}}
+                    tool_choice={
+                        "type": "function",
+                        "function": {"name": "search_documents"},
+                    },
                 )
                 retrieval_done = True
             else:
@@ -178,6 +190,12 @@ class AgentService:
                         logger.warning(
                             "[AGENT] Some sentences dropped due to missing citations"
                         )
+
+                # Add programmatic Sources line based on actual citations
+                if contexts:
+                    answer, cited_files = add_sources_from_citations(answer, contexts)
+                    if cited_files:
+                        logger.info(f"[AGENT] Added sources: {cited_files}")
 
                 # Save session state to Redis (persist for next message)
                 if state_store and session_state.active_file_ids:
@@ -235,7 +253,9 @@ class AgentService:
 
         yield "Error: Maximum iterations reached without final answer."
 
-    def _call_llm(self, messages: List[Dict[str, str]], tool_choice: Any = "auto") -> Any:
+    def _call_llm(
+        self, messages: List[Dict[str, str]], tool_choice: Any = "auto"
+    ) -> Any:
         """
         Call OpenAI API with tools (non-streaming).
 
@@ -319,6 +339,7 @@ class AgentService:
 
         for tool_call in tool_calls:
             tool_name = tool_call.function.name
+            increment_query_routing(tool_name)  # Track tool usage for metrics
             tool_args = json.loads(tool_call.function.arguments)
 
             # For send_email: filter attachments to only allow valid file IDs
@@ -531,8 +552,9 @@ class AgentService:
                 "Analyze each question and decide which tools (if any) are needed to answer it accurately. "
                 "\n\n"
                 "Guidelines:\n"
-                "- For questions about INTERNAL company documents, policies, or uploaded files: Use search_documents tool\n"
-                "  IMPORTANT: After using search_documents, ALWAYS check the 'Available Files' section below and include the download link if the source file is listed there\n"
+                "- IMPORTANT: If the user has attached files in this chat (shown in <active_files> above), use those files DIRECTLY - do NOT search for them\n"
+                "- For questions about INTERNAL company documents or policies (NOT attached files): Use search_documents tool\n"
+                "  After using search_documents, ALWAYS check the 'Available Files' section below and include the download link if the source file is listed there\n"
                 "- For questions about CURRENT/EXTERNAL information (weather, news, stock prices, real-time data): Use web_search tool\n"
                 "- For mathematical calculations or numerical operations: Use calculator tool\n"
                 "- For simple factual questions that don't require internal documents: Answer directly\n"
@@ -559,8 +581,7 @@ class AgentService:
                 "- When you use search_documents tool results, you MUST include citations\n"
                 "- EVERY fact from search results MUST have a citation like [1], [2], [3] referring to the Context items\n"
                 "- Format: 'Statement from document [1]. Another fact [2].'\n"
-                "- At the END of your answer, include a 'Sources:' line listing the file names and page numbers\n"
-                "- Example Sources line: 'Sources: document.pdf (pages 1, 5, 12)'\n"
+                "- Do NOT include a 'Sources:' line at the end - sources will be added automatically\n"
                 "- If search results are insufficient, say 'I don't know based on the available documents'\n"
                 "- Use ONLY information from search results, do NOT make up facts\n"
                 "\n"
