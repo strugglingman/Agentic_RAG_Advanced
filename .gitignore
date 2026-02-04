@@ -52,6 +52,12 @@ Thumbs.db
 # ---- Docker artifacts ----
 **/*~
 
+# ---- Nginx / SSL ----
+nginx/ssl/*.pem
+nginx/ssl/*.key
+nginx/ssl/*.crt
+nginx/logs/
+
 # ---- Misc ----
 *.tmp
 *.swp
