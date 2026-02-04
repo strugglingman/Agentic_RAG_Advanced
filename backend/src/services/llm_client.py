@@ -27,6 +27,8 @@ Usage:
 from typing import Any, Optional
 from httpx import Timeout
 from langsmith import traceable
+from src.observability.metrics import observe_llm_tokens, increment_error, MetricsErrorType
+
 
 # Default timeout: 120 seconds for LLM requests (can be slow for complex queries)
 DEFAULT_TIMEOUT = Timeout(120.0, connect=10.0)
@@ -56,14 +58,24 @@ def chat_completion(
     Returns:
         OpenAI ChatCompletion response
     """
-    return client.chat.completions.create(
-        model=model,
-        messages=messages,
-        temperature=temperature,
-        max_completion_tokens=max_tokens,
-        stop=stop,
-        timeout=timeout or DEFAULT_TIMEOUT,
-    )
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=temperature,
+            max_completion_tokens=max_tokens,
+            stop=stop,
+            timeout=timeout or DEFAULT_TIMEOUT,
+        )
+
+        if response.usage:
+            observe_llm_tokens("input", model, response.usage.prompt_tokens)
+            observe_llm_tokens("output", model, response.usage.completion_tokens)
+
+        return response
+    except Exception:
+        increment_error(MetricsErrorType.LLM_FAILED)
+        raise
 
 
 @traceable(run_type="llm", name="chat_completion_with_tools")
@@ -96,17 +108,27 @@ def chat_completion_with_tools(
     Returns:
         OpenAI ChatCompletion response
     """
-    return client.chat.completions.create(
-        model=model,
-        messages=messages,
-        tools=tools,
-        tool_choice=tool_choice,
-        temperature=temperature,
-        max_completion_tokens=max_tokens,
-        stop=stop,
-        parallel_tool_calls=parallel_tool_calls,
-        timeout=timeout or DEFAULT_TIMEOUT,
-    )
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            tools=tools,
+            tool_choice=tool_choice,
+            temperature=temperature,
+            max_completion_tokens=max_tokens,
+            stop=stop,
+            parallel_tool_calls=parallel_tool_calls,
+            timeout=timeout or DEFAULT_TIMEOUT,
+        )
+
+        if response.usage:
+            observe_llm_tokens("input", model, response.usage.prompt_tokens)
+            observe_llm_tokens("output", model, response.usage.completion_tokens)
+
+        return response
+    except Exception:
+        increment_error(MetricsErrorType.LLM_FAILED)
+        raise
 
 
 @traceable(run_type="llm", name="chat_completion_json")
@@ -131,14 +153,24 @@ def chat_completion_json(
     Returns:
         OpenAI ChatCompletion response with JSON content
     """
-    return client.chat.completions.create(
-        model=model,
-        messages=messages,
-        temperature=temperature,
-        max_completion_tokens=max_tokens,
-        response_format={"type": "json_object"},
-        timeout=timeout or DEFAULT_TIMEOUT,
-    )
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=temperature,
+            max_completion_tokens=max_tokens,
+            response_format={"type": "json_object"},
+            timeout=timeout or DEFAULT_TIMEOUT,
+        )
+
+        if response.usage:
+            observe_llm_tokens("input", model, response.usage.prompt_tokens)
+            observe_llm_tokens("output", model, response.usage.completion_tokens)
+
+        return response
+    except Exception:
+        increment_error(MetricsErrorType.LLM_FAILED)
+        raise
 
 
 @traceable(run_type="llm", name="chat_completion_structured")
@@ -166,14 +198,24 @@ def chat_completion_structured(
     Returns:
         OpenAI ChatCompletion response matching schema
     """
-    return client.chat.completions.create(
-        model=model,
-        messages=messages,
-        temperature=temperature,
-        max_completion_tokens=max_tokens,
-        response_format=schema,
-        timeout=timeout or DEFAULT_TIMEOUT,
-    )
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=temperature,
+            max_completion_tokens=max_tokens,
+            response_format=schema,
+            timeout=timeout or DEFAULT_TIMEOUT,
+        )
+
+        if response.usage:
+            observe_llm_tokens("input", model, response.usage.prompt_tokens)
+            observe_llm_tokens("output", model, response.usage.completion_tokens)
+
+        return response
+    except Exception:
+        increment_error(MetricsErrorType.LLM_FAILED)
+        raise
 
 
 @traceable(run_type="llm", name="chat_completion_stream")
@@ -198,14 +240,18 @@ def chat_completion_stream(
     Returns:
         OpenAI streaming response iterator
     """
-    return client.chat.completions.create(
-        model=model,
-        messages=messages,
-        temperature=temperature,
-        max_completion_tokens=max_tokens,
-        stream=True,
-        timeout=timeout or DEFAULT_TIMEOUT,
-    )
+    try:
+        return client.chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=temperature,
+            max_completion_tokens=max_tokens,
+            stream=True,
+            timeout=timeout or DEFAULT_TIMEOUT,
+        )
+    except Exception:
+        increment_error(MetricsErrorType.LLM_FAILED)
+        raise
 
 
 # ============ Helper functions ============

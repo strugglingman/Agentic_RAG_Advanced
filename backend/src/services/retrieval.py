@@ -17,6 +17,7 @@ from sentence_transformers import CrossEncoder
 from src.utils.safety import coverage_ok
 from src.utils.multilingual import tokenize as multilingual_tokenize
 from src.config.settings import Config
+from src.observability.metrics import observe_chunk_relevance_score, increment_error, MetricsErrorType
 
 if TYPE_CHECKING:
     from src.services.vector_db import VectorDB
@@ -300,10 +301,8 @@ def build_prompt(query, ctx, use_ctx=False):
         user = (
             f"Question: {query}\n\nContext:\n{context_str}\n\n"
             f"Instructions: Answer the question concisely by synthesizing information from the contexts above. "
-            f"Include bracket citations [n] for every sentence."
-            f"At the end of your answer, cite the sources you used. For each source file, list the specific page numbers "
-            f"from the contexts you referenced (look at the 'Page:' information in each context header). "
-            f"Format: 'Sources: filename1.pdf (pages 15, 23), filename2.pdf (page 7)'"
+            f"Include bracket citations [n] for every sentence. "
+            f"Do NOT include a 'Sources:' line - sources will be added automatically."
         )
     else:
         system = (
@@ -651,14 +650,28 @@ def retrieve(
                 ]
             except Exception as e:
                 logger.error(f"Rerank error: {e}")
+                increment_error(MetricsErrorType.RERANK_FAILED)
                 return [], f"Rerank failed: {str(e)}"
 
         final_chunks = ctx_candidates[:top_k]
         if Config.SHOW_SCORES and final_chunks:
             log_chunk_scores(query, final_chunks, use_hybrid, use_reranker)
 
+        # Record chunk relevance scores for Prometheus metrics
+        if final_chunks:
+            if use_reranker and any(c.get("rerank", 0.0) != 0.0 for c in final_chunks):
+                scores = [c.get("rerank", 0.0) for c in final_chunks]
+                observe_chunk_relevance_score("rerank", scores)
+            elif use_hybrid and any(c.get("hybrid", 0.0) != 0.0 for c in final_chunks):
+                scores = [c.get("hybrid", 0.0) for c in final_chunks]
+                observe_chunk_relevance_score("hybrid", scores)
+            else:
+                scores = [c.get("sem_sim", 0.0) for c in final_chunks]
+                observe_chunk_relevance_score("semantic", scores)
+
         return final_chunks, None
     except Exception as e:
+        increment_error(MetricsErrorType.RETRIEVAL_FAILED)
         return [], str(e)
 
 

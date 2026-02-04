@@ -34,11 +34,12 @@ from src.services.llm_client import (
     chat_completion_with_tools,
 )
 from src.services.langgraph_routing import semantic_route_query
-from src.utils.safety import enforce_citations
+from src.utils.safety import enforce_citations, add_sources_from_citations, renumber_citations
 from src.utils.sanitizer import sanitize_text
 from src.config.settings import Config
 from src.prompts import PlanningPrompts, GenerationPrompts, ToolPrompts
 from src.prompts.generation import ContextType
+from src.observability.metrics import increment_query_routing
 
 logger = logging.getLogger(__name__)
 
@@ -769,6 +770,7 @@ def create_retrieve_node(
         Returns:
             Updated state with retrieved documents
         """
+        increment_query_routing("retrieve")
         plan = state.get("plan", [])
         current_step = state.get("current_step", 0)
         is_detour = state.get("evaluation_result") is not None
@@ -1063,6 +1065,7 @@ def create_tool_calculator_node(
         Returns:
             Updated state with tool results
         """
+        increment_query_routing("calculator")
         try:
             plan = state.get("plan", [])
             current_step = state.get("current_step", 0)
@@ -1267,6 +1270,7 @@ def create_tool_web_search_node(
         Returns:
             Updated state with tool results
         """
+        increment_query_routing("web_search")
         try:
             plan = state.get("plan", [])
             current_step = state.get("current_step", 0)
@@ -1472,6 +1476,7 @@ def create_tool_download_file_node(
         Returns:
             Updated state with tool results including files_created for chaining
         """
+        increment_query_routing("download_file")
         try:
             plan = state.get("plan", [])
             current_step = state.get("current_step", 0)
@@ -1681,6 +1686,7 @@ def create_tool_create_documents_node(
         Returns:
             Updated state with tool results including files_created for chaining
         """
+        increment_query_routing("create_documents")
         try:
             plan = state.get("plan", [])
             current_step = state.get("current_step", 0)
@@ -1892,6 +1898,7 @@ def create_tool_send_email_node(
         Returns:
             Updated state with tool results
         """
+        increment_query_routing("send_email")
         try:
             logger.info("[SEND_EMAIL_NODE] Starting send_email node execution")
             plan = state.get("plan", [])
@@ -2135,6 +2142,7 @@ def create_direct_answer_node(
         # - Call LLM with simple prompt (no tools, no retrieval)
         # - Store result in step_contexts with type="direct_answer"
         # - Return updated state
+        increment_query_routing("direct_answer")
         openai_client = runtime.get("openai_client", None)
         if not openai_client:
             raise ValueError("OpenAI client is required for direct answer node.")
@@ -2421,9 +2429,11 @@ def create_generate_node(
                     docs = step_ctx.get("docs", [])
 
                     # Check if contexts have sub_query labels (indicates decomposition was used)
-                    sub_queries = set(
+                    # IMPORTANT: Use list with dict.fromkeys() to preserve insertion order from docs
+                    # (set doesn't guarantee order, causing citation number mismatch with frontend)
+                    sub_queries = list(dict.fromkeys(
                         d.get("sub_query") for d in docs if d.get("sub_query")
-                    )
+                    ))
                     has_decomposition = len(sub_queries) > 1
                     num_sub_queries = len(sub_queries)
 
@@ -2817,24 +2827,63 @@ def create_verify_node(
 
             # If all steps complete, concatenate all step answers
             if not has_more_steps:
+                # Get step_contexts for doc counting and sources
+                step_contexts = state.get("step_contexts", {})
+
                 # Build final answer from all step answers
                 if len(step_answers) == 1:
-                    # Single step - return answer directly
+                    # Single step - return answer directly (no renumbering needed)
                     final_answer = step_answers[0]["answer"]
                 else:
-                    # Multiple steps - format with sections
+                    # Multiple steps - renumber citations globally and format
+                    # Calculate doc counts per step for cumulative offset
+                    step_doc_counts = {}
+                    for step_num in sorted(step_contexts.keys()):
+                        doc_count = 0
+                        for ctx in step_contexts.get(step_num, []):
+                            if ctx.get("type") == "retrieval":
+                                doc_count += len(ctx.get("docs", []))
+                        step_doc_counts[step_num] = doc_count
+
+                    # Build answer parts with renumbered citations
                     answer_parts = []
+                    cumulative_offset = 0
+
                     for step_ans in step_answers:
+                        step_num = step_ans["step"]
+
+                        # Renumber citations with cumulative offset
+                        renumbered_answer = renumber_citations(
+                            step_ans["answer"], cumulative_offset
+                        )
+
                         # Extract task description (remove tool name prefix)
                         task = step_ans["question"]
                         if ":" in task:
                             task = task.split(":", 1)[1].strip()
 
                         answer_parts.append(
-                            f"**{task.capitalize()}**\n{step_ans['answer']}"
+                            f"**{task.capitalize()}**\n{renumbered_answer}"
                         )
 
+                        # Add this step's doc count to offset for next step
+                        cumulative_offset += step_doc_counts.get(step_num, 0)
+
                     final_answer = "\n\n".join(answer_parts)
+
+                # Add programmatic Sources line based on all contexts
+                all_docs = []
+                for step_num in sorted(step_contexts.keys()):
+                    for ctx in step_contexts.get(step_num, []):
+                        if ctx.get("type") == "retrieval":
+                            all_docs.extend(ctx.get("docs", []))
+
+                if all_docs:
+                    final_answer, cited_files = add_sources_from_citations(
+                        final_answer, all_docs
+                    )
+                    if cited_files:
+                        logger.info(f"[VERIFY] Final sources: {cited_files}")
             else:
                 final_answer = None
 

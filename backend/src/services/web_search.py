@@ -15,6 +15,7 @@ from src.config.settings import Config
 from ddgs import DDGS  # Renamed from duckduckgo_search
 from tavily import TavilyClient
 from langsmith import traceable
+from src.observability.metrics import increment_error, MetricsErrorType
 
 logger = logging.getLogger(__name__)
 
@@ -204,6 +205,7 @@ class WebSearchService:
             return final_results
         except Exception as e:
             logger.error(f"[WEB_SEARCH] DuckDuckGo error: {str(e)}")
+            increment_error(MetricsErrorType.WEB_SEARCH_FAILED)
             return []
 
     def _search_tavily(
@@ -259,6 +261,7 @@ class WebSearchService:
             return final_results
         except Exception as e:
             logger.error(f"[WEB_SEARCH] Tavily error: {str(e)}")
+            increment_error(MetricsErrorType.WEB_SEARCH_FAILED)
             return []
 
     def _extract_domain(self, url: str) -> str:

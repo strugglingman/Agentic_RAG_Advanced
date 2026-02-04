@@ -31,6 +31,10 @@ from src.services.langgraph_state import (
 from src.services.agent_service import AgentService
 from src.services.langgraph_builder import build_langgraph_agent
 from src.services.llm_client import chat_completion_json
+from src.observability.metrics import (
+    increment_active_queries,
+    decrement_active_queries,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -180,17 +184,26 @@ class QuerySupervisor:
         Returns:
             QueryResult containing answer, contexts, and optional HITL interrupt
         """
-        route = self._classify_query(query)
-        if route == ExecutionRoute.AGENT_SERVICE:
-            answer, contexts = await self._execute_agent_service(query, context)
-            return QueryResult(answer=answer, contexts=contexts)
-        else:
+        try:
+            # Track active queries for observability
+            logger.debug("[Process Query] Incrementing active queries counter")
+            increment_active_queries()
+
+            route = self._classify_query(query)
+            if route == ExecutionRoute.AGENT_SERVICE:
+                answer, contexts = await self._execute_agent_service(query, context)
+                return QueryResult(answer=answer, contexts=contexts)
+
             answer, contexts, hitl_interrupt = await self._execute_langgraph(
                 query, context
             )
             return QueryResult(
                 answer=answer, contexts=contexts, hitl_interrupt=hitl_interrupt
             )
+        finally:
+            # Decrement active queries counter
+            logger.debug("[Process Query] Decrementing active queries counter")
+            decrement_active_queries()
 
     async def resume_workflow(
         self, thread_id: str, context: Dict[str, Any], confirmed: bool = True
@@ -253,6 +266,9 @@ class QuerySupervisor:
         langgraph_agent = build_langgraph_agent(runtime, checkpointer=checkpointer)
 
         try:
+            # Track active queries for observability
+            increment_active_queries()
+
             # Resume from checkpoint using astream - pass None to continue from saved state
             logger.info(f"[HITL] Resuming workflow with thread_id: {thread_id}")
             final_state = None
@@ -289,6 +305,9 @@ class QuerySupervisor:
         except Exception as e:
             logger.error(f"[HITL] Error resuming workflow: {e}")
             raise
+        finally:
+            # Decrement active queries counter
+            decrement_active_queries()
 
     async def _get_cancelled_result(
         self, thread_id: str, context: Dict[str, Any]

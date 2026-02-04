@@ -17,6 +17,7 @@ Maps from: src/routes/chat.py
 """
 
 import json
+import time
 from typing import Optional, Any
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from fastapi.responses import StreamingResponse
@@ -33,6 +34,7 @@ from src.application.commands.chat.send_message import (
 from src.domain.value_objects.conversation_id import ConversationId
 from src.presentation.dependencies.auth import AuthUser, get_current_user
 from src.utils.stream_utils import stream_text_smart
+from src.observability.metrics import observe_request_latency
 from logging import getLogger
 
 logger = getLogger(__name__)
@@ -126,6 +128,8 @@ async def chat_agent(
 
     Maps from: routes/chat.py chat_agent()
     """
+    start_time = time.time()
+    status_code = 200
     try:
         # Extract latest user message
         msgs = body.messages
@@ -216,14 +220,20 @@ async def chat_agent(
         )
 
     except ValueError as e:
+        status_code = 400
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except PermissionError as e:
+        status_code = 403
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
     except Exception as e:
+        status_code = 500
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Chat error: {str(e)}",
         )
+    finally:
+        duration = time.time() - start_time
+        observe_request_latency("POST", "/api/chat/agent", status_code, duration)
 
 
 @router.post("", response_model=ChatMessageResponse)

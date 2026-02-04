@@ -33,6 +33,7 @@ Reference: src/evaluation/eval_data/multihop_test.jsonl for example decompositio
 import json
 import logging
 import atexit
+import time
 from typing import Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from openai import OpenAI
@@ -40,6 +41,7 @@ from src.services.vector_db import VectorDB
 from src.services.retrieval import retrieve
 from src.services.llm_client import chat_completion_json
 from src.config.settings import Config
+from src.observability.metrics import observe_retrieval_latency, increment_error, MetricsErrorType
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +121,14 @@ Output: ["Q3 revenue"]
 Example 5:
 Query: "Tell me about the vacation policy"
 Output: ["vacation policy"]
+
+Example 6:
+Query: "Compare Berkshire Hathaway and UnitedHealth Group's share repurchase and dividend per share in 2023"
+Output: ["Berkshire Hathaway share repurchase 2023", "Berkshire Hathaway dividend per share 2023", "UnitedHealth Group share repurchase 2023", "UnitedHealth Group dividend per share 2023"]
+
+Example 7:
+Query: "Compare Apple, Microsoft, and Google's revenue growth in 2023"
+Output: ["Apple revenue growth 2023", "Microsoft revenue growth 2023", "Google revenue growth 2023"]
 """
 
 
@@ -136,6 +146,7 @@ WHEN TO DECOMPOSE:
 - Multi-entity queries: "What are X and Y's revenues?" → ["X revenue", "Y revenue"]
 - Multi-aspect queries: "What is A's relationship to B and how many employees?" → ["A B relationship", "A employees"]
 - Time-range queries: "How did X change from 2021 to 2023?" → ["X 2021", "X 2023"]
+- Multi-entity multi-attribute: "Compare A and B on X and Y" → ["A X", "A Y", "B X", "B Y"] (cover ALL combinations)
 
 WHEN NOT TO DECOMPOSE (return single query):
 - Simple factual: "What is our Q3 revenue?" → ["Q3 revenue"]
@@ -147,7 +158,7 @@ OUTPUT FORMAT:
 - Each string is a SHORT, KEYWORD-FOCUSED search query (not a sentence)
 - Keep entity names intact (e.g., "Delta Air Lines" not just "Delta")
 - Include relevant year/period if mentioned
-- Maximum 4 sub-queries (if more needed, combine related aspects)
+- Maximum 6 sub-queries (covers most multi-entity multi-attribute comparisons)
 
 {few_shot_examples}
 """
@@ -238,8 +249,8 @@ def decompose_query(
             raise ValueError("'queries' field is not a list")
         if len(sub_queries) == 0:
             raise ValueError("Decomposition returned empty list")
-        if len(sub_queries) > 4:
-            sub_queries = sub_queries[:4]
+        if len(sub_queries) > 6:
+            sub_queries = sub_queries[:6]
 
         logger.info(f"[DECOMPOSITION] '{query}' → {sub_queries}")
         print(f"         Decomposed into: {sub_queries}")
@@ -339,6 +350,7 @@ def parallel_retrieve(
             logger.debug(f"[PARALLEL_RETRIEVE] '{sq}': {len(ctx or [])} contexts")
     except TimeoutError as te:
         logger.error(f"[PARALLEL_RETRIEVE] Timeout: {te}")
+        increment_error(MetricsErrorType.TIMEOUT)
         results.append(([], sq))
     except Exception as e:
         logger.error(f"[PARALLEL_RETRIEVE] Failed for '{sq}': {e}")
@@ -478,22 +490,40 @@ def retrieve_with_decomposition(
         # NEW:
         ctx, err = retrieve_with_decomposition(vector_db, query, ..., openai_client)
     """
-    if not Config.DECOMPOSITION_ENABLED:
-        return retrieve(
-            vector_db=vector_db,
-            query=query,
-            dept_id=dept_id,
-            user_id=user_id,
-            top_k=top_k,
-            where=where,
-            use_hybrid=use_hybrid,
-            use_reranker=use_reranker,
-        )
+    start_time = time.time()
+    search_type = "single"  # Default, updated if decomposition happens
+
+    def _get_search_mode() -> str:
+        """Build search mode string for metrics label."""
+        mode = "hybrid" if use_hybrid else "semantic"
+        if use_reranker:
+            mode += "_reranker"
+        return mode
 
     try:
+        if not Config.DECOMPOSITION_ENABLED:
+            search_type = _get_search_mode()
+            return retrieve(
+                vector_db=vector_db,
+                query=query,
+                dept_id=dept_id,
+                user_id=user_id,
+                top_k=top_k,
+                where=where,
+                use_hybrid=use_hybrid,
+                use_reranker=use_reranker,
+            )
+
         sub_queries = decompose_query(
             query, openai_client=openai_client, model=Config.OPENAI_MODEL, temperature=0
         )
+
+        # Set search_type based on decomposition result
+        if len(sub_queries) > 1:
+            search_type = f"decomposed_{_get_search_mode()}"
+        else:
+            search_type = _get_search_mode()
+
         results = parallel_retrieve(
             sub_queries=sub_queries,
             vector_db=vector_db,
@@ -513,6 +543,7 @@ def retrieve_with_decomposition(
         return final_contexts, None
     except Exception as e:
         logger.warning(f"[DECOMPOSITION] Failed: {e}, falling back to original query")
+        search_type = _get_search_mode()
         return retrieve(
             vector_db=vector_db,
             query=query,
@@ -523,6 +554,9 @@ def retrieve_with_decomposition(
             use_hybrid=use_hybrid,
             use_reranker=use_reranker,
         )
+    finally:
+        duration = time.time() - start_time
+        observe_retrieval_latency(search_type, duration)
 
 
 # =============================================================================

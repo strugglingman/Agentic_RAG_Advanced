@@ -34,6 +34,7 @@ from src.services.clarification_helper import ClarificationHelper
 from src.services.web_search import WebSearchService
 from src.services.browser_download import browser_download, is_browser_use_available
 from src.utils.send_email import send_email
+from src.observability.metrics import increment_error, MetricsErrorType
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +129,10 @@ def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
             where=where,
             use_hybrid=use_hybrid,
             use_reranker=use_reranker,
+        )
+
+        logger.debug(
+            f"[SEARCH_DOCUMENTS] First time retrieved {len(ctx)} contexts for query: {current_query}"
         )
 
         if not ctx:
@@ -338,18 +343,24 @@ def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
 
         # Format contexts for LLM - group by sub-query if decomposition was used
         # Check if contexts have sub_query labels (indicates decomposition was used)
-        sub_queries = set(c.get("sub_query") for c in ctx if c.get("sub_query"))
+        # IMPORTANT: Use list with dict.fromkeys() to preserve insertion order from ctx
+        # (set doesn't guarantee order, causing citation number mismatch with frontend)
+        sub_queries = list(
+            dict.fromkeys(c.get("sub_query") for c in ctx if c.get("sub_query"))
+        )
         has_decomposition = len(sub_queries) > 1
 
         if has_decomposition:
             # Group contexts by sub-query for clearer presentation to LLM
-            context_str = f"Original Query: \"{query}\"\n"
+            context_str = f'Original Query: "{query}"\n'
             context_str += f"Decomposed into {len(sub_queries)} sub-queries for better retrieval:\n\n"
 
             context_idx = 1
             for sq in sub_queries:
                 sq_contexts = [c for c in ctx if c.get("sub_query") == sq]
-                context_str += f"=== Sub-query: \"{sq}\" ({len(sq_contexts)} results) ===\n\n"
+                context_str += (
+                    f'=== Sub-query: "{sq}" ({len(sq_contexts)} results) ===\n\n'
+                )
 
                 for c in sq_contexts:
                     context_str += (
@@ -413,9 +424,7 @@ def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
             f"- Place bracket citations [n] IMMEDIATELY AFTER each sentence\n"
             f"- Example: 'The revenue was $50M [1]. Sales increased by 20% [2].'\n"
             f"- Use ONLY the information from these contexts to answer\n"
-            f"- At the end of your answer, cite the sources you used. For each source file, list the specific page numbers "
-            f"from the contexts you referenced (look at the 'Page:' information in each context header). "
-            f"Format: 'Sources: filename1.pdf (pages 15, 23), filename2.pdf (page 7)'\n"
+            f"- Do NOT include a 'Sources:' line at the end - sources will be added automatically\n"
             f"- If you also have web_search results in other tool responses, answer those naturally WITHOUT citations\n"
             f"- IMPORTANT: The 'file_id' in context headers is for INTERNAL matching only. NEVER show file_id values in your response to users.\n"
         )
@@ -436,6 +445,7 @@ def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
 
         return result
     except Exception as e:
+        increment_error(MetricsErrorType.RETRIEVAL_FAILED)
         return f"Error during document retrieval: {str(e)}"
 
 
@@ -784,6 +794,7 @@ def execute_web_search(args: Dict[str, Any], context: Dict[str, Any]) -> str:
             print("[WEB_SEARCH] No results found, falling back to document contexts")
             return "No relevant web results found."
     except Exception as e:
+        increment_error(MetricsErrorType.WEB_SEARCH_FAILED)
         return f"Error during web search: {str(e)}"
 
 

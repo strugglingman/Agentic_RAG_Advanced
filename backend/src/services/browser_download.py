@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Optional, Dict, Tuple
 
 from src.config.settings import Config
+from src.observability.metrics import increment_error, MetricsErrorType
 
 logger = logging.getLogger(__name__)
 
@@ -136,6 +137,7 @@ async def browser_download(
 
     except asyncio.TimeoutError:
         logger.error(f"[BROWSER_DOWNLOAD] Timeout after {timeout}s")
+        increment_error(MetricsErrorType.TIMEOUT)
         return False, f"Browser automation timed out after {timeout} seconds", None
     except Exception as e:
         logger.error(f"[BROWSER_DOWNLOAD] Error: {e}")

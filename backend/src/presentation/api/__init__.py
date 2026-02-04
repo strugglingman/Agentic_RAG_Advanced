@@ -10,6 +10,7 @@ from src.presentation.api.files import (
 )
 from src.presentation.api.org import router as org_router
 from src.presentation.api.ingest import router as ingest_router
+from src.presentation.api.metrics import router as metrics_router
 
 __all__ = [
     "conversations_router",
@@ -18,4 +19,5 @@ __all__ = [
     "files_router",
     "org_router",
     "ingest_router",
+    "metrics_router",
 ]

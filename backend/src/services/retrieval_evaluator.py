@@ -29,6 +29,7 @@ from src.models.evaluation import (
     ReflectionMode,
 )
 from src.services.llm_client import chat_completion, chat_completion_json
+from src.observability.metrics import increment_self_reflection_action
 
 
 class RetrievalEvaluator:
@@ -85,25 +86,21 @@ class RetrievalEvaluator:
 
         Returns:
             EvaluationResult with quality assessment and recommendation
-
-        TODO: Implement evaluation routing
-        Steps:
-        1. Get mode from criteria.mode (fallback to self.config.mode if None)
-        2. Route to appropriate method:
-           - ReflectionMode.FAST -> return self._evaluate_fast(criteria)
-           - ReflectionMode.BALANCED -> return self._evaluate_balanced(criteria)
-           - ReflectionMode.THOROUGH -> return self._evaluate_thorough(criteria)
-        3. If mode is invalid, raise ValueError or fallback to FAST mode
         """
         mode = criteria.mode or self.config.mode
         if mode == ReflectionMode.FAST:
-            return self._evaluate_fast(criteria)
+            result = self._evaluate_fast(criteria)
         elif mode == ReflectionMode.BALANCED:
-            return self._evaluate_balanced(criteria)
+            result = self._evaluate_balanced(criteria)
         elif mode == ReflectionMode.THOROUGH:
-            return self._evaluate_thorough(criteria)
+            result = self._evaluate_thorough(criteria)
         else:
             raise ValueError(f"Invalid reflection mode: {mode}")
+
+        # Record self-reflection action metric for Prometheus
+        increment_self_reflection_action(result.recommendation.value)
+
+        return result
 
     # =========================================================================
     # FAST MODE: Heuristic-Based Evaluation
@@ -297,6 +294,10 @@ class RetrievalEvaluator:
             result.confidence = adjusted_confidence
             result.reasoning = llm_reasoning
             result.quality = self.config.get_quality_level(adjusted_confidence)
+            # Recalculate recommendation based on adjusted confidence
+            result.recommendation, _ = self._determine_recommendation(
+                adjusted_confidence, len(criteria.contexts), criteria.query
+            )
         else:
             logger.info(
                 f"[EVAL_BALANCED] No LLM check needed (confidence {result.confidence:.4f} not in borderline range)"

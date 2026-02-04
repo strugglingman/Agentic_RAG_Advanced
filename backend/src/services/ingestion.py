@@ -13,6 +13,7 @@ from src.services.document_processor import read_text
 from src.services.langchain_processor import make_chunks_langchain
 from src.domain.entities.file_registry import FileRegistry
 from src.config.settings import Config
+from src.observability.metrics import increment_error, MetricsErrorType
 
 if TYPE_CHECKING:
     from src.services.vector_db import VectorDB
@@ -103,6 +104,7 @@ def ingest_file(
     try:
         pages_text = read_text(file_path, text_max=Config.TEXT_MAX)
     except Exception as e:
+        increment_error(MetricsErrorType.INGESTION_FAILED)
         return IngestResult(
             file_id=file_id,
             filename=filename,
@@ -176,6 +178,7 @@ def ingest_file(
                 f"[INGESTION] Indexed {len(docs)} chunks for file {file_id} ({filename})"
             )
         except Exception as e:
+            increment_error(MetricsErrorType.INGESTION_FAILED)
             return IngestResult(
                 file_id=file_id,
                 filename=filename,
