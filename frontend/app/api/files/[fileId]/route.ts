@@ -29,8 +29,10 @@ export const runtime = 'nodejs';
  */
 export async function GET(
   req: NextRequest,
-  { params }: { params: { fileId: string } }
+  { params }: { params: Promise<{ fileId: string }> }
 ) {
+  const { fileId } = await params;
+
   // Authenticate user
   const session = await getServerSession(authOptions);
   if (!session) {
@@ -50,9 +52,6 @@ export async function GET(
     }
     return NextResponse.json({ error: "Unable to mint service token" }, { status: 500 });
   }
-
-  // Extract file ID from route parameter
-  const { fileId } = params;
 
   // Proxy request to FastAPI backend's unified file endpoint
   const backendUrl = `${process.env.FASTAPI_URL}/files/${fileId}`;
