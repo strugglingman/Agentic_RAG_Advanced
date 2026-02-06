@@ -2,79 +2,80 @@
   "organization": "MYHB",
   "departments": [
     {
-    "id": "MYHB",
-    "name": "MYHB Corp",
-    "children": [
-        {
-          "id": "software",
-          "name": "Software Development",
-          "children": [
-            {
-              "id": "frontend",
-              "name": "Frontend Team"
-            },
-            {
-              "id": "backend",
-              "name": "Backend Team",
-              "children": [
-                {
-                  "id": "ui-ux",
-                  "name": "UI/UX Subteam"
-                },
-                {
-                  "id": "web-dev",
-                  "name": "Web Development Subteam"
-                }
-              ]
-            },
-            {
-              "id": "ml",
-              "name": "Machine Learning"
-            }
-          ]
-        },
-        {
-          "id": "sales",
-          "name": "Sales",
-          "children": [
-            {
-              "id": "enterprise",
-              "name": "Enterprise Sales"
-            },
-            {
-              "id": "smb",
-              "name": "SMB Sales"
-            }
-          ]
-        },
-        {
-          "id": "hr",
-          "name": "Human Resources",
-          "children": [
-            {
-              "id": "recruiting",
-              "name": "Recruiting"
-            },
-            {
-              "id": "benefits",
-              "name": "Benefits & Payroll"
-            }
-          ]
-        },
-        {
-          "id": "finance",
-          "name": "Finance",
-          "children": [
-            {
-              "id": "accounting",
-              "name": "Accounting"
-            },
-            {
-              "id": "fp-a",
-              "name": "FP&A"
-            }
-          ]
-        }    
-    ]}
-]
+      "id": "MYHB",
+      "name": "MYHB Corp",
+      "children": [
+          {
+            "id": "software",
+            "name": "Software Development",
+            "children": [
+              {
+                "id": "frontend",
+                "name": "Frontend Team"
+              },
+              {
+                "id": "backend",
+                "name": "Backend Team",
+                "children": [
+                  {
+                    "id": "ui-ux",
+                    "name": "UI/UX Subteam"
+                  },
+                  {
+                    "id": "web-dev",
+                    "name": "Web Development Subteam"
+                  }
+                ]
+              },
+              {
+                "id": "ml",
+                "name": "Machine Learning"
+              }
+            ]
+          },
+          {
+            "id": "sales",
+            "name": "Sales",
+            "children": [
+              {
+                "id": "enterprise",
+                "name": "Enterprise Sales"
+              },
+              {
+                "id": "smb",
+                "name": "SMB Sales"
+              }
+            ]
+          },
+          {
+            "id": "hr",
+            "name": "Human Resources",
+            "children": [
+              {
+                "id": "recruiting",
+                "name": "Recruiting"
+              },
+              {
+                "id": "benefits",
+                "name": "Benefits & Payroll"
+              }
+            ]
+          },
+          {
+            "id": "finance",
+            "name": "Finance",
+            "children": [
+              {
+                "id": "accounting",
+                "name": "Accounting"
+              },
+              {
+                "id": "fp-a",
+                "name": "FP&A"
+              }
+            ]
+          }    
+      ]
+    }
+  ]
 }
