@@ -11,18 +11,9 @@ Or with uvicorn directly:
 
 import os
 import sys
-import io
 
-# Set UTF-8 encoding for stdout/stderr to handle Unicode characters on Windows
-if sys.platform == "win32":
-    sys.stdout = io.TextIOWrapper(
-        sys.stdout.buffer, encoding="utf-8", errors="replace", line_buffering=True
-    )
-    sys.stderr = io.TextIOWrapper(
-        sys.stderr.buffer, encoding="utf-8", errors="replace", line_buffering=True
-    )
-
-os.environ["PYTHONIOENCODING"] = "utf-8"
+# NOTE: Windows UTF-8 console fix is now handled in src/fastapi_app.py at
+# module level, so it also covers uvicorn --reload worker processes.
 
 from dotenv import load_dotenv
 
