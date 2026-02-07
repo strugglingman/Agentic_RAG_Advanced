@@ -69,31 +69,38 @@ def setup_logging(level: str = "INFO", log_file: str | None = None):
     os.environ["PYTHONIOENCODING"] = "utf-8"
     os.environ["PYTHONUTF8"] = "1"
 
+    # Fix Windows console encoding GLOBALLY before any logging
+    # This ensures all loggers (including third-party) can handle Unicode
+    if sys.platform == "win32":
+        try:
+            # Replace stdout globally
+            if hasattr(sys.stdout, "buffer"):
+                sys.stdout = io.TextIOWrapper(
+                    sys.stdout.buffer,
+                    encoding="utf-8",
+                    errors="replace",  # Replace unencodable chars instead of crashing
+                    line_buffering=True,
+                )
+            # Replace stderr globally
+            if hasattr(sys.stderr, "buffer"):
+                sys.stderr = io.TextIOWrapper(
+                    sys.stderr.buffer,
+                    encoding="utf-8",
+                    errors="replace",
+                    line_buffering=True,
+                )
+        except (AttributeError, ValueError):
+            # Already wrapped or running in environment that doesn't support it
+            pass
+
     # Set up root logger
     root = logging.getLogger()
     root.setLevel(logging.WARNING)  # Set root to WARNING to avoid too much noise
     # Add a filter for correlation ID if exists
     root.addFilter(CorrelationIdFilter())
 
-    # Handle both raw stdout and already-wrapped stdout (from run.py UTF-8 setup)
-    # On Windows, we need to ensure UTF-8 encoding with error handling
-    if sys.platform == "win32":
-        try:
-            if hasattr(sys.stdout, "buffer"):
-                stream = io.TextIOWrapper(
-                    sys.stdout.buffer,
-                    encoding="utf-8",
-                    errors="replace",  # Replace unencodable chars instead of crashing
-                    line_buffering=True,
-                )
-            else:
-                stream = sys.stdout
-        except Exception:
-            stream = sys.stdout
-    else:
-        stream = sys.stdout
-
-    logger_handler = logging.StreamHandler(stream)
+    # Use the now-UTF8-wrapped stdout for the stream handler
+    logger_handler = logging.StreamHandler(sys.stdout)
     formatter = SafeFormatter(Config.LOG_FORMAT)
     logger_handler.setFormatter(formatter)
     logger_handler.addFilter(CorrelationIdFilter())

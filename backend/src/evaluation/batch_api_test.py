@@ -12,6 +12,8 @@ Usage:
     python -m src.evaluation.batch_api_test --data eval_data/test.jsonl
     python -m src.evaluation.batch_api_test --query "Compare Delta and Starbucks revenue"
     python -m src.evaluation.batch_api_test --data eval_data/test.jsonl --limit 5
+    python -m src.evaluation.batch_api_test --data eval_data/test.jsonl --reuse-conversation
+    python -m src.evaluation.batch_api_test --data eval_data/test.jsonl --query-index 8
 
 Environment:
     Requires backend to be running at BACKEND_URL (default: http://localhost:5001)
@@ -23,6 +25,7 @@ import os
 import sys
 import time
 import jwt
+import traceback
 from pathlib import Path
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field, asdict
@@ -32,6 +35,10 @@ import httpx
 
 # Add backend to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
+# Fix Windows encoding issues
+from src.utils.encoding_fix import fix_windows_encoding
+fix_windows_encoding()
 
 from src.config.settings import Config
 
@@ -222,6 +229,25 @@ def send_query(
 
     except httpx.HTTPStatusError as e:
         elapsed = time.time() - start_time
+        # Try to read error response body (may fail for streaming responses)
+        try:
+            error_body = e.response.text
+        except Exception:
+            error_body = "(response body not available)"
+
+        # Build detailed error message
+        error_details = [
+            f"HTTP {e.response.status_code}: {error_body}",
+            f"Request: POST {base_url}/chat/agent",
+            f"Conversation ID: {conversation_id or 'None'}",
+            f"Question length: {len(question)} chars",
+        ]
+
+        # Print detailed error to console for debugging
+        print(f"\n  [ERROR DETAILS]")
+        for detail in error_details:
+            print(f"    {detail}")
+
         return TestResult(
             question=question,
             ground_truth="",
@@ -230,10 +256,26 @@ def send_query(
             conversation_id="",
             elapsed_time=elapsed,
             success=False,
-            error=f"HTTP {e.response.status_code}: {e.response.text}",
+            error=" | ".join(error_details),
         )
     except Exception as e:
         elapsed = time.time() - start_time
+        # Get full traceback
+        tb = traceback.format_exc()
+
+        error_details = [
+            f"Exception: {type(e).__name__}: {str(e)}",
+            f"Conversation ID: {conversation_id or 'None'}",
+            f"Question: {question[:100]}...",
+        ]
+
+        # Print detailed error to console
+        print(f"\n  [ERROR DETAILS]")
+        for detail in error_details:
+            print(f"    {detail}")
+        print(f"  [TRACEBACK]")
+        print(f"    {tb}")
+
         return TestResult(
             question=question,
             ground_truth="",
@@ -242,7 +284,7 @@ def send_query(
             conversation_id="",
             elapsed_time=elapsed,
             success=False,
-            error=str(e),
+            error=f"{type(e).__name__}: {str(e)}",
         )
 
 
@@ -275,23 +317,35 @@ def run_batch_test(
     test_cases: list[TestCase],
     output_dir: str,
     verbose: bool = True,
+    reuse_conversation: bool = False,
 ) -> list[TestResult]:
     """
     Run batch test against backend API.
+
+    Args:
+        reuse_conversation: If True, reuse same conversation_id for all queries
     """
     results = []
+    conversation_id = None  # Track conversation across queries
 
     with httpx.Client() as client:
         for i, case in enumerate(test_cases, 1):
             if verbose:
                 print(f"\n[{i}/{len(test_cases)}] Testing: {case.question[:60]}...")
+                if reuse_conversation and conversation_id:
+                    print(f"    → Using conversation: {conversation_id[:8]}...")
 
             result = send_query(
                 client=client,
                 base_url=base_url,
                 token=token,
                 question=case.question,
+                conversation_id=conversation_id if reuse_conversation else None,
             )
+
+            # Update conversation_id for next query if reusing
+            if reuse_conversation and result.success and result.conversation_id:
+                conversation_id = result.conversation_id
 
             # Add ground truth
             result.ground_truth = case.ground_truth
@@ -305,6 +359,8 @@ def run_batch_test(
                     print(f"    ✓ Time: {result.elapsed_time:.2f}s")
                     if result.has_decomposition:
                         print(f"    ✓ Decomposition: {result.sub_queries_detected}")
+                    if reuse_conversation:
+                        print(f"    ✓ Conversation ID: {result.conversation_id[:8]}...")
                 else:
                     print(f"    ✗ Error: {result.error}")
 
@@ -339,6 +395,12 @@ def analyze_results(results: list[TestResult]) -> dict:
         for r in successful:
             all_sources.update(r.sources_used)
         analysis["unique_sources"] = list(all_sources)
+
+        # Count unique conversations
+        unique_conversations = set(
+            r.conversation_id for r in successful if r.conversation_id
+        )
+        analysis["unique_conversations"] = len(unique_conversations)
 
     return analysis
 
@@ -376,6 +438,7 @@ def print_summary(analysis: dict):
         print(f"  Avg contexts: {analysis['avg_contexts']:.1f}")
         print(f"  Decomposition used: {analysis['decomposition_used']} times")
         print(f"  Unique sources: {len(analysis.get('unique_sources', []))}")
+        print(f"  Unique conversations: {analysis.get('unique_conversations', 0)}")
 
     print("=" * 60)
 
@@ -418,6 +481,12 @@ def main():
         help="Limit number of tests (0 = all)",
     )
     parser.add_argument(
+        "--query-index",
+        type=int,
+        default=0,
+        help="Run only a specific query by index from JSONL (1-based index, requires --data)",
+    )
+    parser.add_argument(
         "--email",
         type=str,
         default="strugglingman@gmail.com",
@@ -434,11 +503,20 @@ def main():
         action="store_true",
         help="Suppress per-test output",
     )
+    parser.add_argument(
+        "--reuse-conversation",
+        action="store_true",
+        help="Reuse same conversation for all queries (prevents creating many conversations)",
+    )
     args = parser.parse_args()
 
     # Validate inputs
     if not args.data and not args.query:
         print("Error: Must provide either --data or --query")
+        sys.exit(1)
+
+    if args.query_index > 0 and not args.data:
+        print("Error: --query-index requires --data")
         sys.exit(1)
 
     # Create output directory
@@ -459,12 +537,23 @@ def main():
         test_cases = load_test_cases(args.data)
         print(f"Loaded {len(test_cases)} test cases")
 
-    if args.limit > 0:
+    # Select specific query if requested
+    if args.query_index > 0:
+        if args.query_index > len(test_cases):
+            print(f"Error: Query index {args.query_index} exceeds total queries ({len(test_cases)})")
+            sys.exit(1)
+        selected_case = test_cases[args.query_index - 1]  # Convert to 0-based index
+        test_cases = [selected_case]
+        print(f"Selected query #{args.query_index}: {selected_case.question[:60]}...")
+
+    if args.limit > 0 and args.query_index == 0:  # Only apply limit if not using query-index
         test_cases = test_cases[: args.limit]
         print(f"Limited to {len(test_cases)} test cases")
 
     # Run tests
     print(f"\nTesting against: {args.url}")
+    if args.reuse_conversation:
+        print("Mode: Reusing same conversation for all queries")
     print("-" * 60)
 
     results = run_batch_test(
@@ -473,6 +562,7 @@ def main():
         test_cases=test_cases,
         output_dir=args.output,
         verbose=not args.quiet,
+        reuse_conversation=args.reuse_conversation,
     )
 
     # Analyze
