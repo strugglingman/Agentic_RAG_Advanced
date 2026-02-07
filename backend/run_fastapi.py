@@ -11,7 +11,6 @@ Or with uvicorn directly:
 
 import os
 import sys
-import io
 
 # CRITICAL: Set UTF-8 mode for ALL Python processes (including uvicorn workers)
 # Must be set BEFORE any other imports
@@ -23,11 +22,17 @@ if sys.platform == "win32":
     try:
         if hasattr(sys.stdout, "buffer"):
             sys.stdout = io.TextIOWrapper(
-                sys.stdout.buffer, encoding="utf-8", errors="replace", line_buffering=True
+                sys.stdout.buffer,
+                encoding="utf-8",
+                errors="replace",
+                line_buffering=True,
             )
         if hasattr(sys.stderr, "buffer"):
             sys.stderr = io.TextIOWrapper(
-                sys.stderr.buffer, encoding="utf-8", errors="replace", line_buffering=True
+                sys.stderr.buffer,
+                encoding="utf-8",
+                errors="replace",
+                line_buffering=True,
             )
     except (AttributeError, ValueError):
         pass  # Already wrapped

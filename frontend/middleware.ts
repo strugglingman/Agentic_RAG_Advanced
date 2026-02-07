@@ -30,6 +30,6 @@ export const config = {
     "/api/ingest/:path*",
     "/api/files/:path*",
     "/api/conversations/:path*",
-    "/api/org-structure/:path*",
+    // /api/org-structure is NOT protected — it is needed by the user registration
   ],
 };

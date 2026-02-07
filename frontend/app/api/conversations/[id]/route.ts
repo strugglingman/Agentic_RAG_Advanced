@@ -5,7 +5,8 @@ import { mintServiceToken, ServiceAuthError } from "@/lib/service-auth";
 import { randomUUID } from 'crypto';
 
 export const runtime = 'nodejs'
-export async function GET(req: Request, { params }: { params: { id: string } }) {
+export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
+    const { id } = await params;
     const session = await getServerSession(authOptions);
     if (!session) {
         return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -19,7 +20,7 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
             return NextResponse.json({ error: error.message }, { status: error.status });
         }
     }
-    const r = await fetch(`${process.env.FASTAPI_URL}/conversations/${params.id}`, {
+    const r = await fetch(`${process.env.FASTAPI_URL}/conversations/${id}`, {
         headers: {
             'Authorization': `Bearer ${token}`,
             'X-Correlation-ID': randomUUID(),
@@ -29,7 +30,8 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
     return new Response(r.body, { status: r.status, headers: { 'Content-Type': 'application/json' } })
 }
 
-export async function PATCH(req: Request, { params }: { params: { id: string; }}) {
+export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
+    const { id } = await params;
     const sessions = await getServerSession(authOptions);
     if (!sessions) {
         return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -45,7 +47,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string; }}
     }
 
     const payload = await req.json();
-    const r = await fetch(`${process.env.FASTAPI_URL}/conversations/${params.id}`, {
+    const r = await fetch(`${process.env.FASTAPI_URL}/conversations/${id}`, {
         method: 'PATCH',
         headers: {
             'Authorization': `Bearer ${token}`,
@@ -58,7 +60,8 @@ export async function PATCH(req: Request, { params }: { params: { id: string; }}
     return new Response(r.body, { status: r.status, headers: { 'Content-Type': 'application/json' } });
 }
 
-export async function DELETE(req: Request, { params }: { params: { id: string }}) {
+export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
+    const { id } = await params;
     const sessions = await getServerSession(authOptions);
     if (!sessions) {
         return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -73,7 +76,7 @@ export async function DELETE(req: Request, { params }: { params: { id: string }}
         }
     }
 
-    const r = await fetch(`${process.env.FASTAPI_URL}/conversations/${params.id}`, {
+    const r = await fetch(`${process.env.FASTAPI_URL}/conversations/${id}`, {
         method: 'DELETE',
         headers: {
             'Authorization': `Bearer ${token}`,

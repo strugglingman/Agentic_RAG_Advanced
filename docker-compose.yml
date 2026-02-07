@@ -6,13 +6,13 @@ services:
     image: nginx:alpine
     ports:
       - "80:80"
-      - "443:443"
+      # Uncomment when SSL certificates are in ./nginx/ssl/
+      # - "443:443"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./nginx/logs:/var/log/nginx
-      # SSL certificates (required for HTTPS)
-      - ./nginx/ssl:/etc/nginx/ssl:ro
-      # Let's Encrypt ACME challenge directory
+      # Uncomment when SSL certificates are available:
+      # - ./nginx/ssl:/etc/nginx/ssl:ro
       - ./nginx/certbot:/var/www/certbot:ro
     depends_on:
       - frontend
@@ -33,10 +33,12 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
+    # Only expose to host for local debugging; remove in production
     ports:
       - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 5s
@@ -48,11 +50,13 @@ services:
   # =============================================================================
   redis:
     image: redis:7-alpine
+    # Only expose to host for local debugging; remove in production
     ports:
       - "6379:6379"
     command: redis-server --appendonly yes
     volumes:
       - redis_data:/data
+    restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -72,17 +76,22 @@ services:
       - ./backend/downloads:/app/downloads
       - ./backend/chroma_db:/app/chroma_db
       - ./backend/logs:/app/logs
+      - ./backend/org_structure.json:/app/org_structure.json:ro
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+    restart: unless-stopped
     environment:
       # Override database URLs to use container hostnames
       - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?schema=chatbot
       - CHECKPOINT_POSTGRES_DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       - REDIS_URL=redis://redis:6379
       - SERVICE_AUTH_SECRET=${SERVICE_AUTH_SECRET}
+    networks:
+      - default
+      - observability-network
 
   # =============================================================================
   # Frontend (Next.js)
@@ -109,7 +118,16 @@ services:
         condition: service_started
       postgres:
         condition: service_healthy
+    restart: unless-stopped
 
 volumes:
   postgres_data:
   redis_data:
+
+networks:
+  default:
+    # Internal network for RAG app services
+  observability-network:
+    # Shared with agentic_rag_observability so Alloy can scrape /metrics
+    external: true
+    name: observability-network

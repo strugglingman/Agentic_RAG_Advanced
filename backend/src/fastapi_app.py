@@ -6,6 +6,35 @@ Migrated endpoints:
 - chat, conversations, files, upload, ingest, org-structure
 """
 
+# ---------------------------------------------------------------------------
+# Windows UTF-8 console fix  (must run before ANY import that prints/logs)
+# ---------------------------------------------------------------------------
+# On Windows the default console encoding (cp1252 / cp936 …) cannot represent
+# characters used in logs and prompts (→ ✓ ✗ ✅ 📊, CJK text, etc.).
+# Wrapping stdout/stderr at module level ensures every code path — including
+# uvicorn --reload worker processes — gets UTF-8 output with safe fallback.
+# ---------------------------------------------------------------------------
+import sys, os, io  # noqa: E401, E402
+
+if sys.platform == "win32":
+    for _stream_name in ("stdout", "stderr"):
+        _stream = getattr(sys, _stream_name)
+        if hasattr(_stream, "buffer") and not (
+            hasattr(_stream, "encoding") and _stream.encoding == "utf-8"
+        ):
+            setattr(
+                sys,
+                _stream_name,
+                io.TextIOWrapper(
+                    _stream.buffer,
+                    encoding="utf-8",
+                    errors="replace",
+                    line_buffering=True,
+                ),
+            )
+    os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+    os.environ.setdefault("PYTHONUTF8", "1")
+
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
