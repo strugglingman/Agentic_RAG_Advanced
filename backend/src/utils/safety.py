@@ -41,7 +41,9 @@ DANGEROUS_PATTERNS: Dict[str, List[str]] = {
     "instruction_injection": [
         r"={3,}|#{3,}|\*{3,}|-{5,}",  # Suspicious delimiter patterns
         r"\[(SYSTEM|INST)\]|\[/INST\]",  # Model-specific tokens
-        r"\b(end.{1,3}of|ignore.{1,3}above|new.{1,3}prompt)\b",
+        r"\bend.{1,3}of.{1,10}(instructions|prompt|system|rules|context)\b",
+        r"\bignore.{1,3}above\b",
+        r"\bnew.{1,3}prompt\b",
     ],
     "information_disclosure": [
         r"\b(list|show|display).{1,10}(all|your).{1,3}(files|documents|secrets|credentials|passwords)\b",

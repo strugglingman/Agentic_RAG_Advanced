@@ -1,4 +1,5 @@
 import os
+import io
 import logging
 from logging.handlers import RotatingFileHandler
 import sys
@@ -98,12 +99,7 @@ def setup_logging(level: str = "INFO", log_file: str | None = None):
     # Add a filter for correlation ID if exists
     root.addFilter(CorrelationIdFilter())
 
-<<<<<<< HEAD
     # Use the now-UTF8-wrapped stdout for the stream handler
-=======
-    # NOTE: Windows UTF-8 stdout/stderr wrapping is handled globally in
-    # fastapi_app.py at module level, so sys.stdout is already safe here.
->>>>>>> 3ca02b88827a034c688e4f80d721938261d0342e
     logger_handler = logging.StreamHandler(sys.stdout)
     formatter = SafeFormatter(Config.LOG_FORMAT)
     logger_handler.setFormatter(formatter)

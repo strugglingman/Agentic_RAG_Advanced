@@ -152,7 +152,7 @@ class Config:
     # When True: Always search internal documents before using LLM knowledge
     # When False: Let LLM decide when to search (more flexible, may skip internal docs)
     FORCE_INTERNAL_RETRIEVAL = os.getenv(
-        "FORCE_INTERNAL_RETRIEVAL", "false"
+        "FORCE_INTERNAL_RETRIEVAL", "true"
     ).lower() in {
         "1",
         "true",

@@ -586,9 +586,6 @@ def create_plan_node(
         if conversation_history:
             # Build a concise summary of recent conversation for context
             recent_messages = conversation_history[-20:]  # Last 10 messages max
-            logger.debug(
-                f"!!!!!!!!!!!!!!!!!!![PLAN] Building conversation history: {[msg['content'][:100] for msg in recent_messages]}"
-            )
             context_parts = []
             for msg in recent_messages:
                 role = msg.get("role", "user")
