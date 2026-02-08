@@ -83,8 +83,8 @@ def get_user_identifier(request: Request) -> str:
             token = auth_header[7:]
             # Decode without verification just to get claims for rate limiting
             payload = jwt.decode(token, options={"verify_signature": False})
-            dept_id = payload.get("dept_id", "")
-            user_id = payload.get("user_id", "") or payload.get("email", "")
+            dept_id = payload.get("dept", "")
+            user_id = payload.get("email", "")
             if dept_id and user_id:
                 return f"{dept_id}-{user_id}"
         except Exception:
