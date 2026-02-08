@@ -2,6 +2,7 @@
 
 import base64
 import io
+import json
 import logging
 import re
 from typing import Optional
@@ -81,7 +82,7 @@ class SlackBotAdapter(BaseBotAdapter):
             )
 
             # Call backend /chat endpoint with base64 attachments
-            conv_id, answer, contexts = await self.call_chat_endpoint(
+            conv_id, answer, contexts, hitl_data = await self.call_chat_endpoint(
                 message=text,
                 conversation_id=existing_conv_id,
                 attachments=attachments if attachments else None,
@@ -89,10 +90,11 @@ class SlackBotAdapter(BaseBotAdapter):
             )
 
             logger.info(
-                "[SLACK] Chat response received: conv_id=%s, answer_len=%d, contexts=%d",
+                "[SLACK] Chat response received: conv_id=%s, answer_len=%d, contexts=%d, hitl=%s",
                 conv_id,
                 len(answer) if answer else 0,
                 len(contexts) if contexts else 0,
+                bool(hitl_data),
             )
 
             # Store new conversation mapping
@@ -101,6 +103,19 @@ class SlackBotAdapter(BaseBotAdapter):
 
             # Remove typing indicator
             await self._remove_typing(channel_id, message_ts)
+
+            # Handle HITL interrupt — send confirmation buttons instead of final answer
+            if hitl_data:
+                await self._send_hitl_confirmation(
+                    channel_id=channel_id,
+                    thread_ts=message_ts,
+                    answer=answer,
+                    hitl_data=hitl_data,
+                    conv_id=conv_id,
+                    user_email=bot_user.user_email,
+                    dept_id=bot_user.dept_id,
+                )
+                return
 
             # Extract file links from answer and prepare for Slack upload
             file_links = self._extract_file_links(answer)
@@ -132,6 +147,87 @@ class SlackBotAdapter(BaseBotAdapter):
                     error_msg += f": {e.args[0]}" if e.args[0] else ""
             error_response = BotResponse(text="", error=error_msg)
             await self.send_response(channel_id, error_response, thread_id=message_ts)
+
+    async def handle_hitl_response(
+        self,
+        channel_id: str,
+        message_ts: str,
+        thread_ts: str | None,
+        hitl_state: dict,
+        confirmed: bool,
+    ) -> None:
+        """Handle user clicking Confirm/Cancel on a HITL button.
+
+        Args:
+            channel_id: Slack channel where the interaction happened
+            message_ts: Timestamp of the message with buttons (to update it)
+            thread_ts: Thread timestamp for reply
+            hitl_state: Deserialized button value with thread_id, conversation_id, etc.
+            confirmed: True if user clicked Confirm, False for Cancel
+        """
+        action = hitl_state.get("action", "unknown")
+
+        try:
+            # Update the button message to show resolved state
+            resolved = self._formatter.format_hitl_resolved(action, confirmed)
+            await self._client.chat_update(
+                channel=channel_id,
+                ts=message_ts,
+                **resolved,
+            )
+
+            # Generate auth token from stored state
+            auth_token = self.generate_auth_token(
+                hitl_state["user_email"], hitl_state["dept_id"]
+            )
+
+            # Show typing indicator
+            await self._show_typing(channel_id, thread_ts)
+
+            # Call /chat/resume endpoint
+            answer, contexts, new_hitl = await self.call_resume_endpoint(
+                thread_id=hitl_state["thread_id"],
+                confirmed=confirmed,
+                conversation_id=hitl_state.get("conversation_id"),
+                auth_token=auth_token,
+            )
+
+            # Remove typing indicator
+            await self._remove_typing(channel_id, thread_ts)
+
+            # Handle chained HITL (another confirmation needed)
+            if new_hitl:
+                await self._send_hitl_confirmation(
+                    channel_id=channel_id,
+                    thread_ts=thread_ts,
+                    answer=answer,
+                    hitl_data=new_hitl,
+                    conv_id=hitl_state.get("conversation_id", ""),
+                    user_email=hitl_state["user_email"],
+                    dept_id=hitl_state["dept_id"],
+                )
+                return
+
+            # Extract file links from answer
+            file_links = self._extract_file_links(answer)
+            if file_links:
+                answer = self._remove_file_links(answer)
+
+            # Send final response
+            response = BotResponse(text=answer, contexts=contexts)
+            await self.send_response(channel_id, response, thread_id=thread_ts)
+
+            # Upload referenced files
+            if file_links:
+                await self._upload_files_to_slack(
+                    file_links, channel_id, thread_ts, auth_token
+                )
+
+        except Exception as e:
+            logger.exception("Error handling HITL response: %s", e)
+            await self._remove_typing(channel_id, thread_ts)
+            error_response = BotResponse(text="", error=str(e))
+            await self.send_response(channel_id, error_response, thread_id=thread_ts)
 
     async def send_response(
         self, channel_id: str, response: BotResponse, thread_id: str | None = None
@@ -171,6 +267,46 @@ class SlackBotAdapter(BaseBotAdapter):
                     )
                 except Exception as e:
                     logger.error("Failed to upload file %s: %s", file_path, e)
+
+    async def _send_hitl_confirmation(
+        self,
+        channel_id: str,
+        thread_ts: str | None,
+        answer: str,
+        hitl_data: dict,
+        conv_id: str,
+        user_email: str,
+        dept_id: str,
+    ) -> None:
+        """Send HITL confirmation message with Confirm/Cancel buttons."""
+        # Serialize state into button value so interactive handler can resume
+        button_value = json.dumps({
+            "thread_id": hitl_data.get("thread_id", ""),
+            "conversation_id": conv_id,
+            "channel_id": channel_id,
+            "message_ts": thread_ts,
+            "user_email": user_email,
+            "dept_id": dept_id,
+            "action": hitl_data.get("action", "unknown"),
+        })
+
+        formatted = self._formatter.format_hitl_confirmation(
+            partial_answer=answer,
+            hitl_data=hitl_data,
+            button_value=button_value,
+        )
+
+        await self._client.chat_postMessage(
+            channel=channel_id,
+            thread_ts=thread_ts,
+            **formatted,
+        )
+
+        logger.info(
+            "[SLACK] HITL confirmation sent for action=%s in channel=%s",
+            hitl_data.get("action"),
+            channel_id,
+        )
 
     async def _show_typing(
         self, channel_id: str, message_ts: str | None = None

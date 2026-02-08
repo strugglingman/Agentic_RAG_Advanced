@@ -6,7 +6,8 @@ FastAPI routes to receive webhooks from Slack and forward to SlackBotAdapter.
 
 ENDPOINTS:
 ----------
-POST /slack/events  - Receives all Slack events (messages, app_mention, etc.)
+POST /slack/events      - Receives all Slack events (messages, app_mention, etc.)
+POST /slack/interactive - Receives button clicks (HITL confirm/cancel, etc.)
 
 SECURITY:
 ---------
@@ -109,6 +110,27 @@ async def _process_message_event(event: dict) -> None:
         logger.exception(f"Error processing Slack message: {e}")
 
 
+async def _process_hitl_action(
+    channel_id: str,
+    message_ts: str,
+    thread_ts: str | None,
+    hitl_state: dict,
+    confirmed: bool,
+) -> None:
+    """Background task to process HITL confirm/cancel button clicks."""
+    try:
+        adapter = _get_adapter()
+        await adapter.handle_hitl_response(
+            channel_id=channel_id,
+            message_ts=message_ts,
+            thread_ts=thread_ts,
+            hitl_state=hitl_state,
+            confirmed=confirmed,
+        )
+    except Exception as e:
+        logger.exception(f"Error processing HITL action: {e}")
+
+
 @router.post("/events")
 async def slack_events(request: Request, background_tasks: BackgroundTasks):
     """
@@ -195,16 +217,13 @@ async def slack_events(request: Request, background_tasks: BackgroundTasks):
 
 
 @router.post("/interactive")
-async def slack_interactive(request: Request):
+async def slack_interactive(request: Request, background_tasks: BackgroundTasks):
     """
     Handle Slack interactive components (buttons, modals, etc.).
 
     This endpoint receives payloads when users interact with:
-    - Buttons in messages
-    - Modal submissions
-    - Shortcuts
-
-    Currently not used but reserved for future enhancements.
+    - HITL Confirm/Cancel buttons (action_id: hitl_confirm, hitl_cancel)
+    - Other buttons or modal submissions (future)
     """
     # Check if Slack integration is enabled
     if not Config.SLACK_ENABLED:
@@ -237,16 +256,50 @@ async def slack_interactive(request: Request):
     interaction_type = payload.get("type")
 
     if interaction_type == "block_actions":
-        # Button clicks, select menus, etc.
         actions = payload.get("actions", [])
+        channel = payload.get("channel", {})
+        channel_id = channel.get("id", "")
+        message = payload.get("message", {})
+        message_ts = message.get("ts", "")
+        # thread_ts is the original message the button message is replying to
+        thread_ts = message.get("thread_ts")
+
         for action in actions:
-            action_id = action.get("action_id")
-            logger.info(f"[SLACK] Block action: {action_id}")
+            action_id = action.get("action_id", "")
+
+            if action_id in ("hitl_confirm", "hitl_cancel"):
+                confirmed = action_id == "hitl_confirm"
+                value_str = action.get("value", "{}")
+
+                try:
+                    hitl_state = json.loads(value_str)
+                except (json.JSONDecodeError, TypeError):
+                    logger.error(f"[SLACK] Failed to parse HITL button value: {value_str}")
+                    continue
+
+                logger.info(
+                    "[SLACK] HITL %s by user in channel=%s, action=%s",
+                    "confirmed" if confirmed else "cancelled",
+                    channel_id,
+                    hitl_state.get("action", "unknown"),
+                )
+
+                background_tasks.add_task(
+                    _process_hitl_action,
+                    channel_id=channel_id,
+                    message_ts=message_ts,
+                    thread_ts=thread_ts,
+                    hitl_state=hitl_state,
+                    confirmed=confirmed,
+                )
+            else:
+                logger.info(f"[SLACK] Unhandled block action: {action_id}")
 
     elif interaction_type == "view_submission":
-        # Modal form submissions
+        # Modal form submissions (reserved for future)
         view = payload.get("view", {})
         callback_id = view.get("callback_id")
         logger.info(f"[SLACK] View submission: {callback_id}")
 
+    # Slack expects 200 OK within 3 seconds
     return Response(status_code=200)

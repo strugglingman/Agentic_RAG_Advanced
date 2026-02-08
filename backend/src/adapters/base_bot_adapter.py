@@ -100,7 +100,7 @@ class BaseBotAdapter(ABC):
         conversation_id: str | None,
         attachments: list[dict] | None,
         auth_token: str,
-    ) -> tuple[str, str, list[dict]]:
+    ) -> tuple[str, str, list[dict], dict | None]:
         """
         Call the /chat endpoint to get AI response.
 
@@ -112,7 +112,7 @@ class BaseBotAdapter(ABC):
             auth_token: JWT auth token
 
         Returns:
-            tuple: (conversation_id, answer, contexts)
+            tuple: (conversation_id, answer, contexts, hitl_data_or_none)
 
         Raises:
             Exception: If HTTP request fails or returns error status
@@ -146,7 +146,87 @@ class BaseBotAdapter(ABC):
                 data.get("conversation_id", ""),
                 data.get("message", "No message"),
                 data.get("contexts", []),
+                data.get("hitl"),
             )
+
+    async def call_resume_endpoint(
+        self,
+        thread_id: str,
+        confirmed: bool,
+        conversation_id: str | None,
+        auth_token: str,
+    ) -> tuple[str, list[dict], dict | None]:
+        """
+        Call the /chat/resume endpoint to continue an interrupted workflow.
+
+        Returns:
+            tuple: (answer, contexts, hitl_data_or_none)
+        """
+        async with httpx.AsyncClient(timeout=Config.BACKEND_API_TIMEOUT) as client:
+            response = await client.post(
+                f"{self.backend_url}/chat/resume",
+                json={
+                    "thread_id": thread_id,
+                    "confirmed": confirmed,
+                    "conversation_id": conversation_id,
+                },
+                headers={"Authorization": f"Bearer {auth_token}"},
+            )
+
+            if response.status_code >= 400:
+                error_detail = response.text
+                try:
+                    error_data = response.json()
+                    error_detail = error_data.get("detail", error_detail)
+                except (ValueError, KeyError):
+                    pass
+                raise httpx.HTTPStatusError(
+                    f"Resume API error ({response.status_code}): {error_detail}",
+                    request=response.request,
+                    response=response,
+                )
+
+            # Resume returns streaming text; read full body and parse
+            raw = response.text
+            answer = raw
+            contexts = []
+            hitl = None
+
+            # Parse __HITL__ marker if present
+            if "__HITL__:" in raw:
+                hitl_idx = raw.index("__HITL__:")
+                answer = raw[:hitl_idx].strip()
+                hitl_part = raw[hitl_idx + len("__HITL__:"):]
+                # Separate from __CONTEXT__ if present
+                if "__CONTEXT__:" in hitl_part:
+                    ctx_idx = hitl_part.index("__CONTEXT__:")
+                    hitl_json = hitl_part[:ctx_idx].strip()
+                    ctx_json = hitl_part[ctx_idx + len("__CONTEXT__:"):].strip()
+                else:
+                    hitl_json = hitl_part.strip()
+                    ctx_json = ""
+                try:
+                    import json
+                    hitl = json.loads(hitl_json)
+                except (ValueError, KeyError):
+                    pass
+                if ctx_json:
+                    try:
+                        import json
+                        contexts = json.loads(ctx_json)
+                    except (ValueError, KeyError):
+                        pass
+            elif "__CONTEXT__:" in raw:
+                ctx_idx = raw.index("__CONTEXT__:")
+                answer = raw[:ctx_idx].strip()
+                ctx_json = raw[ctx_idx + len("__CONTEXT__:"):].strip()
+                try:
+                    import json
+                    contexts = json.loads(ctx_json)
+                except (ValueError, KeyError):
+                    pass
+
+            return answer, contexts, hitl
 
     async def download_file_from_backend(
         self, file_id: str, auth_token: str

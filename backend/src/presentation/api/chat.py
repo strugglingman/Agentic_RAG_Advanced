@@ -73,11 +73,12 @@ class ChatMessageRequest(BaseModel):
 
 
 class ChatMessageResponse(BaseModel):
-    """Response for non-streaming chat (if needed)."""
+    """Response for non-streaming chat and bot adapters (Slack, etc.)."""
 
     message: str
     conversation_id: str
     contexts: list[dict[str, Any]]
+    hitl: Optional[dict[str, Any]] = None
 
 
 class HITLInterruptResponse(BaseModel):
@@ -292,10 +293,22 @@ async def chat_simple(
 
         result: SendMessageResult = await handler.execute(command)
 
+        hitl_data = None
+        if result.requires_confirmation:
+            hitl = result.hitl_interrupt
+            hitl_data = {
+                "status": "awaiting_confirmation",
+                "action": hitl.action,
+                "thread_id": hitl.thread_id,
+                "details": hitl.details,
+                "previous_steps": hitl.previous_steps,
+            }
+
         return ChatMessageResponse(
             message=result.answer,
             conversation_id=result.conversation_id.value,
             contexts=result.contexts,
+            hitl=hitl_data,
         )
 
     except ValueError as e:

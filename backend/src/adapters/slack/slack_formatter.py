@@ -1,5 +1,6 @@
 """Slack Response Formatter - Formats bot responses into Slack Block Kit format."""
 
+import json
 import logging
 from src.adapters.base_bot_adapter import BotResponse
 
@@ -82,6 +83,101 @@ class SlackFormatter:
                 }
             ],
             "text": "Thinking...",
+        }
+
+    def format_hitl_confirmation(
+        self,
+        partial_answer: str,
+        hitl_data: dict,
+        button_value: str,
+    ) -> dict:
+        """Format HITL confirmation message with Confirm/Cancel buttons.
+
+        Args:
+            partial_answer: The partial answer text from completed steps
+            hitl_data: HITL interrupt data (action, details, previous_steps)
+            button_value: JSON string with state for button callbacks
+        """
+        action = hitl_data.get("action", "unknown")
+        details = hitl_data.get("details", {})
+
+        blocks = []
+
+        # Partial answer
+        if partial_answer:
+            blocks.append({
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": partial_answer},
+            })
+            blocks.append({"type": "divider"})
+
+        # Action header
+        action_labels = {
+            "send_email": ":email: The assistant wants to send an email.",
+            "download_file": ":arrow_down: The assistant wants to download a file.",
+            "create_document": ":page_facing_up: The assistant wants to create a document.",
+        }
+        action_text = action_labels.get(action, f":warning: Action: *{action}*")
+        blocks.append({
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*Action Confirmation Required*\n{action_text}",
+            },
+        })
+
+        # Action details
+        detail_lines = []
+        if details.get("recipient"):
+            detail_lines.append(f"*To:* {details['recipient']}")
+        if details.get("task"):
+            detail_lines.append(f"*Task:* {details['task']}")
+        if details.get("available_attachments"):
+            atts = ", ".join(details["available_attachments"])
+            detail_lines.append(f"*Attachments:* {atts}")
+        if detail_lines:
+            blocks.append({
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": "\n".join(detail_lines)},
+            })
+
+        # Confirm / Cancel buttons
+        blocks.append({
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "Confirm"},
+                    "style": "primary",
+                    "action_id": "hitl_confirm",
+                    "value": button_value,
+                },
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "Cancel"},
+                    "style": "danger",
+                    "action_id": "hitl_cancel",
+                    "value": button_value,
+                },
+            ],
+        })
+
+        return {
+            "blocks": blocks,
+            "text": f"Action confirmation required: {action}",
+        }
+
+    def format_hitl_resolved(self, action: str, confirmed: bool) -> dict:
+        """Format message to replace buttons after user clicks Confirm/Cancel."""
+        if confirmed:
+            text = f":white_check_mark: *{action}* confirmed. Processing..."
+        else:
+            text = f":no_entry_sign: *{action}* cancelled."
+        return {
+            "blocks": [
+                {"type": "section", "text": {"type": "mrkdwn", "text": text}}
+            ],
+            "text": text,
         }
 
     def split_long_message(self, text: str, max_length: int = 3000) -> list[str]:

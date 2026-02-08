@@ -49,4 +49,4 @@ class SlackIdentityResolver(BotIdentityResolver):
         return Config.SLACK_DEFAULT_DEPT
 
     def get_conversation_key(self, channel_id: str, user_email: str) -> str:
-        return f"slack:{channel_id}:{user_email}"
+        return f"{channel_id}:{user_email}"
