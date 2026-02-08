@@ -57,3 +57,5 @@ browser-use>=0.1.40
 playwright>=1.40.0
 # Semantic Router for deterministic query routing
 semantic-router>=0.1.0
+# Prometheus metrics endpoint
+prometheus-client>=0.24.1
