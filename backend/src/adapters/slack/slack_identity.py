@@ -15,6 +15,7 @@ class SlackIdentityResolver(BotIdentityResolver):
     def __init__(self, slack_client: AsyncWebClient):
         self._slack_client = slack_client
         self._emails: dict[str, str] = {}
+        self._display_names: dict[str, str] = {}
 
     async def resolve_identity(self, platform_event: dict) -> BotUser:
         user_id = platform_event.get("user")
@@ -22,20 +23,21 @@ class SlackIdentityResolver(BotIdentityResolver):
         user_email = await self.get_user_email(user_id)
         workspace_id = platform_event.get("team")
         dept_id = self.get_department(channel_id, workspace_id)
+        display_name = self._display_names.get(user_id)
         return BotUser(
             user_email=user_email,
             dept_id=dept_id,
             platform_user_id=user_id,
-            display_name=None,
+            display_name=display_name,
         )
 
-    async def get_user_email(self, platform_user_id: str) -> str:
-        if platform_user_id in self._emails:
-            return self._emails[platform_user_id]
-
+    async def _fetch_and_cache_user(self, platform_user_id: str) -> None:
+        """Fetch user info from Slack API and cache email + display name."""
         response = await self._slack_client.users_info(user=platform_user_id)
         user_info = response.get("user", {})
-        user_email = user_info.get("profile", {}).get("email")
+        profile = user_info.get("profile", {})
+
+        user_email = profile.get("email")
         if not user_email:
             raise ValueError(
                 f"Could not retrieve email for Slack user ID {platform_user_id}. "
@@ -43,7 +45,26 @@ class SlackIdentityResolver(BotIdentityResolver):
             )
         self._emails[platform_user_id] = user_email
 
-        return user_email
+        display_name = (
+            profile.get("display_name")
+            or profile.get("real_name")
+            or user_email.split("@")[0]
+        )
+        self._display_names[platform_user_id] = display_name
+
+    async def get_user_email(self, platform_user_id: str) -> str:
+        if platform_user_id not in self._emails:
+            await self._fetch_and_cache_user(platform_user_id)
+        return self._emails[platform_user_id]
+
+    async def get_display_name(self, platform_user_id: str) -> str:
+        """Get cached display name, fetching from Slack API if needed."""
+        if platform_user_id not in self._display_names:
+            try:
+                await self._fetch_and_cache_user(platform_user_id)
+            except Exception:
+                return "Unknown"
+        return self._display_names.get(platform_user_id, "Unknown")
 
     def get_department(self, channel_id: str, workspace_id: str | None = None) -> str:
         return Config.SLACK_DEFAULT_DEPT

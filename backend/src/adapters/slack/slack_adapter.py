@@ -5,40 +5,36 @@ import io
 import json
 import logging
 import re
-from typing import Optional
 from slack_sdk.web.async_client import AsyncWebClient
-from redis.asyncio import Redis
 
 from src.adapters.base_bot_adapter import BaseBotAdapter, BotResponse
 from src.adapters.slack.slack_identity import SlackIdentityResolver
 from src.adapters.slack.slack_file_handler import SlackFileHandler
 from src.adapters.slack.slack_formatter import SlackFormatter
 from src.config.settings import Config
+from src.utils.history_utils import determine_message_count
 
 logger = logging.getLogger(__name__)
 
 # Regex to find file links like [filename.pdf](/api/files/xxx) or [text](/api/files/xxx)
 FILE_LINK_PATTERN = re.compile(r"\[([^\]]+)\]\(/api/files/([a-zA-Z0-9_-]+)\)")
 
-SLACK_CONV_KEY_PREFIX = "slack:conv:"
-
 
 class SlackBotAdapter(BaseBotAdapter):
     """Slack bot adapter - handles messages and commands from Slack."""
 
-    def __init__(self, redis: Optional[Redis] = None):
+    def __init__(self):
         super().__init__()
         self._client = AsyncWebClient(token=Config.SLACK_BOT_TOKEN)
         self._identity_resolver = SlackIdentityResolver(self._client)
         self._file_handler = SlackFileHandler(Config.SLACK_BOT_TOKEN)
         self._formatter = SlackFormatter()
-        self._redis = redis
-        self._conversation_cache: dict[str, str] = {}
 
     async def handle_message(self, event: dict) -> None:
         """Handle incoming message from Slack.
 
         Attachments are encoded as base64 and sent in /chat request body.
+        Channel history is fetched on-demand from Slack API (not stored in DB).
         """
         if self._is_bot_message(event):
             logger.debug("Ignoring bot message to prevent loops")
@@ -47,6 +43,7 @@ class SlackBotAdapter(BaseBotAdapter):
         channel_id = event.get("channel", "")
         message_ts = event.get("ts", "")
         text = event.get("text", "")
+        source_channel_id = f"slack:{channel_id}"
 
         try:
             bot_user = await self._identity_resolver.resolve_identity(event)
@@ -65,41 +62,32 @@ class SlackBotAdapter(BaseBotAdapter):
                     }
                 )
 
-            # Get existing conversation or None for new
-            conv_key = self._identity_resolver.get_conversation_key(
-                channel_id, bot_user.user_email
-            )
-            existing_conv_id = await self._get_conversation(conv_key)
-
             # Show typing indicator
             await self._show_typing(channel_id, message_ts)
 
+            # Fetch channel history from Slack API (on-demand, not stored in DB)
+            conversation_history = await self._fetch_channel_history(
+                channel_id, text, message_ts
+            )
+
             logger.info(
-                "[SLACK] Calling /chat endpoint for user=%s, conv=%s, attachments=%d",
+                "[SLACK] Calling /chat endpoint for user=%s, channel=%s, history=%d, attachments=%d",
                 bot_user.user_email,
-                existing_conv_id or "new",
+                source_channel_id,
+                len(conversation_history),
                 len(attachments),
             )
 
-            # Call backend /chat endpoint with base64 attachments
+            # Call backend /chat endpoint with channel history and source_channel_id
+            # Backend resolves conversation via source_channel_id (no Redis mapping needed)
             conv_id, answer, contexts, hitl_data = await self.call_chat_endpoint(
                 message=text,
-                conversation_id=existing_conv_id,
+                conversation_id=None,
                 attachments=attachments if attachments else None,
                 auth_token=auth_token,
+                source_channel_id=source_channel_id,
+                conversation_history=conversation_history,
             )
-
-            logger.info(
-                "[SLACK] Chat response received: conv_id=%s, answer_len=%d, contexts=%d, hitl=%s",
-                conv_id,
-                len(answer) if answer else 0,
-                len(contexts) if contexts else 0,
-                bool(hitl_data),
-            )
-
-            # Store new conversation mapping
-            if conv_id and conv_id != existing_conv_id:
-                await self._store_conversation(conv_key, conv_id)
 
             # Remove typing indicator
             await self._remove_typing(channel_id, message_ts)
@@ -347,31 +335,82 @@ class SlackBotAdapter(BaseBotAdapter):
             return True
         return False
 
-    async def _get_conversation(self, conv_key: str) -> str | None:
-        """Get conversation_id from Redis or fallback to in-memory cache."""
-        redis_key = f"{SLACK_CONV_KEY_PREFIX}{conv_key}"
+    async def _fetch_channel_history(
+        self, channel_id: str, current_query: str, current_message_ts: str
+    ) -> list[dict[str, str]]:
+        """Fetch recent channel messages from Slack API for LLM context.
 
-        if self._redis:
-            try:
-                conv_id = await self._redis.get(redis_key)
-                if conv_id:
-                    return conv_id.decode() if isinstance(conv_id, bytes) else conv_id
-            except Exception as e:
-                logger.warning("Redis get error for %s: %s", redis_key, e)
+        Uses LLM to determine how many messages are needed based on the query,
+        then fetches that many messages from Slack's conversations.history API.
+        Messages are formatted as role/content dicts in chronological order.
 
-        return self._conversation_cache.get(conv_key)
+        Args:
+            channel_id: Slack channel ID
+            current_query: User's current message text (for LLM intent analysis)
+            current_message_ts: Timestamp of current message (excluded from history)
 
-    async def _store_conversation(self, conv_key: str, conv_id: str) -> None:
-        """Store conversation_id in Redis and fallback cache."""
-        redis_key = f"{SLACK_CONV_KEY_PREFIX}{conv_key}"
+        Returns:
+            List of {"role": "user"|"assistant", "content": "..."} dicts
+        """
+        # Use LLM to determine how many history messages this query needs
+        try:
+            from openai import OpenAI
 
-        if self._redis:
-            try:
-                await self._redis.setex(redis_key, Config.SLACK_CONV_TTL, conv_id)
-            except Exception as e:
-                logger.warning("Redis set error for %s: %s", redis_key, e)
+            openai_client = OpenAI(api_key=Config.OPENAI_KEY) if Config.OPENAI_KEY else None
+        except ImportError:
+            openai_client = None
 
-        self._conversation_cache[conv_key] = conv_id
+        messages_needed = determine_message_count(
+            current_query, openai_client, fallback_limit=Config.SLACK_HISTORY_LIMIT
+        )
+
+        if messages_needed == 0:
+            logger.info("[SLACK] LLM determined no history needed for this query")
+            return []
+
+        # Fetch messages from Slack API
+        try:
+            result = await self._client.conversations_history(
+                channel=channel_id,
+                limit=messages_needed,
+            )
+            messages = result.get("messages", [])
+        except Exception as e:
+            logger.warning("[SLACK] Failed to fetch channel history: %s", e)
+            return []
+
+        # Slack returns newest-first, reverse to chronological order
+        messages.reverse()
+
+        history = []
+        for msg in messages:
+            # Skip the current message (it's sent separately as the query)
+            if msg.get("ts") == current_message_ts:
+                continue
+
+            text = msg.get("text", "").strip()
+            if not text:
+                continue
+
+            # Bot messages → assistant role
+            if msg.get("bot_id") or msg.get("subtype") == "bot_message":
+                history.append({"role": "assistant", "content": text})
+            else:
+                # User messages → prefix with display name for context
+                user_id = msg.get("user", "")
+                if user_id:
+                    display_name = await self._identity_resolver.get_display_name(user_id)
+                    history.append({"role": "user", "content": f"{display_name}: {text}"})
+                else:
+                    history.append({"role": "user", "content": text})
+
+        logger.info(
+            "[SLACK] Fetched %d channel messages (requested %d) for channel %s",
+            len(history),
+            messages_needed,
+            channel_id,
+        )
+        return history
 
     def _extract_file_links(self, text: str) -> list[tuple[str, str]]:
         """

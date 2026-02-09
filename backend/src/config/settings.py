@@ -444,6 +444,9 @@ class Config:
     # Example: {"T0123456789": "company_a", "T9876543210": "company_b"}
     SLACK_WORKSPACE_TO_DEPT: dict = {}  # TODO: Parse from env if needed
 
+    # Number of recent channel messages to fetch from Slack API for LLM context
+    SLACK_HISTORY_LIMIT = int(os.getenv("SLACK_HISTORY_LIMIT", "30"))
+
 
 class DevelopmentConfig(Config):
     """Development configuration"""

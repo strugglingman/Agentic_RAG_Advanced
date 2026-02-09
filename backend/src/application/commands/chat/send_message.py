@@ -118,6 +118,7 @@ class SendMessageCommand(Command[SendMessageResult]):
     attachments: Optional[list] = None
     filters: Optional[dict] = None  # Additional filters for query processing
     source_channel_id: Optional[str] = None  # For Slack/Teams: "slack:C0123ABC"
+    conversation_history: Optional[list[dict[str, str]]] = None  # Pre-fetched history from bot adapters
 
 
 class SendMessageHandler(CommandHandler[SendMessageResult]):
@@ -187,16 +188,21 @@ class SendMessageHandler(CommandHandler[SendMessageResult]):
         )
         await self.msg_repo.save(user_message)
 
-        # Use smart history retrieval - LLM determines how many messages needed
-        conversation_history = await self.msg_repo.get_smart_history(
-            query=query,
-            conversation_id=ConversationId(conversation_id),
-            context={"openai_client": self.openai_client}
-        )
-        conversation_history = [
-            {"role": msg.role, "content": msg.content} for msg in conversation_history
-        ]
-        conversation_history = self._get_sanitized(conversation_history)
+        # Conversation history: use pre-fetched (Slack/Teams) or fetch from DB (Web UI)
+        if command.conversation_history is not None:
+            # Slack/Teams: channel history already fetched by adapter
+            conversation_history = self._get_sanitized(command.conversation_history)
+        else:
+            # Web UI: fetch from DB via smart history (LLM determines count)
+            history_messages = await self.msg_repo.get_smart_history(
+                query=query,
+                conversation_id=ConversationId(conversation_id),
+                context={"openai_client": self.openai_client}
+            )
+            conversation_history = [
+                {"role": msg.role, "content": msg.content} for msg in history_messages
+            ]
+            conversation_history = self._get_sanitized(conversation_history)
 
         # Process attachments and discover available files
         attachment_file_ids = await self._process_attachments(

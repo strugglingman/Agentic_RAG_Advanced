@@ -72,6 +72,7 @@ class ChatMessageRequest(BaseModel):
     source_channel_id: Optional[str] = None  # For Slack/Teams: "slack:C0123ABC"
     filters: Optional[list[dict[str, Any]]] = None
     attachments: Optional[list[dict[str, Any]]] = None
+    conversation_history: Optional[list[dict[str, str]]] = None  # Pre-fetched history from bot adapters
 
 
 class ChatMessageResponse(BaseModel):
@@ -169,6 +170,7 @@ async def chat_agent(
             attachments=body.attachments,
             filters=filters,
             source_channel_id=body.source_channel_id,
+            conversation_history=body.conversation_history,
         )
 
         # Execute handler
@@ -293,6 +295,7 @@ async def chat_simple(
             attachments=body.attachments,
             filters=filters,
             source_channel_id=body.source_channel_id,
+            conversation_history=body.conversation_history,
         )
 
         result: SendMessageResult = await handler.execute(command)

@@ -100,6 +100,8 @@ class BaseBotAdapter(ABC):
         conversation_id: str | None,
         attachments: list[dict] | None,
         auth_token: str,
+        source_channel_id: str | None = None,
+        conversation_history: list[dict] | None = None,
     ) -> tuple[str, str, list[dict], dict | None]:
         """
         Call the /chat endpoint to get AI response.
@@ -110,6 +112,8 @@ class BaseBotAdapter(ABC):
             attachments: List of base64-encoded attachments in format:
                 [{"filename": "...", "mime_type": "...", "data": "base64..."}]
             auth_token: JWT auth token
+            source_channel_id: External channel identifier (e.g. "slack:C0123ABC")
+            conversation_history: Pre-fetched conversation history from external platform
 
         Returns:
             tuple: (conversation_id, answer, contexts, hitl_data_or_none)
@@ -117,14 +121,20 @@ class BaseBotAdapter(ABC):
         Raises:
             Exception: If HTTP request fails or returns error status
         """
+        payload = {
+            "messages": [{"role": "user", "content": message}],
+            "conversation_id": conversation_id,
+            "attachments": attachments or [],
+        }
+        if source_channel_id:
+            payload["source_channel_id"] = source_channel_id
+        if conversation_history:
+            payload["conversation_history"] = conversation_history
+
         async with httpx.AsyncClient(timeout=Config.BACKEND_API_TIMEOUT) as client:
             response = await client.post(
                 f"{self.backend_url}/chat",
-                json={
-                    "messages": [{"role": "user", "content": message}],
-                    "conversation_id": conversation_id,
-                    "attachments": attachments or [],
-                },
+                json=payload,
                 headers={"Authorization": f"Bearer {auth_token}"},
             )
 

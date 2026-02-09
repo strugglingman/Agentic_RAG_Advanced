@@ -30,7 +30,6 @@ import time
 from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, Response
-from redis.asyncio import Redis
 
 from src.adapters.slack.slack_adapter import SlackBotAdapter
 from src.config.settings import Config
@@ -41,23 +40,14 @@ router = APIRouter(prefix="/slack", tags=["slack"])
 
 # Singleton adapter instance (lazy initialized)
 _slack_adapter: Optional[SlackBotAdapter] = None
-_redis_client: Optional[Redis] = None
 
 
 def _get_adapter() -> SlackBotAdapter:
     """Get or create the SlackBotAdapter singleton."""
-    global _slack_adapter, _redis_client
+    global _slack_adapter
 
     if _slack_adapter is None:
-        # Initialize Redis client if enabled and configured
-        if Config.REDIS_ENABLED and Config.REDIS_URL:
-            try:
-                _redis_client = Redis.from_url(Config.REDIS_URL)
-            except Exception as e:
-                logger.warning(f"Failed to connect to Redis: {e}")
-                _redis_client = None
-
-        _slack_adapter = SlackBotAdapter(redis=_redis_client)
+        _slack_adapter = SlackBotAdapter()
         logger.info("SlackBotAdapter initialized")
 
     return _slack_adapter
