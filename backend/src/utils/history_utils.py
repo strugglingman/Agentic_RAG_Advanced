@@ -39,7 +39,7 @@ def determine_message_count(
         return fallback_limit
 
     try:
-        from src.services.llm_client import chat_completion
+        from src.services.llm_client import chat_completion_json
 
         prompt = f"""Analyze this user query and determine how many previous conversation messages are needed to answer it accurately.
 
@@ -65,11 +65,10 @@ Examples:
 - "Summarize our conversation" → {{"messages_needed": 200, "reasoning": "Full conversation summary"}}
 """
 
-        response = chat_completion(
+        response = chat_completion_json(
             client=openai_client,
             model=Config.OPENAI_SIMPLE_MODEL,
             messages=[{"role": "user", "content": prompt}],
-            response_format={"type": "json_object"},
             max_tokens=100,
             temperature=0,
         )

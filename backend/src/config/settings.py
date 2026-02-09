@@ -132,9 +132,6 @@ class Config:
     # Default: 1 hour - matches typical conversation session length
     AGENT_STATE_TTL: int = int(os.getenv("AGENT_STATE_TTL", "3600"))
 
-    # Slack conversation mapping TTL (how long to remember channel → conversation_id mapping)
-    SLACK_CONV_TTL: int = int(os.getenv("SLACK_CONV_TTL", "86400"))  # 24 hours
-
     # ==============================================================================
     # Retrieval & Search Settings
     # ==============================================================================

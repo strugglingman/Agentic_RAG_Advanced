@@ -68,6 +68,3 @@ class SlackIdentityResolver(BotIdentityResolver):
 
     def get_department(self, channel_id: str, workspace_id: str | None = None) -> str:
         return Config.SLACK_DEFAULT_DEPT
-
-    def get_conversation_key(self, channel_id: str, user_email: str) -> str:
-        return f"{channel_id}:{user_email}"
