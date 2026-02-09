@@ -280,15 +280,17 @@ class SlackBotAdapter(BaseBotAdapter):
     ) -> None:
         """Send HITL confirmation message with Confirm/Cancel buttons."""
         # Serialize state into button value so interactive handler can resume
-        button_value = json.dumps({
-            "thread_id": hitl_data.get("thread_id", ""),
-            "conversation_id": conv_id,
-            "channel_id": channel_id,
-            "message_ts": thread_ts,
-            "user_email": user_email,
-            "dept_id": dept_id,
-            "action": hitl_data.get("action", "unknown"),
-        })
+        button_value = json.dumps(
+            {
+                "thread_id": hitl_data.get("thread_id", ""),
+                "conversation_id": conv_id,
+                "channel_id": channel_id,
+                "message_ts": thread_ts,
+                "user_email": user_email,
+                "dept_id": dept_id,
+                "action": hitl_data.get("action", "unknown"),
+            }
+        )
 
         formatted = self._formatter.format_hitl_confirmation(
             partial_answer=answer,

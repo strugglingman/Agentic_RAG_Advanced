@@ -17,7 +17,11 @@ from sentence_transformers import CrossEncoder
 from src.utils.safety import coverage_ok
 from src.utils.multilingual import tokenize as multilingual_tokenize
 from src.config.settings import Config
-from src.observability.metrics import observe_chunk_relevance_score, increment_error, MetricsErrorType
+from src.observability.metrics import (
+    observe_chunk_relevance_score,
+    increment_error,
+    MetricsErrorType,
+)
 
 if TYPE_CHECKING:
     from src.services.vector_db import VectorDB

@@ -233,7 +233,8 @@ export default function ChatPage() {
     setInput('');
     setAttachments([]);
 
-    const messages_payload = next.filter(m => m.role == 'user' || m.content.trim());
+    // Only send the latest user message (backend fetches full history from DB)
+    const messages_payload = [userMessage];
     const filters_payload = [];
     if (selectedExts.size) {
       filters_payload.push({ exts: Array.from(selectedExts)});

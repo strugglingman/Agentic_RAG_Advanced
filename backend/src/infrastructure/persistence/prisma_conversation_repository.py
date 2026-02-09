@@ -48,6 +48,7 @@ class PrismaConversationRepository(ConversationRepository):
             created_at=record.created_at,
             updated_at=record.updated_at,
             last_message=record.messages[0].content[:50] if record.messages else None,
+            source_channel_id=record.source_channel_id,
         )
 
     async def get_by_id(
@@ -77,6 +78,51 @@ class PrismaConversationRepository(ConversationRepository):
         conversations = [self._to_entity(record) for record in records]
         return conversations
 
+    async def get_by_source(
+        self, user_email: UserEmail, source_channel_id: str
+    ) -> Optional[Conversation]:
+        """Get conversation by source channel (Slack/Teams) and user."""
+        record = await self._prisma.conversation.find_first(
+            where={
+                "user_email": user_email.value,
+                "source_channel_id": source_channel_id,
+            },
+            include={
+                "messages": {
+                    "order_by": {"created_at": "desc"},
+                    "take": 1,
+                }
+            },
+        )
+        return self._to_entity(record) if record else None
+
+    async def find_conversation(
+        self,
+        user_email: UserEmail,
+        conversation_id: Optional[ConversationId] = None,
+        source_channel_id: Optional[str] = None,
+    ) -> Optional[Conversation]:
+        """
+        Unified conversation lookup with priority:
+        1. source_channel_id (if provided) - for Slack/Teams
+        2. conversation_id (if provided) - for web UI
+
+        Returns None if not found (caller handles creation).
+        """
+        # Priority 1: Look up by source_channel_id (Slack/Teams)
+        if source_channel_id:
+            conv = await self.get_by_source(user_email, source_channel_id)
+            if conv:
+                return conv
+
+        # Priority 2: Look up by conversation_id
+        if conversation_id and conversation_id.value:
+            conv = await self.get_by_id(conversation_id)
+            if conv:
+                return conv
+
+        return None
+
     async def save(self, conversation: Conversation) -> None:
         """Save (create or update) conversation."""
         await self._prisma.conversation.upsert(
@@ -88,6 +134,7 @@ class PrismaConversationRepository(ConversationRepository):
                     "title": conversation.title,
                     "created_at": conversation.created_at,
                     "updated_at": conversation.updated_at,
+                    "source_channel_id": conversation.source_channel_id,
                 },
                 "update": {
                     "title": conversation.title,

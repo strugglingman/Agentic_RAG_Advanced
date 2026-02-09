@@ -21,16 +21,18 @@ model User {
 }
 
 model Conversation {
-  id         String    @id @default(uuid())
-  user_email String
-  title      String?
-  created_at DateTime  @default(now())
-  updated_at DateTime  @updatedAt
-  user       User      @relation(fields: [user_email], references: [email], onDelete: Cascade)
-  messages   Message[]
+  id                String    @id @default(uuid())
+  user_email        String
+  title             String?
+  source_channel_id String?   // Format: "slack:C0123ABC", "teams:xxx", null for web
+  created_at        DateTime  @default(now())
+  updated_at        DateTime  @updatedAt
+  user              User      @relation(fields: [user_email], references: [email], onDelete: Cascade)
+  messages          Message[]
 
   @@index([user_email])
   @@index([updated_at])
+  @@index([user_email, source_channel_id])  // For Slack/Teams conversation lookup
 }
 
 model Message {

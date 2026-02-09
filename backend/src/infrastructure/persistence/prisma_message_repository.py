@@ -74,13 +74,18 @@ Steps to implement each method:
    - Catch exception, return False
 """
 
-from typing import Optional
+import json
+import logging
+from typing import Optional, Any, Dict
 from prisma import Prisma
 from prisma.models import Message as PrismaMessage
 from src.domain.entities.message import Message
 from src.domain.ports.repositories.message_repository import MessageRepository
 from src.domain.value_objects.message_id import MessageId
 from src.domain.value_objects.conversation_id import ConversationId
+from src.config.settings import Config
+
+logger = logging.getLogger(__name__)
 
 
 class PrismaMessageRepository(MessageRepository):
@@ -190,6 +195,125 @@ class PrismaMessageRepository(MessageRepository):
                 },
             },
         )
+
+    async def get_smart_history(
+        self,
+        query: str,
+        conversation_id: ConversationId,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> list[Message]:
+        """
+        Smart conversation history retrieval based on query intent.
+
+        Phase 1 Implementation (LLM-based):
+        - Uses LLM to determine how many messages are needed
+        - Simple and effective for most queries
+        - No vector DB infrastructure required yet
+
+        Future phases:
+        - Phase 2: Add RAG with vector search for semantic queries
+        - Phase 3: Add timestamp filtering for temporal queries
+        - Phase 4: Add quantitative query support (all, half, first N)
+
+        Args:
+            query: User's query to analyze for intent
+            conversation_id: Conversation to retrieve history from
+            context: Optional context with openai_client
+
+        Returns:
+            List of Message entities in chronological order (oldest first)
+        """
+        # Extract OpenAI client from context (optional)
+        openai_client = None
+        if context:
+            openai_client = context.get("openai_client")
+
+        # Determine how many messages to fetch
+        if openai_client:
+            # LLM-based determination (smart)
+            messages_needed = await self._determine_message_count_llm(
+                query, openai_client
+            )
+        else:
+            # Fallback: Use default limit
+            logger.info(
+                "[get_smart_history] No OpenAI client provided, "
+                f"using default limit {Config.REDIS_CACHE_LIMIT}"
+            )
+            messages_needed = Config.REDIS_CACHE_LIMIT
+
+        # Fetch messages using standard method
+        logger.info(
+            f"[get_smart_history] Fetching {messages_needed} messages "
+            f"for query: {query[:50]}..."
+        )
+        return await self.get_by_conversation(conversation_id, limit=messages_needed)
+
+    async def _determine_message_count_llm(self, query: str, openai_client: Any) -> int:
+        """
+        Use LLM to determine how many messages are needed for the query.
+
+        Phase 1: Simple LLM-based count determination.
+
+        Args:
+            query: User's query
+            openai_client: OpenAI client instance
+
+        Returns:
+            Number of messages needed (0-200)
+        """
+        try:
+            from src.services.llm_client import chat_completion
+
+            prompt = f"""Analyze this user query and determine how many previous conversation messages are needed to answer it accurately.
+
+Query: "{query}"
+
+Consider:
+- Does it reference previous conversation? (e.g., "what did we discuss?")
+- Is it a follow-up? (e.g., "what about...", "and also...")
+- Does it need context? (e.g., "based on what you said...")
+- Is it asking for a summary? (e.g., "summarize our chat")
+- Or is it standalone? (e.g., "what is Python?")
+
+Respond with ONLY a JSON object:
+{{
+  "messages_needed": <number between 0 and 200>,
+  "reasoning": "<brief explanation>"
+}}
+
+Examples:
+- "What is Python?" → {{"messages_needed": 0, "reasoning": "Standalone general knowledge"}}
+- "What about Java?" → {{"messages_needed": 3, "reasoning": "Follow-up to recent topic"}}
+- "What did we discuss about databases?" → {{"messages_needed": 20, "reasoning": "Search recent history for topic"}}
+- "Summarize our conversation" → {{"messages_needed": 200, "reasoning": "Full conversation summary"}}
+"""
+
+            response = chat_completion(
+                client=openai_client,
+                model=Config.OPENAI_SIMPLE_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                response_format={"type": "json_object"},
+                max_tokens=100,
+                temperature=0,
+            )
+
+            result = json.loads(response.choices[0].message.content)
+            messages_needed = min(result["messages_needed"], 200)  # Cap at 200
+
+            logger.info(
+                f"[LLM Intent] Query needs {messages_needed} messages - "
+                f"Reason: {result['reasoning']}"
+            )
+
+            return messages_needed
+
+        except Exception as e:
+            logger.warning(
+                f"[LLM Intent] Failed to determine message count: {e}, "
+                f"falling back to {Config.REDIS_CACHE_LIMIT}"
+            )
+            return Config.REDIS_CACHE_LIMIT
 
     async def delete(self, message_id: MessageId) -> bool:
         """

@@ -152,7 +152,7 @@ class Config:
     # When True: Always search internal documents before using LLM knowledge
     # When False: Let LLM decide when to search (more flexible, may skip internal docs)
     FORCE_INTERNAL_RETRIEVAL = os.getenv(
-        "FORCE_INTERNAL_RETRIEVAL", "true"
+        "FORCE_INTERNAL_RETRIEVAL", "false"
     ).lower() in {
         "1",
         "true",
@@ -216,6 +216,11 @@ class Config:
     # reasoning tokens count against this limit. Recommended: 8000-16000 for complex queries.
     CHAT_MAX_TOKENS = int(os.getenv("CHAT_MAX_TOKENS", "16000"))
     ONE_HISTORY_MAX_TOKENS = int(os.getenv("ONE_HISTORY_MAX_TOKENS", "1500"))
+
+    # Number of recent messages for LangGraph nodes (plan_node, send_email_node)
+    # Used for reference resolution only (e.g., "these", "those", "it", "confirm")
+    # Keep small to avoid token overflow in planning prompts (text summary, not full conversation)
+    PLANNING_CONTEXT_LIMIT = int(os.getenv("PLANNING_CONTEXT_LIMIT", "10"))
 
     # ==============================================================================
     # File Upload Configuration

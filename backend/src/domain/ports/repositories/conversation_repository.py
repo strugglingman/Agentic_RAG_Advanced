@@ -22,6 +22,44 @@ class ConversationRepository(ABC):
     ) -> list[Conversation]: ...
 
     @abstractmethod
+    async def get_by_source(
+        self, user_email: UserEmail, source_channel_id: str
+    ) -> Optional[Conversation]:
+        """
+        Get conversation by source channel (Slack/Teams) and user.
+
+        Args:
+            user_email: User's email
+            source_channel_id: Source identifier (e.g., "slack:C0123ABC")
+
+        Returns:
+            Conversation if found, None otherwise
+        """
+        ...
+
+    @abstractmethod
+    async def find_conversation(
+        self,
+        user_email: UserEmail,
+        conversation_id: Optional[ConversationId] = None,
+        source_channel_id: Optional[str] = None,
+    ) -> Optional[Conversation]:
+        """
+        Unified conversation lookup with priority:
+        1. source_channel_id (if provided) - for Slack/Teams
+        2. conversation_id (if provided) - for web UI
+
+        Args:
+            user_email: User's email (for source lookup and ownership verification)
+            conversation_id: Optional conversation UUID
+            source_channel_id: Optional source (e.g., "slack:C0123ABC")
+
+        Returns:
+            Conversation if found, None otherwise
+        """
+        ...
+
+    @abstractmethod
     async def save(self, conversation: Conversation) -> None: ...
 
     @abstractmethod

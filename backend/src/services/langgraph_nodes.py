@@ -34,7 +34,11 @@ from src.services.llm_client import (
     chat_completion_with_tools,
 )
 from src.services.langgraph_routing import semantic_route_query
-from src.utils.safety import enforce_citations, add_sources_from_citations, renumber_citations
+from src.utils.safety import (
+    enforce_citations,
+    add_sources_from_citations,
+    renumber_citations,
+)
 from src.utils.sanitizer import sanitize_text
 from src.config.settings import Config
 from src.prompts import PlanningPrompts, GenerationPrompts, ToolPrompts
@@ -585,7 +589,8 @@ def create_plan_node(
         conversation_context = ""
         if conversation_history:
             # Build a concise summary of recent conversation for context
-            recent_messages = conversation_history[-20:]  # Last 10 messages max
+            # Only need recent messages for reference resolution (e.g., "these", "those", "it")
+            recent_messages = conversation_history[-Config.PLANNING_CONTEXT_LIMIT :]
             context_parts = []
             for msg in recent_messages:
                 role = msg.get("role", "user")
@@ -1963,8 +1968,8 @@ def create_tool_send_email_node(
             messages = []
             conversation_history = runtime.get("conversation_history", [])
             if conversation_history:
-                # Add recent history for context (last 10 messages max)
-                recent_history = conversation_history[-20:]
+                # Add recent history for context (reference resolution for confirmations)
+                recent_history = conversation_history[-Config.PLANNING_CONTEXT_LIMIT :]
                 for h in recent_history:
                     messages.append(
                         {"role": h.get("role", "user"), "content": h.get("content", "")}
@@ -2428,9 +2433,11 @@ def create_generate_node(
                     # Check if contexts have sub_query labels (indicates decomposition was used)
                     # IMPORTANT: Use list with dict.fromkeys() to preserve insertion order from docs
                     # (set doesn't guarantee order, causing citation number mismatch with frontend)
-                    sub_queries = list(dict.fromkeys(
-                        d.get("sub_query") for d in docs if d.get("sub_query")
-                    ))
+                    sub_queries = list(
+                        dict.fromkeys(
+                            d.get("sub_query") for d in docs if d.get("sub_query")
+                        )
+                    )
                     has_decomposition = len(sub_queries) > 1
                     num_sub_queries = len(sub_queries)
 

@@ -108,7 +108,7 @@ Steps to implement:
 
 import json
 import logging
-from typing import Optional
+from typing import Optional, Any, Dict
 from datetime import datetime
 from redis.asyncio import Redis
 from src.domain.entities.message import Message
@@ -342,6 +342,30 @@ class CachedMessageRepository(MessageRepository):
             logger.debug(f"Cache updated for {cache_key}")
         except Exception as e:
             logger.warning(f"Redis cache update error: {str(e)}")
+
+    async def get_smart_history(
+        self,
+        query: str,
+        conversation_id: ConversationId,
+        context: Optional[Dict[str, Any]] = None
+    ) -> list[Message]:
+        """
+        Smart conversation history retrieval.
+
+        Delegates to underlying repository.
+        Cache support for smart history can be added later if needed.
+
+        Args:
+            query: User's query to analyze for intent
+            conversation_id: Conversation to retrieve history from
+            context: Optional context (openai_client, etc.)
+
+        Returns:
+            List of Message entities in chronological order (oldest first)
+        """
+        # Delegate to underlying repository
+        # Cache logic could be added here later if patterns emerge
+        return await self._repo.get_smart_history(query, conversation_id, context)
 
     async def delete(self, message_id: MessageId) -> bool:
         """

@@ -18,9 +18,12 @@ class Conversation:
     created_at: datetime
     updated_at: datetime
     last_message: str | None = None
+    source_channel_id: str | None = None  # Format: "slack:C0123ABC", "teams:xxx", None for web
 
     @classmethod
-    def create(cls, user_email: UserEmail, title: str) -> Conversation:
+    def create(
+        cls, user_email: UserEmail, title: str, source_channel_id: str | None = None
+    ) -> Conversation:
         conversation_id = ConversationId(str(uuid4()))
         return cls(
             id=conversation_id,
@@ -28,6 +31,7 @@ class Conversation:
             title=title,
             created_at=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc),
+            source_channel_id=source_channel_id,
         )
 
     def update_title(self, new_title: str) -> None:

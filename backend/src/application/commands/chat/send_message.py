@@ -117,6 +117,7 @@ class SendMessageCommand(Command[SendMessageResult]):
     content: str
     attachments: Optional[list] = None
     filters: Optional[dict] = None  # Additional filters for query processing
+    source_channel_id: Optional[str] = None  # For Slack/Teams: "slack:C0123ABC"
 
 
 class SendMessageHandler(CommandHandler[SendMessageResult]):
@@ -152,20 +153,32 @@ class SendMessageHandler(CommandHandler[SendMessageResult]):
         if injection_result:
             raise ValueError(f"Potential prompt injection detected: {injection_error}")
 
-        conversation_id = str(command.conversation_id).strip()
-        if conversation_id:
-            conversation = await self.conv_repo.get_by_id(command.conversation_id)
-            if not conversation:
-                raise ValueError("Conversation not found.")
-            if conversation.user_email.value != user_email:
-                raise PermissionError("Access denied to this conversation.")
-        if not conversation_id:
+        # Unified conversation lookup: source_channel_id (Slack/Teams) > conversation_id (web)
+        conversation = await self.conv_repo.find_conversation(
+            user_email=command.user_email,
+            conversation_id=command.conversation_id if command.conversation_id.value else None,
+            source_channel_id=command.source_channel_id,
+        )
+
+        # Edge case: Web UI provided conversation_id but not found (deleted/invalid)
+        if not conversation and command.conversation_id.value and not command.source_channel_id:
+            raise ValueError("Conversation not found.")
+
+        # Verify ownership for any found conversation
+        # (get_by_source filters by user, but get_by_id fallback doesn't - always check)
+        if conversation and conversation.user_email.value != user_email:
+            raise PermissionError("Access denied to this conversation.")
+
+        # Create new conversation if not found (new chat from web, or Slack channel)
+        if not conversation:
             conversation = Conversation.create(
                 user_email=command.user_email,
                 title=command.content[:20] + "...",
+                source_channel_id=command.source_channel_id,
             )
             await self.conv_repo.save(conversation)
-            conversation_id = str(conversation.id).strip()
+
+        conversation_id = str(conversation.id).strip()
 
         user_message = Message.create(
             conversation_id=ConversationId(conversation_id),
@@ -174,8 +187,11 @@ class SendMessageHandler(CommandHandler[SendMessageResult]):
         )
         await self.msg_repo.save(user_message)
 
-        conversation_history = await self.msg_repo.get_by_conversation(
-            ConversationId(conversation_id), limit=Config.REDIS_CACHE_LIMIT
+        # Use smart history retrieval - LLM determines how many messages needed
+        conversation_history = await self.msg_repo.get_smart_history(
+            query=query,
+            conversation_id=ConversationId(conversation_id),
+            context={"openai_client": self.openai_client}
         )
         conversation_history = [
             {"role": msg.role, "content": msg.content} for msg in conversation_history

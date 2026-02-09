@@ -61,6 +61,7 @@ class ChatMessageRequest(BaseModel):
     {
         "messages": [{"role": "user", "content": "..."}],
         "conversation_id": "uuid" or null,
+        "source_channel_id": "slack:C0123ABC" or null (for bot adapters),
         "filters": [{"exts": [...]}, {"tags": [...]}],
         "attachments": [{"type": "image", "filename": "...", "mime_type": "...", "data": "base64..."}]
     }
@@ -68,6 +69,7 @@ class ChatMessageRequest(BaseModel):
 
     messages: list[ChatMessage]
     conversation_id: Optional[str] = None
+    source_channel_id: Optional[str] = None  # For Slack/Teams: "slack:C0123ABC"
     filters: Optional[list[dict[str, Any]]] = None
     attachments: Optional[list[dict[str, Any]]] = None
 
@@ -166,6 +168,7 @@ async def chat_agent(
             content=latest_user_msg.content.strip(),
             attachments=body.attachments,
             filters=filters,
+            source_channel_id=body.source_channel_id,
         )
 
         # Execute handler
@@ -289,6 +292,7 @@ async def chat_simple(
             content=latest_user_msg.content.strip(),
             attachments=body.attachments,
             filters=filters,
+            source_channel_id=body.source_channel_id,
         )
 
         result: SendMessageResult = await handler.execute(command)

@@ -74,15 +74,13 @@ class AgentService:
         self,
         query: str,
         context: Dict[str, Any],
-        messages_history: Optional[List[Dict[str, str]]] = None,
     ) -> Tuple[str, List[Dict[str, Any]]]:
         """
         Run the agent on a user query.
 
         Args:
             query: User's question
-            context: System context (vector_db, dept_id, user_id, file_service, etc.)
-            messages_history: Previous conversation messages
+            context: System context (vector_db, dept_id, user_id, file_service, conversation_history, etc.)
 
         Returns:
             Tuple of (final_answer, retrieved_contexts)
@@ -131,7 +129,7 @@ class AgentService:
             context["_first_producer_tool_this_turn"] = True
 
         messages = await self._build_initial_messages(
-            query, context, messages_history, session_state
+            query, context, session_state
         )
 
         # When True: Always search internal documents first
@@ -523,7 +521,6 @@ class AgentService:
         self,
         query: str,
         context: Dict[str, Any],
-        messages_history: Optional[List[Dict[str, str]]] = None,
         session_state: Optional[AgentSessionState] = None,
     ) -> List[Dict[str, str]]:
         """
@@ -531,8 +528,7 @@ class AgentService:
 
         Args:
             query: User's question
-            context: System context (includes file_service for file operations)
-            messages_history: Previous conversation messages
+            context: System context (includes file_service, conversation_history, etc.)
             session_state: Agent session state with active file IDs
 
         Returns:
@@ -739,6 +735,8 @@ class AgentService:
                 # Append to user message
                 user_msg["content"][0]["text"] += "".join(attachment_texts)
 
+        # Get conversation history from context
+        messages_history = context.get("conversation_history", [])
         if messages_history:
             return [system_msg] + messages_history + [user_msg]
         else:
