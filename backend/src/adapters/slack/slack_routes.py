@@ -179,7 +179,9 @@ async def slack_events(request: Request, background_tasks: BackgroundTasks):
         if event_type == "message":
             # Skip bot messages, message_changed, message_deleted, etc.
             subtype = event.get("subtype")
-            if subtype is None:  # Regular user message
+            if (
+                subtype is None or subtype == "file_share"
+            ):  # Regular user message or with file uploads
                 user = event.get("user", "unknown")
                 text = event.get("text", "")
                 channel = event.get("channel", "")
@@ -198,8 +200,11 @@ async def slack_events(request: Request, background_tasks: BackgroundTasks):
             user = event.get("user", "unknown")
             text = event.get("text", "")
             channel = event.get("channel", "")
+            files = event.get("files", [])
 
             logger.info(f"[SLACK] Mention from {user} in {channel}: {text[:50]}...")
+            if files:
+                logger.info(f"[SLACK] Attached files: {[f.get('name') for f in files]}")
             background_tasks.add_task(_process_message_event, event)
 
     # Slack expects 200 OK response within 3 seconds
@@ -264,7 +269,9 @@ async def slack_interactive(request: Request, background_tasks: BackgroundTasks)
                 try:
                     hitl_state = json.loads(value_str)
                 except (json.JSONDecodeError, TypeError):
-                    logger.error(f"[SLACK] Failed to parse HITL button value: {value_str}")
+                    logger.error(
+                        f"[SLACK] Failed to parse HITL button value: {value_str}"
+                    )
                     continue
 
                 logger.info(
