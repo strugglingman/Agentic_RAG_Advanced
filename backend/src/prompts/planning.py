@@ -70,8 +70,8 @@ class PlanningPrompts:
 
         sections = []
 
-        # Current message attachments (inline content available)
-        # These are just-uploaded files whose content will be extracted inline
+        # Current message attachments
+        # Content is extracted by tool nodes when needed (e.g., create_documents)
         if attachment_file_ids:
             attachment_lines = []
             for f in attachment_file_ids:
@@ -79,12 +79,12 @@ class PlanningPrompts:
                 filename = f.get("filename", "unknown")
                 mime_type = f.get("mime_type", "")
                 attachment_lines.append(
-                    f"  - **{filename}** (file_id: `{file_id}`, type: {mime_type}) [INLINE CONTENT AVAILABLE]"
+                    f"  - **{filename}** (file_id: `{file_id}`, type: {mime_type})"
                 )
             if attachment_lines:
                 sections.append(
                     "### Current Message Attachments\n"
-                    "These files were uploaded with this message. Their content has been extracted inline.\n"
+                    "These files were uploaded with this message. Use create_documents tool to analyze their content.\n"
                     + "\n".join(attachment_lines)
                 )
 

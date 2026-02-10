@@ -50,6 +50,8 @@ Consider:
 - Is it a follow-up? (e.g., "what about...", "and also...")
 - Does it need context? (e.g., "based on what you said...")
 - Is it asking for a summary? (e.g., "summarize our chat")
+- Is it an ACTION on previous content? (e.g., "send that to email", "save your answer")
+- Does it use pronouns referring to prior messages? (e.g., "it", "that", "this", "your answer")
 - Or is it standalone? (e.g., "what is Python?")
 
 Respond with ONLY a JSON object:
@@ -63,6 +65,11 @@ Examples:
 - "What about Java?" → {{"messages_needed": 3, "reasoning": "Follow-up to recent topic"}}
 - "What did we discuss about databases?" → {{"messages_needed": 20, "reasoning": "Search recent history for topic"}}
 - "Summarize our conversation" → {{"messages_needed": 200, "reasoning": "Full conversation summary"}}
+- "Send your answer to my email" → {{"messages_needed": 10, "reasoning": "Need previous answer to send"}}
+- "Send that to john@example.com" → {{"messages_needed": 10, "reasoning": "Need previous content to send"}}
+- "Save this to a file" → {{"messages_needed": 10, "reasoning": "Need previous content to save"}}
+- "confirm" → {{"messages_needed": 10, "reasoning": "Confirmation of prior request"}}
+- "yes, proceed" → {{"messages_needed": 10, "reasoning": "Approval of previous action"}}
 """
 
         response = chat_completion_json(

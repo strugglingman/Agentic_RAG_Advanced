@@ -11,6 +11,7 @@ All nodes are ASYNC to support async tool execution and file operations.
 """
 
 from typing import Dict, Any, Callable, Coroutine
+from dataclasses import dataclass
 import json
 import logging
 from langchain_core.messages import AIMessage
@@ -184,6 +185,99 @@ def build_previous_step_context(
         file_ids=file_ids,
         urls=urls,
     )
+
+
+# ==================== HELPER: Attachment Context for Nodes ====================
+
+
+@dataclass
+class AttachmentInfo:
+    """Single attachment metadata and optional content."""
+
+    file_id: str
+    filename: str
+    mime_type: str
+    content: str = ""  # Populated only when extract_content=True
+
+
+async def get_attachment_context(
+    runtime: RuntimeContext,
+    extract_content: bool = False,
+) -> tuple[list[AttachmentInfo], str]:
+    """
+    Get attachment info from runtime context.
+
+    Unified helper for any node to access attachment info:
+    - extract_content=False: Returns metadata only (for planning)
+    - extract_content=True: Returns full extracted content (for document creation)
+
+    Handles both images (Vision API) and text files (PDF, DOCX, etc.)
+
+    Args:
+        runtime: RuntimeContext with attachment_file_ids, file_service, etc.
+        extract_content: If True, extract file content. If False, just metadata.
+
+    Returns:
+        Tuple of (list of AttachmentInfo, formatted string for LLM prompt)
+    """
+    attachment_file_ids = runtime.get("attachment_file_ids", [])
+    if not attachment_file_ids:
+        return [], ""
+
+    # Get runtime dependencies once (not inside loop)
+    file_service = runtime.get("file_service")
+    user_id = runtime.get("user_id")
+    dept_id = runtime.get("dept_id")
+    openai_client = runtime.get("openai_client")
+
+    attachments = []
+    text_parts = []
+
+    for att in attachment_file_ids:
+        file_id = att.get("file_id", "")
+        filename = att.get("filename", "unknown")
+        mime_type = att.get("mime_type", "")
+
+        info = AttachmentInfo(
+            file_id=file_id,
+            filename=filename,
+            mime_type=mime_type,
+        )
+
+        if extract_content:
+            # Extract full content from file
+            if file_service:
+                try:
+                    file_path = await file_service.get_file_path(
+                        file_id, user_id, dept_id=dept_id
+                    )
+                    content = await _extract_attachment_content(
+                        file_path, mime_type, openai_client
+                    )
+                    info.content = content
+                    text_parts.append(
+                        f"--- Attached File: {filename} (file_id: {file_id}) ---\n{content}"
+                    )
+                except Exception as e:
+                    logger.warning(f"[ATTACHMENT] Failed to extract {filename}: {e}")
+                    text_parts.append(
+                        f"--- Attached File: {filename} (file_id: {file_id}) ---\n[Error: {e}]"
+                    )
+            else:
+                text_parts.append(
+                    f"--- Attached File: {filename} (file_id: {file_id}) ---\n[FileService not available]"
+                )
+        else:
+            # Metadata only
+            text_parts.append(f"- {filename} (file_id: {file_id}, type: {mime_type})")
+
+        attachments.append(info)
+
+    # Format output with consistent header
+    header = "[ATTACHED FILE CONTENTS]" if extract_content else "[ATTACHED FILES]"
+    formatted = f"{header}\n" + "\n".join(text_parts)
+
+    return attachments, formatted
 
 
 # ==================== HELPER: Query Optimization for Tools ====================
@@ -599,47 +693,13 @@ def create_plan_node(
             conversation_context = "\n".join(context_parts)
 
         # Get available files and attachments from runtime context
+        # Note: Attachment metadata is handled by PlanningPrompts._build_files_section()
+        # Actual content extraction happens in tool nodes (e.g., create_documents)
         available_files = runtime.get("available_files", [])
         attachment_file_ids = runtime.get("attachment_file_ids", [])
 
-        # Extract attachment content (similar to agent_service)
-        # This ensures LangGraph can actually read uploaded file contents
-        attachment_contents = ""
-        file_service = runtime.get("file_service")
-        user_id = runtime.get("user_id")
-        dept_id = runtime.get("dept_id")
-        openai_client = runtime.get("openai_client")  # For Vision API (images)
-        if attachment_file_ids and file_service:
-            content_parts = []
-            for att in attachment_file_ids:
-                try:
-                    file_path = await file_service.get_file_path(
-                        att.get("file_id"),
-                        user_id,
-                        dept_id=dept_id,
-                    )
-                    extracted = await _extract_attachment_content(
-                        file_path, att.get("mime_type", ""), openai_client
-                    )
-                    if extracted:
-                        content_parts.append(
-                            f"\n\n--- Attached File: {att.get('filename', 'unknown')} "
-                            f"(file_id: {att.get('file_id')}) ---\n{extracted}"
-                        )
-                except Exception as e:
-                    logger.warning(f"[PLAN] Failed to extract attachment: {e}")
-            if content_parts:
-                attachment_contents = "\n".join(content_parts)
-
-        # Append attachment contents to query so planner can see them
-        query_with_attachments = query
-        if attachment_contents:
-            query_with_attachments = (
-                f"{query}\n\n[ATTACHED FILE CONTENTS]{attachment_contents}"
-            )
-
         planning_prompt = PlanningPrompts.create_plan(
-            query=query_with_attachments,
+            query=query,
             conversation_context=conversation_context,
             available_files=available_files,
             attachment_file_ids=attachment_file_ids,
@@ -1707,9 +1767,24 @@ def create_tool_create_documents_node(
 
             # Use unified helper to get all previous step context
             prev_ctx = build_previous_step_context(state, current_step)
+
+            # Get attachment content (extract full content for document creation)
+            _, attachment_content = await get_attachment_context(
+                runtime, extract_content=True
+            )
+
+            # Combine previous step context with attachment content
+            combined_content = prev_ctx.text
+            if attachment_content:
+                if combined_content:
+                    combined_content = f"{combined_content}\n\n{attachment_content}"
+                else:
+                    combined_content = attachment_content
+
             logger.info(
                 f"[CREATE_DOCUMENTS_NODE] prev_ctx: urls={len(prev_ctx.urls)}, "
-                f"file_ids={len(prev_ctx.file_ids)}, text_len={len(prev_ctx.text)}"
+                f"file_ids={len(prev_ctx.file_ids)}, text_len={len(prev_ctx.text)}, "
+                f"attachment_len={len(attachment_content)}"
             )
 
             # Get step_contexts for writing results (will store files_created)
@@ -1723,9 +1798,9 @@ def create_tool_create_documents_node(
                     if ":" in action_step
                     else action_step
                 )
-                # Include previous step content in prompt for document creation
+                # Include previous step content AND attachment content in prompt
                 prompt = ToolPrompts.create_documents_prompt(
-                    clean_query, previous_content=prev_ctx.text
+                    clean_query, previous_content=combined_content
                 )
             else:
                 prompt = ToolPrompts.fallback_prompt(query, "create_documents")
