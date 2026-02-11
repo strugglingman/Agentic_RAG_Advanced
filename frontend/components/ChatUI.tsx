@@ -871,7 +871,7 @@ export default function ChatPage() {
               e.preventDefault();
               void onSend();
             }}
-            className="mx-auto flex max-w-5xl flex-col gap-2 px-4 py-3 w-full"
+            className="mx-auto flex max-w-[1200px] flex-col gap-2 px-4 py-3 w-full"
           >
           {/* Attachment Preview */}
           {attachments.length > 0 && (

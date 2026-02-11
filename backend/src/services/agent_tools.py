@@ -1504,7 +1504,14 @@ async def execute_create_documents(
                     # Add title
                     set_font_safe(16, "B")
                     pdf.set_text_color(33, 33, 33)
-                    pdf.multi_cell(w=usable_width, h=10, text=title, align="L")
+                    pdf.multi_cell(
+                        w=usable_width,
+                        h=10,
+                        text=title,
+                        align="L",
+                        new_x="LMARGIN",
+                        new_y="NEXT",
+                    )
                     pdf.ln(5)
 
                     # Add separator line
@@ -1526,7 +1533,13 @@ async def execute_create_documents(
                         rows = []
                         for tl in table_lines:
                             # Skip separator rows (|---|---|)
-                            if tl.replace("|", "").replace("-", "").replace(":", "").strip() == "":
+                            if (
+                                tl.replace("|", "")
+                                .replace("-", "")
+                                .replace(":", "")
+                                .strip()
+                                == ""
+                            ):
                                 continue
                             # Parse cells
                             cells = [c.strip() for c in tl.split("|")]
@@ -1543,7 +1556,9 @@ async def execute_create_documents(
 
                         # Calculate column widths
                         num_cols = max(len(r) for r in rows)
-                        col_width = usable_width / num_cols if num_cols > 0 else usable_width
+                        col_width = (
+                            usable_width / num_cols if num_cols > 0 else usable_width
+                        )
                         row_height = 8
 
                         # Draw table
@@ -1558,13 +1573,26 @@ async def execute_create_documents(
                                 set_font_safe(10, "B")
                                 pdf.set_fill_color(240, 240, 240)
                                 for cell in row:
-                                    pdf.cell(w=col_width, h=row_height, text=cell, border=1, fill=True, align="C")
+                                    pdf.cell(
+                                        w=col_width,
+                                        h=row_height,
+                                        text=cell,
+                                        border=1,
+                                        fill=True,
+                                        align="C",
+                                    )
                                 pdf.ln(row_height)
                                 set_font_safe(10)
                             else:
                                 # Data rows
                                 for cell in row:
-                                    pdf.cell(w=col_width, h=row_height, text=cell, border=1, align="C")
+                                    pdf.cell(
+                                        w=col_width,
+                                        h=row_height,
+                                        text=cell,
+                                        border=1,
+                                        align="C",
+                                    )
                                 pdf.ln(row_height)
 
                         pdf.ln(4)  # Space after table
@@ -1586,7 +1614,9 @@ async def execute_create_documents(
                             table_lines = []
                             while i < len(lines):
                                 tl = lines[i].strip()
-                                if tl.startswith("|") and (tl.endswith("|") or tl.rstrip().endswith("|")):
+                                if tl.startswith("|") and (
+                                    tl.endswith("|") or tl.rstrip().endswith("|")
+                                ):
                                     table_lines.append(tl)
                                     i += 1
                                 else:
@@ -1594,28 +1624,91 @@ async def execute_create_documents(
                             render_table(table_lines)
                             continue
 
-                        # Strip markdown formatting
+                        # Strip markdown formatting and normalize whitespace
                         clean = line.replace("**", "").replace("*", "")
+                        # Replace tabs with spaces to prevent layout issues
+                        clean = clean.replace("\t", "    ")
 
                         # Handle markdown headers
                         if line.startswith("### "):
                             set_font_safe(11, "B")
-                            pdf.multi_cell(w=usable_width, h=7, text=clean[4:])
+                            pdf.multi_cell(
+                                w=usable_width,
+                                h=7,
+                                text=clean[4:],
+                                new_x="LMARGIN",
+                                new_y="NEXT",
+                            )
                             set_font_safe(10)
                         elif line.startswith("## "):
                             pdf.ln(3)
                             set_font_safe(13, "B")
-                            pdf.multi_cell(w=usable_width, h=8, text=clean[3:])
+                            pdf.multi_cell(
+                                w=usable_width,
+                                h=8,
+                                text=clean[3:],
+                                new_x="LMARGIN",
+                                new_y="NEXT",
+                            )
                             set_font_safe(10)
                         elif line.startswith("# "):
                             pdf.ln(4)
                             set_font_safe(14, "B")
-                            pdf.multi_cell(w=usable_width, h=9, text=clean[2:])
+                            pdf.multi_cell(
+                                w=usable_width,
+                                h=9,
+                                text=clean[2:],
+                                new_x="LMARGIN",
+                                new_y="NEXT",
+                            )
                             set_font_safe(10)
                         elif line.startswith("- ") or line.startswith("* "):
-                            pdf.multi_cell(w=usable_width, h=6, text=f"  • {clean[2:]}")
+                            pdf.multi_cell(
+                                w=usable_width,
+                                h=6,
+                                text=f"  • {clean[2:]}",
+                                new_x="LMARGIN",
+                                new_y="NEXT",
+                            )
+                        # Handle numbered lists (1. 2. 3. etc.)
+                        elif (
+                            len(clean) > 2
+                            and clean[0].isdigit()
+                            and clean[1] in ".)"
+                            or (
+                                len(clean) > 3
+                                and clean[:2].isdigit()
+                                and clean[2] in ".)"
+                            )
+                        ):
+                            # Find where the number ends
+                            match = re.match(r"^(\d+[.\)])\s*", clean)
+                            if match:
+                                num_part = match.group(1)
+                                text_part = clean[match.end() :]
+                                pdf.multi_cell(
+                                    w=usable_width,
+                                    h=6,
+                                    text=f"  {num_part} {text_part}",
+                                    new_x="LMARGIN",
+                                    new_y="NEXT",
+                                )
+                            else:
+                                pdf.multi_cell(
+                                    w=usable_width,
+                                    h=6,
+                                    text=clean,
+                                    new_x="LMARGIN",
+                                    new_y="NEXT",
+                                )
                         else:
-                            pdf.multi_cell(w=usable_width, h=6, text=clean)
+                            pdf.multi_cell(
+                                w=usable_width,
+                                h=6,
+                                text=clean,
+                                new_x="LMARGIN",
+                                new_y="NEXT",
+                            )
 
                         i += 1
 
