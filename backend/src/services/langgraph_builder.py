@@ -23,6 +23,7 @@ from src.services.langgraph_nodes import (
     create_tool_download_file_node,
     create_tool_create_documents_node,
     create_tool_send_email_node,
+    create_tool_code_execution_node,
     create_direct_answer_node,
 )
 from src.services.langgraph_routing import (
@@ -94,6 +95,7 @@ def build_langgraph_agent(
     graph.add_node("tool_download_file", create_tool_download_file_node(runtime))
     graph.add_node("tool_create_documents", create_tool_create_documents_node(runtime))
     graph.add_node("tool_send_email", create_tool_send_email_node(runtime))
+    graph.add_node("tool_code_execution", create_tool_code_execution_node(runtime))
     graph.add_node("direct_answer", create_direct_answer_node(runtime))
     graph.add_node("error", error_handler_node)  # No runtime needed
 
@@ -115,6 +117,7 @@ def build_langgraph_agent(
             "tool_download_file": "tool_download_file",
             "tool_create_documents": "tool_create_documents",
             "tool_send_email": "tool_send_email",
+            "tool_code_execution": "tool_code_execution",
             "generate": "generate",
             "error": "error",
         },
@@ -144,6 +147,7 @@ def build_langgraph_agent(
     # After tool execution, generate answer with tool results
     graph.add_edge("tool_calculator", "generate")
     graph.add_edge("tool_web_search", "generate")
+    graph.add_edge("tool_code_execution", "generate")
 
     # After file/email tools, go directly to verify (no generation needed - action complete)
     # These tools produce direct results (download links, confirmation messages)

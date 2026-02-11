@@ -83,8 +83,11 @@ class PlanningPrompts:
                 )
             if attachment_lines:
                 sections.append(
-                    "### Current Message Attachments\n"
-                    "These files were uploaded with this message. Use create_documents tool to analyze their content.\n"
+                    "### Current Message Attachments (⚠️ NOT searchable via retrieve!)\n"
+                    "These files were uploaded with this message. Content will be passed directly to the tool.\n"
+                    "⛔ NEVER use `retrieve` for these files - they are NOT in the RAG index!\n"
+                    "✅ For DATA ANALYSIS (filter, aggregate, calculate): Use `code_execution` tool\n"
+                    "✅ For FORMATTING into documents (PDF, DOCX): Use `create_documents` tool\n"
                     + "\n".join(attachment_lines)
                 )
 
@@ -235,6 +238,7 @@ You are a planning assistant. Create a plan to answer this query using available
 - download_file: Download a file from a URL and save to user's storage (returns file_id for chaining)
 - send_email: Send an email with optional file attachments (use file_id from available files or from download_file/create_documents output)
 - create_documents: Create documents (PDF, DOCX, TXT, CSV, XLSX, HTML, MD) from content (returns file_id for chaining)
+- code_execution: Execute Python code in a secure sandbox for data analysis, complex calculations, statistics, and file processing
 
 ## CRITICAL TOOL SELECTION RULES:
 
@@ -271,17 +275,36 @@ You are a planning assistant. Create a plan to answer this query using available
 - If user says "download files for me" without mentioning email, do NOT add send_email
 
 ### Use "create_documents" for:
-- Creating new documents (reports, summaries, exports)
-- Supported formats: PDF, DOCX, TXT, CSV, XLSX, HTML, MD
+- FORMATTING already-known content into document files (PDF, DOCX, TXT, CSV, XLSX, HTML, MD)
 - Output AUTOMATICALLY includes download link - NO separate step needed for "give me link" requests
 - Output includes file_id which can be used with send_email
 - IMPORTANT: When user asks to "create document and give link", use ONLY ONE step: create_documents (the link is included in output)
+- ⚠️ WARNING: create_documents ONLY FORMATS text - it does NOT compute, filter, or aggregate data!
+- ⚠️ For ANY data analysis task, use code_execution FIRST, then optionally create_documents for output
+
+### Use "code_execution" for (MUST USE for data analysis):
+- ⭐ ANALYZING uploaded files (CSV, Excel, JSON) - filtering, aggregating, summarizing data
+- ⭐ ANY task involving "analyze", "calculate", "sum", "average", "filter", "count" on file data
+- Complex calculations that require programming logic
+- Statistical analysis (mean, median, standard deviation, correlations)
+- Data transformation and processing (Excel/CSV data manipulation)
+- Mathematical operations beyond simple arithmetic
+- Generating charts or visualizations
+- Available libraries: pandas, numpy, matplotlib, math, json, datetime
+- ⚠️ CRITICAL: If user uploads a file and asks to "analyze", "summarize data", "calculate totals" → MUST use code_execution, NOT create_documents
 
 ## FILE OPERATIONS - IMPORTANT:
 - When user asks to email a file, use the file_id from the Available Files section above
 - When user asks to download something and email it, chain: download_file → send_email (use file_id from download_file output)
 - When user asks to create a document and email it, chain: create_documents → send_email (use file_id from create_documents output)
 - Inline attachment content (marked [INLINE CONTENT AVAILABLE]) has already been extracted - no need to retrieve it
+
+## ⭐ FILE ANALYSIS vs FILE CREATION - CRITICAL DISTINCTION:
+- **ANALYZE/COMPUTE data** (filter, sum, average, count, statistics) → Use `code_execution`
+- **FORMAT/SAVE content** (create PDF, DOCX, export) → Use `create_documents`
+- **ANALYZE then EXPORT**: Use `code_execution` FIRST, then `create_documents` for output
+- Keywords that REQUIRE code_execution: "analyze", "calculate", "sum", "total", "average", "filter", "count", "statistics", "aggregate"
+- Keywords for create_documents: "create document", "export as PDF", "save as file", "generate report" (only if content is already known)
 
 ## CRITICAL: MULTI-STEP vs SINGLE-STEP PLANS
 
@@ -294,6 +317,8 @@ You are a planning assistant. Create a plan to answer this query using available
 - ✅ download_file → send_email (must download before attaching)
 - ✅ create_documents → send_email (must create before attaching)
 - ✅ retrieve → calculator (get data, then compute on it)
+- ✅ retrieve → code_execution (get data, then do complex analysis/statistics)
+- ✅ code_execution → create_documents (analyze data, then format as document)
 - ✅ web_search → create_documents (search info, then create report)
 - ✅ web_search → download_file (search for resources, then download the URLs found)
 - ✅ web_search → download_file → send_email (search, download, then email the downloaded files)
@@ -338,6 +363,9 @@ You are a planning assistant. Create a plan to answer this query using available
 - Query: "Find articles about Nanjing travel and send them to john@example.com" → {{"steps": ["web_search: Find travel articles and guides about Nanjing tourism", "download_file: Download the web pages from the URLs found in web search", "send_email: Send the downloaded files to john@example.com with attached files (use file_ids from download_file)"]}}
 - Query: "Search for Python tutorials and download them for me" → {{"steps": ["web_search: Find Python programming tutorials and guides", "download_file: Download the tutorial pages from the URLs found"]}}
 - Query: "show me places to visit in Fuzhou and download the files" → {{"steps": ["web_search: Top tourist attractions in Fuzhou China with descriptions and links", "download_file: Download the web pages from the URLs found in web search results"]}}
+- Query: "Analyze this CSV file and summarize total sales" (with sales.csv attached) → {{"steps": ["code_execution: Read the CSV file, calculate total sales, and print summary statistics"]}}
+- Query: "Analyze employees.csv, filter status=process, sum hours" (with employees.csv attached) → {{"steps": ["code_execution: Read employees.csv, filter rows where status='process', calculate sum of hours column"]}}
+- Query: "Analyze the data and create a PDF report" (with data.csv attached) → {{"steps": ["code_execution: Read and analyze the CSV data, compute statistics and summaries", "create_documents: Create PDF report with the analysis results from code_execution"]}}
 
 Return ONLY JSON:
 {{"steps": ["tool_name: detailed comprehensive query with full context", ...]}}

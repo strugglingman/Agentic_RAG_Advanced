@@ -1,5 +1,5 @@
 """
-Tool calling prompts for calculator and web search.
+Tool calling prompts for calculator, web search, code execution, and other tools.
 """
 
 
@@ -164,7 +164,9 @@ IMPORTANT: Use ONLY these file_ids for attachments, NOT file_ids from conversati
         if available_files:
             file_list = []
             for f in available_files:
-                file_list.append(f"- {f.get('name')} (file_id: {f.get('file_id')}, category: {f.get('category')})")
+                file_list.append(
+                    f"- {f.get('name')} (file_id: {f.get('file_id')}, category: {f.get('category')})"
+                )
             files_section += f"""
 
 USER'S AVAILABLE FILES:
@@ -194,13 +196,89 @@ INSTRUCTIONS:
 CALL THE TOOL - the system will handle user confirmation before sending."""
 
     @staticmethod
+    def code_execution_prompt(
+        task: str,
+        previous_step_context: str = "",
+        is_detour: bool = False,
+    ) -> str:
+        """
+        Generate prompt for code_execution tool calling.
+
+        Args:
+            task: The code execution task description
+            previous_step_context: Data/results from previous steps to use in code
+            is_detour: Whether this is an ad-hoc call (True) or planned (False)
+
+        Returns:
+            Prompt string for code_execution function calling
+        """
+        context_section = ""
+        if previous_step_context:
+            context_section = f"""
+
+📋 DATA PROVIDED (use this data directly in your code):
+{previous_step_context}
+
+⭐ HOW TO USE THIS DATA:
+- For CSV/tabular data: Use pd.read_csv(io.StringIO(data_string)) where data_string contains the CSV text
+- Copy the data EXACTLY as shown above into a triple-quoted string variable
+- Do NOT use pd.read_csv('filename.csv') - the file does NOT exist in the sandbox
+- Use ACTUAL newlines in your string, not escaped \\n characters"""
+
+        detour_note = ""
+        if is_detour:
+            detour_note = (
+                "\n\nNote: This is a supplementary analysis based on previous results."
+            )
+
+        return f"""You need to call the code_execution tool for this task.
+
+Task: {task}{context_section}{detour_note}
+
+INSTRUCTIONS:
+1. Generate Python code to accomplish the task
+2. The last expression value will be captured as output (like Jupyter)
+3. Embed data directly in the code (do NOT read from files unless specifically needed)
+4. Available libraries: pandas, numpy, matplotlib, math, json, datetime
+5. For multi-line strings (like CSV data), use triple quotes with ACTUAL newlines, NOT escaped \\n
+
+⚠️ IMPORTANT - DO NOT CREATE FILES:
+- Do NOT use to_excel(), to_csv(), to_json(), open(), or any file-writing operations
+- Do NOT save results to files - the sandbox files are NOT accessible to users
+- Instead, just COMPUTE the data and return it as the last expression
+- If the user wants a file (Excel, PDF, CSV), a separate create_documents tool will handle that
+- Your job is ONLY to compute/analyze data, not to create files
+
+Example - WRONG:
+```python
+df.to_excel('output.xlsx')  # DON'T DO THIS
+```
+
+Example - CORRECT (embed data directly):
+```python
+import pandas as pd
+from io import StringIO
+
+# Embed the CSV data with ACTUAL newlines (not escaped \\n)
+csv_data = '''name,status,hours
+Alice,process,30
+Bob,process,25
+'''
+df = pd.read_csv(StringIO(csv_data))
+result = df.groupby('name')['hours'].sum()
+result.to_dict()  # Return computed data as last expression
+```
+
+Call the code_execution tool with your Python code."""
+
+    @staticmethod
     def fallback_prompt(query: str, tool_type: str) -> str:
         """
         Fallback prompt when no specific task is available.
 
         Args:
             query: User's original query
-            tool_type: Type of tool ("calculator", "web_search", "download_file", "send_email", "create_documents")
+            tool_type: Type of tool ("calculator", "web_search", "download_file", "send_email", "create_documents", "code_execution")
 
         Returns:
             Generic tool calling prompt
@@ -215,5 +293,14 @@ CALL THE TOOL - the system will handle user confirmation before sending."""
             return f"Based on the user's query, send an email.\n\nUser Query: {query}"
         elif tool_type == "create_documents":
             return f"Based on the user's query, create the requested documents.\n\nUser Query: {query}"
+        elif tool_type == "code_execution":
+            return f"""Based on the user's query, generate and execute Python code.
+
+User Query: {query}
+
+Generate Python code to accomplish this task. Use print() to output results.
+Available libraries: pandas, numpy, matplotlib, math, json, datetime.
+
+Call the code_execution tool with your Python code."""
         else:
             return f"Use the appropriate tool to help answer this query: {query}"

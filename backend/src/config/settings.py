@@ -265,6 +265,19 @@ class Config:
     BRAVE_API_KEY = os.getenv("BRAVE_API_KEY", "")
 
     # ==============================================================================
+    # E2B Code Execution Settings
+    # ==============================================================================
+    E2B_API_KEY: str = os.getenv("E2B_API_KEY", "")
+    CODE_EXECUTION_ENABLED: bool = os.getenv(
+        "CODE_EXECUTION_ENABLED", "true"
+    ).lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+    # ==============================================================================
     # Web Search Configuration
     # ==============================================================================
     WEB_SEARCH_ENABLED: bool = os.getenv("WEB_SEARCH_ENABLED", "false").lower() in {

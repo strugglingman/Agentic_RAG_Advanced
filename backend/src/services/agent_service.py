@@ -128,15 +128,12 @@ class AgentService:
             # No attachments - first producer tool will clear old state
             context["_first_producer_tool_this_turn"] = True
 
-        messages = await self._build_initial_messages(
-            query, context, session_state
-        )
+        messages = await self._build_initial_messages(query, context, session_state)
 
         # When True: Always search internal documents first
         # When False: Let LLM decide when to search (may skip internal docs)
         force_retrieval = Config.FORCE_INTERNAL_RETRIEVAL
         retrieval_done = False
-        logger.info(f"[AGENT] FORCE_INTERNAL_RETRIEVAL={force_retrieval}")
 
         for iteration in range(self.max_iterations):
             # logger.debug(
@@ -162,7 +159,7 @@ class AgentService:
             if self._has_tool_calls(res):
                 assistant_message = res.choices[0].message
                 logger.debug(
-                    f"In AgentService.run, LLM has {len(res.choices[0].message.tool_calls)} tool_calls: {res.choices[0].message.tool_calls}"
+                    f"In AgentService.run, LLM has {len(res.choices[0].message.tool_calls)} tool_calls: {res.choices[0].message.tool_calls[:150]}..."
                 )
                 tool_results = await self._execute_tools(res, context)
                 messages = self._append_tool_results(
@@ -557,6 +554,17 @@ class AgentService:
                 "- For file downloads: Use download_file tool with URLs. This works for BOTH direct file links AND web page URLs from web_search results. Collect all URLs, then call download_file once.\n"
                 "- For sending emails: Use send_email tool ONLY after explicit user confirmation of all details, you MUST follow the instruction of Email sending policy (CRITICAL) part.\n"
                 "- For create/generate documents: Use create_documents tool to generate formatted files (PDF, DOCX, TXT, CSV, HTML, etc.) from content and return the markdown links.\n"
+                "- For DATA ANALYSIS (filter, aggregate, calculate, statistics on CSV/Excel files): Use code_execution tool\n"
+                "  • IMPORTANT: When user attaches a CSV/Excel file, the content is shown below the message - embed it directly in your code using StringIO\n"
+                "  • DO NOT use pd.read_csv('filename.csv') - files don't exist in the sandbox\n"
+                "  • DO NOT use to_excel(), to_csv(), or any file-writing functions - just return computed data\n"
+                "  • Use triple-quoted strings with ACTUAL newlines for data, NOT escaped \\n\n"
+                "- For ANALYSIS → DOCUMENT workflow (e.g., 'analyze data and create PDF'):\n"
+                "  1. First call code_execution to compute/analyze the data\n"
+                "  2. Then call create_documents with the FULL computed results in the content parameter\n"
+                "  • CRITICAL: Include ALL the data from code_execution in the document content!\n"
+                "  • Use proper markdown table format: | Col1 | Col2 |\\n|---|---|\\n| val1 | val2 |\n"
+                "  • Do NOT create empty tables - always include the actual data rows\n"
                 "- You may use multiple tools if needed to fully answer the question\n"
                 "\n"
                 "CRITICAL - Markdown Link Preservation:\n"

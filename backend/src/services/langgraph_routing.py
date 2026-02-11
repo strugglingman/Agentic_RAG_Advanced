@@ -224,7 +224,7 @@ def route_after_planning(state: AgentState) -> str:
     Returns:
         Next node name: "retrieve", "tool_calculator", "tool_web_search",
         "tool_download_file", "tool_send_email", "tool_create_documents",
-        "generate", or "error"
+        "tool_code_execution", "generate", or "error"
     """
     plan = state.get("plan", [])
     current_step = state.get("current_step", 0)
@@ -268,6 +268,7 @@ def route_after_planning(state: AgentState) -> str:
         "download_file": "tool_download_file",
         "send_email": "tool_send_email",
         "create_documents": "tool_create_documents",
+        "code_execution": "tool_code_execution",
     }
 
     if tool_name in tool_to_node:

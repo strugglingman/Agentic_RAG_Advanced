@@ -18,7 +18,15 @@ from langchain_core.messages import AIMessage
 from src.services.langgraph_state import AgentState, RuntimeContext
 from src.services.retrieval import build_where
 from src.services.retrieval_decomposition import retrieve_with_decomposition
-from src.services.agent_tools import execute_tool_call
+from src.services.agent_tools import (
+    execute_tool_call,
+    TOOL_CALCULATOR,
+    TOOL_WEB_SEARCH,
+    TOOL_DOWNLOAD_FILE,
+    TOOL_CREATE_DOCUMENTS,
+    TOOL_SEND_EMAIL,
+    TOOL_CODE_EXECUTION,
+)
 from src.services.retrieval_evaluator import RetrievalEvaluator
 from src.models.evaluation import (
     EvaluationCriteria,
@@ -2205,6 +2213,232 @@ def create_tool_send_email_node(
     return tool_send_email_node
 
 
+# ==================== CODE EXECUTION NODE ====================
+def create_tool_code_execution_node(
+    runtime: RuntimeContext,
+) -> Callable[[AgentState], Coroutine[Any, Any, Dict[str, Any]]]:
+    """
+    Factory function to create tool_code_execution_node with runtime context bound.
+
+    Args:
+        runtime: RuntimeContext with openai_client, vector_db, dept_id, user_id
+
+    Returns:
+        Async tool_code_execution_node function
+    """
+
+    async def tool_code_execution_node(state: AgentState) -> Dict[str, Any]:
+        """
+        Execute code_execution tool using LLM function calling.
+
+        This node runs Python code in a secure E2B sandbox for data analysis,
+        calculations, and file processing tasks.
+
+        Args:
+            state: Current agent state
+
+        Returns:
+            Updated state with tool results
+        """
+        increment_query_routing("code_execution")
+        try:
+            plan = state.get("plan", [])
+            current_step = state.get("current_step", 0)
+            query = state.get("query", "")
+
+            # Get OpenAI client from runtime
+            client = runtime.get("openai_client")
+            if not client:
+                return {
+                    "tools_used": state.get("tools_used", []),
+                    "tool_results": state.get("tool_results", {}),
+                    "current_step": current_step,
+                    "iteration_count": state.get("iteration_count", 0) + 1,
+                    "error": "OpenAI client required for tool execution",
+                }
+
+            # Determine if this is a DETOUR call
+            is_detour = state.get("evaluation_result") is not None
+
+            # Build context from previous steps for code generation
+            prev_ctx = build_previous_step_context(state, current_step)
+
+            # Get attachment content (extract full content for code execution)
+            _, attachment_content = await get_attachment_context(
+                runtime, extract_content=True
+            )
+
+            # Combine previous step context with attachment content
+            combined_context = prev_ctx.text
+            if attachment_content:
+                if combined_context:
+                    combined_context = f"{combined_context}\n\n{attachment_content}"
+                else:
+                    combined_context = attachment_content
+
+            logger.info(
+                f"[CODE_EXECUTION_NODE] prev_ctx: text_len={len(prev_ctx.text)}, "
+                f"attachment_len={len(attachment_content)}"
+            )
+
+            # Build prompt for LLM tool calling
+            if plan and current_step < len(plan) and not is_detour:
+                action_step = plan[current_step]
+                clean_query = (
+                    action_step.split(":", 1)[1].strip()
+                    if ":" in action_step
+                    else action_step
+                )
+                prompt = ToolPrompts.code_execution_prompt(
+                    clean_query,
+                    previous_step_context=combined_context,
+                    is_detour=False,
+                )
+            elif is_detour:
+                refined_query = state.get("refined_query")
+                task_query = (
+                    refined_query
+                    if refined_query
+                    else (
+                        plan[current_step]
+                        if plan and current_step < len(plan)
+                        else query
+                    )
+                )
+                prompt = ToolPrompts.code_execution_prompt(
+                    task_query,
+                    previous_step_context=combined_context,
+                    is_detour=True,
+                )
+            else:
+                prompt = ToolPrompts.fallback_prompt(query, "code_execution")
+
+            response = chat_completion_with_tools(
+                client=client,
+                model=Config.OPENAI_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                tools=TOOL_CODE_EXECUTION,
+                tool_choice="auto",
+                temperature=0.1,
+            )
+
+            # Check if LLM called a tool
+            step_contexts = state.get("step_contexts", {})
+            if not response.choices[0].message.tool_calls:
+                if current_step not in step_contexts:
+                    step_contexts[current_step] = []
+                step_contexts[current_step].append(
+                    {
+                        "type": "tool",
+                        "tool_name": "code_execution",
+                        "result": "Code execution not called - no code generated",
+                        "args": {},
+                        "plan_step": (
+                            plan[current_step]
+                            if plan and current_step < len(plan)
+                            else ""
+                        ),
+                    }
+                )
+                return {
+                    "tools_used": state.get("tools_used", []),
+                    "tool_results": state.get("tool_results", {}),
+                    "step_contexts": step_contexts,
+                    "current_step": current_step,
+                    "iteration_count": state.get("iteration_count", 0) + 1,
+                    "draft_answer": "Code execution was not called.",
+                    "messages": state.get("messages", [])
+                    + [AIMessage(content="No tool was called by the LLM.")],
+                }
+
+            # Execute the tool call
+            tool_call = response.choices[0].message.tool_calls[0]
+            tool_name = tool_call.function.name
+            tool_args = json.loads(tool_call.function.arguments)
+
+            # Build context for tool execution from runtime
+            context = {
+                "vector_db": runtime.get("vector_db"),
+                "dept_id": runtime.get("dept_id"),
+                "user_id": runtime.get("user_id"),
+                "openai_client": client,
+                "request_data": runtime.get("request_data") or {},
+                "file_service": runtime.get("file_service"),
+            }
+
+            # Execute the tool (async)
+            result = await execute_tool_call(tool_name, tool_args, context)
+
+            # Update tool results
+            tool_results = state.get("tool_results", {})
+            tool_key = f"{tool_name}_step_{current_step}"
+            if tool_key not in tool_results:
+                tool_results[tool_key] = []
+            tool_results[tool_key].append(
+                {
+                    "step": current_step,
+                    "args": tool_args,
+                    "result": result,
+                    "query": query,
+                }
+            )
+
+            # Store tool result in step_contexts
+            if current_step not in step_contexts:
+                step_contexts[current_step] = []
+
+            # Remove any existing code_execution context (from previous refinement)
+            step_contexts[current_step] = [
+                ctx
+                for ctx in step_contexts[current_step]
+                if not (
+                    ctx.get("type") == "tool"
+                    and ctx.get("tool_name") == "code_execution"
+                )
+            ]
+
+            # Add new code_execution context
+            step_contexts[current_step].append(
+                {
+                    "type": "tool",
+                    "tool_name": tool_name,
+                    "result": result,
+                    "args": tool_args,
+                    "plan_step": (
+                        plan[current_step] if plan and current_step < len(plan) else ""
+                    ),
+                }
+            )
+
+            return {
+                "tools_used": state.get("tools_used", []) + [tool_name],
+                "tool_results": tool_results,
+                "step_contexts": step_contexts,
+                "draft_answer": result,
+                "current_step": current_step,
+                "iteration_count": state.get("iteration_count", 0) + 1,
+                "messages": state.get("messages", [])
+                + [AIMessage(content=f"Executed code with result: {result[:200]}...")],
+            }
+
+        except Exception as e:
+            logger.error(
+                f"[CODE_EXECUTION_NODE] Exception: {type(e).__name__}: {str(e)}"
+            )
+            return {
+                "tools_used": state.get("tools_used", []),
+                "tool_results": state.get("tool_results", {}),
+                "draft_answer": f"Code execution failed: {str(e)}",
+                "current_step": current_step,
+                "iteration_count": state.get("iteration_count", 0) + 1,
+                "error": f"Code execution failed: {str(e)}",
+                "messages": state.get("messages", [])
+                + [AIMessage(content=f"Code execution failed: {str(e)}")],
+            }
+
+    return tool_code_execution_node
+
+
 # ==================== DIRECT ANSWER NODE ====================
 def create_direct_answer_node(
     runtime: RuntimeContext,
@@ -3033,156 +3267,3 @@ async def error_handler_node(state: AgentState) -> Dict[str, Any]:
         "messages": state.get("messages", [])
         + [AIMessage(content=f"Handled error: {error_message}")],
     }
-
-
-# Define available tools for function calling
-TOOL_CALCULATOR = [
-    {
-        "type": "function",
-        "function": {
-            "name": "calculator",
-            "description": "Perform mathematical calculations. Evaluates mathematical expressions.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "expression": {
-                        "type": "string",
-                        "description": "Mathematical expression to evaluate (e.g., '15 * 0.2', '(100 + 50) / 2')",
-                    }
-                },
-                "required": ["expression"],
-            },
-        },
-    },
-]
-
-TOOL_WEB_SEARCH = [
-    {
-        "type": "function",
-        "function": {
-            "name": "web_search",
-            "description": "Search the web for current information. Use when internal documents don't have the answer.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Search query for finding information on the web",
-                    },
-                    "max_results": {
-                        "type": "integer",
-                        "description": "Maximum number of search results to return",
-                        "default": 5,
-                    },
-                },
-                "required": ["query"],
-            },
-        },
-    },
-]
-
-TOOL_DOWNLOAD_FILE = [
-    {
-        "type": "function",
-        "function": {
-            "name": "download_file",
-            "description": "Download files from URLs. Returns file_id for each downloaded file that can be used for attachments.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "file_urls": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "List of URLs to download files from",
-                    },
-                },
-                "required": ["file_urls"],
-            },
-        },
-    },
-]
-
-TOOL_CREATE_DOCUMENTS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "create_documents",
-            "description": "Create documents (PDF, DOCX, TXT, CSV, XLSX, HTML, MD) from content. Returns file_id for each created file.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "documents": {
-                        "type": "array",
-                        "description": "List of documents to create",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "content": {
-                                    "type": "string",
-                                    "description": "Document content (supports markdown)",
-                                },
-                                "title": {
-                                    "type": "string",
-                                    "description": "Document title",
-                                },
-                                "format": {
-                                    "type": "string",
-                                    "enum": [
-                                        "pdf",
-                                        "docx",
-                                        "txt",
-                                        "md",
-                                        "html",
-                                        "csv",
-                                        "xlsx",
-                                    ],
-                                    "description": "Output format (default: pdf)",
-                                },
-                                "filename": {
-                                    "type": "string",
-                                    "description": "Optional custom filename (without extension)",
-                                },
-                            },
-                            "required": ["content", "title"],
-                        },
-                    },
-                },
-                "required": ["documents"],
-            },
-        },
-    },
-]
-
-TOOL_SEND_EMAIL = [
-    {
-        "type": "function",
-        "function": {
-            "name": "send_email",
-            "description": "Send email with optional attachments. Use file_id from previous tool results for attachments.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "to": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Recipient email addresses",
-                    },
-                    "subject": {
-                        "type": "string",
-                        "description": "Email subject",
-                    },
-                    "body": {
-                        "type": "string",
-                        "description": "Email body content",
-                    },
-                    "attachments": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "File IDs to attach (from download_file or create_documents results)",
-                    },
-                },
-                "required": ["to", "subject", "body"],
-            },
-        },
-    },
-]

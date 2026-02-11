@@ -641,7 +641,7 @@ export default function ChatPage() {
   return (
     <div className="h-full w-full bg-neutral-100 flex justify-center">
       <div
-        className="flex h-full w-full max-w-6xl flex-col border-x border-neutral-200 bg-white shadow-sm relative"
+        className="flex h-full w-full max-w-[1400px] flex-col border-x border-neutral-200 bg-white shadow-sm relative"
         onDragEnter={handleDragEnter}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
@@ -871,7 +871,7 @@ export default function ChatPage() {
               e.preventDefault();
               void onSend();
             }}
-            className="mx-auto flex max-w-3xl flex-col gap-2 px-4 py-3"
+            className="mx-auto flex max-w-5xl flex-col gap-2 px-4 py-3 w-full"
           >
           {/* Attachment Preview */}
           {attachments.length > 0 && (
@@ -924,11 +924,11 @@ export default function ChatPage() {
           />
           <div className="flex items-end gap-1 w-full">
             <textarea
-              className="text-[16px] flex-grow resize-y rounded-xl border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-neutral-900/20 w-full md:w-[85%]"
+              className="text-[16px] flex-1 resize-y rounded-xl border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-neutral-900/20 min-h-[80px]"
               placeholder="Send a message..."
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              rows={2} // Keep the height unchanged
+              rows={3}
             />
             <button
               type="submit"

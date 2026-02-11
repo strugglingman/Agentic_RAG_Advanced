@@ -691,9 +691,10 @@ CREATE_DOCUMENTS_SCHEMA = {
     "function": {
         "name": "create_documents",
         "description": (
-            "Create one or more formatted documents (TXT, CSV, HTML, PDF, DOCX etc.) from provided content. "
-            "Use this when user asks to generate reports, summaries, or comparison documents. "
-            "Each generated document will be saved and download links returned."
+            "Format and save text content as downloadable documents (PDF, DOCX, TXT, CSV, XLSX, HTML, MD). "
+            "Use this for: saving reports, exporting summaries, creating formatted documents from existing text. "
+            "NOTE: This tool only FORMATS content - it does NOT compute or analyze data. "
+            "For calculations or data analysis, use code_execution instead."
         ),
         "parameters": {
             "type": "object",
@@ -1516,10 +1517,81 @@ async def execute_create_documents(
                     set_font_safe(10)
                     pdf.set_text_color(51, 51, 51)
 
-                    for line in content.split("\n"):
-                        line = line.strip()
+                    # Helper function to render a markdown table
+                    def render_table(table_lines):
+                        if len(table_lines) < 2:
+                            return
+
+                        # Parse table rows
+                        rows = []
+                        for tl in table_lines:
+                            # Skip separator rows (|---|---|)
+                            if tl.replace("|", "").replace("-", "").replace(":", "").strip() == "":
+                                continue
+                            # Parse cells
+                            cells = [c.strip() for c in tl.split("|")]
+                            # Remove empty first/last cells from leading/trailing |
+                            if cells and cells[0] == "":
+                                cells = cells[1:]
+                            if cells and cells[-1] == "":
+                                cells = cells[:-1]
+                            if cells:
+                                rows.append(cells)
+
+                        if not rows:
+                            return
+
+                        # Calculate column widths
+                        num_cols = max(len(r) for r in rows)
+                        col_width = usable_width / num_cols if num_cols > 0 else usable_width
+                        row_height = 8
+
+                        # Draw table
+                        pdf.set_draw_color(100, 100, 100)
+                        for row_idx, row in enumerate(rows):
+                            # Pad row to have consistent columns
+                            while len(row) < num_cols:
+                                row.append("")
+
+                            # Header row (first row) - bold with background
+                            if row_idx == 0:
+                                set_font_safe(10, "B")
+                                pdf.set_fill_color(240, 240, 240)
+                                for cell in row:
+                                    pdf.cell(w=col_width, h=row_height, text=cell, border=1, fill=True, align="C")
+                                pdf.ln(row_height)
+                                set_font_safe(10)
+                            else:
+                                # Data rows
+                                for cell in row:
+                                    pdf.cell(w=col_width, h=row_height, text=cell, border=1, align="C")
+                                pdf.ln(row_height)
+
+                        pdf.ln(4)  # Space after table
+
+                    # Process content line by line, collecting table lines
+                    lines = content.split("\n")
+                    i = 0
+                    while i < len(lines):
+                        line = lines[i].strip()
+
                         if not line:
                             pdf.ln(4)
+                            i += 1
+                            continue
+
+                        # Check if this is a markdown table row
+                        if line.startswith("|") and line.endswith("|"):
+                            # Collect all consecutive table lines
+                            table_lines = []
+                            while i < len(lines):
+                                tl = lines[i].strip()
+                                if tl.startswith("|") and (tl.endswith("|") or tl.rstrip().endswith("|")):
+                                    table_lines.append(tl)
+                                    i += 1
+                                else:
+                                    break
+                            render_table(table_lines)
                             continue
 
                         # Strip markdown formatting
@@ -1544,6 +1616,8 @@ async def execute_create_documents(
                             pdf.multi_cell(w=usable_width, h=6, text=f"  • {clean[2:]}")
                         else:
                             pdf.multi_cell(w=usable_width, h=6, text=clean)
+
+                        i += 1
 
                     pdf.output(filepath)
                 except ImportError:
@@ -1694,6 +1768,113 @@ async def execute_create_documents(
 
 
 # ============================================================================
+# TOOL 7: CODE EXECUTION (E2B Sandbox)
+# ============================================================================
+
+CODE_EXECUTION_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "code_execution",
+        "description": (
+            "Execute Python code for computation and data analysis. "
+            "Use this when you need to: calculate statistics, analyze data, transform datasets, "
+            "process numbers, or run algorithms. Available: pandas, numpy, matplotlib, math. "
+            "CRITICAL: Do NOT create/write files (no to_excel, to_csv, open, etc). "
+            "Just compute data and return it as the last expression or print(). "
+            "For file creation, use create_documents tool instead."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string",
+                    "description": (
+                        "Python code to execute. The last expression value is captured (like Jupyter). "
+                        "Available libraries: pandas, numpy, matplotlib, math, json, datetime. "
+                        "IMPORTANT: Do NOT use to_excel(), to_csv(), or any file-writing functions. "
+                        "Just return computed data (e.g., df.to_dict('records') or print(result))."
+                    ),
+                },
+            },
+            "required": ["code"],
+        },
+    },
+}
+
+
+@traceable
+async def execute_code_execution(args: Dict[str, Any], context: Dict[str, Any]) -> str:
+    """
+    Execute Python code in E2B sandbox.
+
+    Args:
+        args: Arguments from LLM containing:
+            - code (str): Python code to execute
+
+        context: System context (may contain data from previous steps)
+
+    Returns:
+        String result from code execution (stdout + any errors)
+    """
+    code = args.get("code", "").strip()
+
+    if not code:
+        return "Error: No code provided"
+
+    if not Config.CODE_EXECUTION_ENABLED:
+        return "Error: Code execution is disabled."
+
+    # Check if E2B is configured
+    if not Config.E2B_API_KEY:
+        return (
+            "Error: E2B API key not configured. Set E2B_API_KEY environment variable."
+        )
+
+    try:
+        from e2b_code_interpreter import Sandbox
+
+        # Execute code in E2B sandbox
+        # Note: E2B v2.x uses Sandbox.create() and reads API key from E2B_API_KEY env var
+        with Sandbox.create() as sandbox:
+            execution = sandbox.run_code(code)
+
+            # Build result from execution
+            result_parts = []
+
+            # Capture stdout
+            if execution.text:
+                result_parts.append(execution.text)
+
+            # Capture any logs/prints
+            if execution.logs and execution.logs.stdout:
+                for log in execution.logs.stdout:
+                    result_parts.append(log)
+
+            # Capture errors
+            if execution.error:
+                result_parts.append(f"Error: {execution.error}")
+
+            if execution.logs and execution.logs.stderr:
+                for err in execution.logs.stderr:
+                    result_parts.append(f"stderr: {err}")
+
+            if not result_parts:
+                logger.info("[CODE_EXECUTION] No output captured from code execution")
+                return "Code executed successfully (no output)"
+
+            result = "\n".join(result_parts)
+            logger.info(f"[CODE_EXECUTION] Execution result: {result[:150]}...")
+
+            return result
+
+    except ImportError:
+        return "Error: e2b-code-interpreter package not installed. Run: pip install e2b-code-interpreter"
+    except Exception as e:
+        logger.error(f"[CODE_EXECUTION] Error: {e}")
+        return f"Error executing code: {str(e)}"
+
+
+# ============================================================================
 # TOOL REGISTRY
 # ============================================================================
 
@@ -1704,6 +1885,7 @@ TOOL_REGISTRY = {
     "download_file": execute_download_file,
     "send_email": execute_send_email,
     "create_documents": execute_create_documents,
+    "code_execution": execute_code_execution,
 }
 """
 Maps tool names to their execution functions.
@@ -1722,11 +1904,26 @@ ALL_TOOLS = [
     DOWNLOAD_FILE_SCHEMA,
     SEND_EMAIL_SCHEMA,
     CREATE_DOCUMENTS_SCHEMA,
+    CODE_EXECUTION_SCHEMA,
 ]
 """
 List of all tool schemas to send to OpenAI API.
 This tells the LLM what tools are available.
 """
+
+
+# ============================================================================
+# LANGGRAPH TOOL LISTS (Single Source of Truth)
+# ============================================================================
+# LangGraph chat_completion_with_tools expects a list of tool schemas.
+# These are the canonical definitions - import these in langgraph_nodes.py.
+
+TOOL_CALCULATOR = [CALCULATOR_SCHEMA]
+TOOL_WEB_SEARCH = [WEB_SEARCH_SCHEMA]
+TOOL_DOWNLOAD_FILE = [DOWNLOAD_FILE_SCHEMA]
+TOOL_CREATE_DOCUMENTS = [CREATE_DOCUMENTS_SCHEMA]
+TOOL_SEND_EMAIL = [SEND_EMAIL_SCHEMA]
+TOOL_CODE_EXECUTION = [CODE_EXECUTION_SCHEMA]
 
 
 # ============================================================================
