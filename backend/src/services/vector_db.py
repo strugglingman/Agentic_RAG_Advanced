@@ -74,9 +74,12 @@ class VectorDB:
             include=include or ["documents", "metadatas", "distances"],
         )
 
-    def get(self, include: list = None):
-        """Get all documents"""
-        return self.collection.get(include=include or ["documents", "metadatas"])
+    def get(self, include: list = None, where: dict = None):
+        """Get documents, optionally filtered by a ChromaDB where clause."""
+        return self.collection.get(
+            include=include or ["documents", "metadatas"],
+            where=where,
+        )
 
     def delete_by_file_id(self, file_id: str) -> int:
         """

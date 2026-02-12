@@ -10,6 +10,9 @@ Supports multilingual text including:
 from __future__ import annotations
 import os
 import logging
+import threading
+import time as _time
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Optional
 import numpy as np
 from rank_bm25 import BM25Okapi
@@ -28,13 +31,22 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Global state for BM25 index (cached per user/dept)
-_bm25 = None
-_bm25_ids = []
-_bm25_docs = []
-_bm25_metas = []
-dept_previous = ""
-user_previous = ""
+@dataclass
+class _BM25Entry:
+    """Cached BM25 index for one (dept_id, user_id) pair."""
+    bm25: BM25Okapi
+    ids: list
+    docs: list
+    metas: list
+    created_at: float = field(default_factory=_time.monotonic)
+
+
+# Thread-safe BM25 cache: key = (dept_id, user_id), value = _BM25Entry
+_bm25_cache: dict[tuple[str, str], _BM25Entry] = {}
+_bm25_lock = threading.Lock()
+_BM25_TTL_SECONDS = 300  # 5 minutes
+_BM25_MAX_ENTRIES = 50   # Evict oldest when exceeded
+
 _reranker = None
 
 
@@ -217,48 +229,89 @@ def get_reranker():
 def build_bm25(vector_db: VectorDB, dept_id: str, user_id: str):
     """
     Build BM25 index for the given user and department.
-    Filters documents by dept_id and user_id (includes shared documents).
+    Uses server-side ChromaDB filtering. Result is stored in the thread-safe cache.
 
     Uses multilingual tokenization to support:
     - Space-separated languages (English, Swedish, Finnish, Spanish, etc.)
     - CJK languages (Chinese, Japanese) via jieba word segmentation
     """
-    global _bm25, _bm25_ids, _bm25_docs, _bm25_metas
     try:
-        res = vector_db.get(include=["documents", "metadatas"])
-        docs = res["documents"] if res and "documents" in res else []
-        metas = res["metadatas"] if res and "metadatas" in res else []
-        ids = res.get("ids", []) or []
+        # Server-side filter: same access-control logic as build_where()
+        where = {
+            "$and": [
+                {"dept_id": dept_id},
+                {"$or": [{"file_for_user": False}, {"user_id": user_id}]},
+            ]
+        }
+        res = vector_db.get(include=["documents", "metadatas"], where=where)
+
+        docs = res.get("documents") or []
+        metas = res.get("metadatas") or []
+        ids = res.get("ids") or []
+
+        # Handle nested list from ChromaDB
         docs = docs[0] if docs and isinstance(docs[0], list) else docs
         ids = ids[0] if ids and isinstance(ids[0], list) else ids
         metas = metas[0] if metas and isinstance(metas[0], list) else metas
 
-        # Filter by user_id and dept_id
-        filtered_ids, filtered_docs, filtered_metas = [], [], []
-        for i, meta in enumerate(metas):
-            if meta.get("dept_id", "") == dept_id and (
-                (
-                    meta.get("user_id", "") == user_id
-                    or (not meta.get("file_for_user", False))
-                )
-            ):
-                filtered_ids.append(ids[i])
-                filtered_docs.append(docs[i])
-                filtered_metas.append(meta)
+        if not docs:
+            logging.debug(
+                "[BM25] No documents found for dept=%s, user=%s", dept_id, user_id
+            )
+            with _bm25_lock:
+                _bm25_cache.pop((dept_id, user_id), None)
+            return
 
         # Use multilingual tokenization instead of simple split()
-        tokenized = [multilingual_tokenize(d) for d in filtered_docs]
-        _bm25 = BM25Okapi(tokenized)
-        _bm25_ids = filtered_ids
-        _bm25_docs = filtered_docs
-        _bm25_metas = filtered_metas
-        logging.debug(f"[BM25] Built index with {len(filtered_docs)} documents")
+        tokenized = [multilingual_tokenize(d) for d in docs]
+        entry = _BM25Entry(
+            bm25=BM25Okapi(tokenized), ids=ids, docs=docs, metas=metas
+        )
+
+        with _bm25_lock:
+            # Evict oldest if cache is full
+            if (
+                len(_bm25_cache) >= _BM25_MAX_ENTRIES
+                and (dept_id, user_id) not in _bm25_cache
+            ):
+                oldest_key = min(
+                    _bm25_cache, key=lambda k: _bm25_cache[k].created_at
+                )
+                del _bm25_cache[oldest_key]
+            _bm25_cache[(dept_id, user_id)] = entry
+
+        logging.debug("[BM25] Built index with %d documents for dept=%s, user=%s",
+                      len(docs), dept_id, user_id)
     except Exception as e:
-        logging.warning(f"[BM25] Failed to build index: {e}")
-        _bm25 = None
-        _bm25_ids = []
-        _bm25_docs = []
-        _bm25_metas = []
+        logging.warning("[BM25] Failed to build index: %s", e)
+        with _bm25_lock:
+            _bm25_cache.pop((dept_id, user_id), None)
+
+
+def _get_bm25(vector_db: VectorDB, dept_id: str, user_id: str) -> _BM25Entry | None:
+    """
+    Get or build a BM25 index for the given user/dept.
+    Returns the cached entry, rebuilding if expired or missing. Thread-safe.
+    """
+    key = (dept_id, user_id)
+    now = _time.monotonic()
+
+    with _bm25_lock:
+        entry = _bm25_cache.get(key)
+        if entry and (now - entry.created_at) < _BM25_TTL_SECONDS:
+            return entry
+
+    # Build outside the lock (expensive I/O + tokenization)
+    build_bm25(vector_db, dept_id, user_id)
+
+    with _bm25_lock:
+        return _bm25_cache.get(key)
+
+
+def clear_bm25_cache():
+    """Clear all cached BM25 indexes. Useful for testing or after bulk operations."""
+    with _bm25_lock:
+        _bm25_cache.clear()
 
 
 def build_prompt(query, ctx, use_ctx=False):
@@ -352,8 +405,6 @@ def retrieve(
     if top_k is None:
         top_k = Config.TOP_K
 
-    global dept_previous, user_previous
-
     try:
         res = vector_db.query(
             query_texts=[query],
@@ -415,15 +466,11 @@ def retrieve(
 
         # Run BM25 and combine semantic + BM25 scores if hybrid
         if use_hybrid:
-            if not _bm25 or user_id != user_previous or dept_id != dept_previous:
-                logger.debug("BM25 index not built, building now...")
-                build_bm25(vector_db, dept_id, user_id)
-                dept_previous = dept_id
-                user_previous = user_id
+            bm25_entry = _get_bm25(vector_db, dept_id, user_id)
 
-            if _bm25 and _bm25_docs:
+            if bm25_entry and bm25_entry.docs:
                 # Use multilingual tokenization for query as well
-                _bm25_scores = _bm25.get_scores(multilingual_tokenize(query))
+                _bm25_scores = bm25_entry.bm25.get_scores(multilingual_tokenize(query))
                 count = max(Config.CANDIDATES, top_k)
                 top_indexes = np.argsort(_bm25_scores)[::-1][:count]
                 # Normalize BM25 scores BEFORE union (within BM25 top-N)
@@ -431,41 +478,19 @@ def retrieve(
 
                 ctx_bm25 = [
                     {
-                        "dept_id": (
-                            _bm25_metas[idx].get("dept_id", "") if _bm25_metas else ""
-                        ),
-                        "user_id": (
-                            _bm25_metas[idx].get("user_id", "") if _bm25_metas else ""
-                        ),
-                        "file_for_user": (
-                            _bm25_metas[idx].get("file_for_user", False)
-                            if _bm25_metas
-                            else False
-                        ),
-                        "chunk_id": (
-                            _bm25_metas[idx].get("chunk_id", "") if _bm25_metas else ""
-                        ),
-                        "chunk": _bm25_docs[idx],
-                        "file_id": (
-                            _bm25_metas[idx].get("file_id", "") if _bm25_metas else ""
-                        ),
-                        "source": (
-                            _bm25_metas[idx].get("source", "") if _bm25_metas else ""
-                        ),
-                        "ext": _bm25_metas[idx].get("ext", "") if _bm25_metas else "",
-                        "tags": _bm25_metas[idx].get("tags", "") if _bm25_metas else "",
-                        "size_kb": (
-                            _bm25_metas[idx].get("size_kb", 0) if _bm25_metas else 0
-                        ),
-                        "upload_at": (
-                            _bm25_metas[idx].get("upload_at", "") if _bm25_metas else ""
-                        ),
-                        "uploaded_at_ts": (
-                            _bm25_metas[idx].get("uploaded_at_ts", 0)
-                            if _bm25_metas
-                            else 0
-                        ),
-                        "page": (_bm25_metas[idx].get("page", 0) if _bm25_metas else 0),
+                        "dept_id": bm25_entry.metas[idx].get("dept_id", ""),
+                        "user_id": bm25_entry.metas[idx].get("user_id", ""),
+                        "file_for_user": bm25_entry.metas[idx].get("file_for_user", False),
+                        "chunk_id": bm25_entry.metas[idx].get("chunk_id", ""),
+                        "chunk": bm25_entry.docs[idx],
+                        "file_id": bm25_entry.metas[idx].get("file_id", ""),
+                        "source": bm25_entry.metas[idx].get("source", ""),
+                        "ext": bm25_entry.metas[idx].get("ext", ""),
+                        "tags": bm25_entry.metas[idx].get("tags", ""),
+                        "size_kb": bm25_entry.metas[idx].get("size_kb", 0),
+                        "upload_at": bm25_entry.metas[idx].get("upload_at", ""),
+                        "uploaded_at_ts": bm25_entry.metas[idx].get("uploaded_at_ts", 0),
+                        "page": bm25_entry.metas[idx].get("page", 0),
                         "sem_sim": 0.0,
                         "bm25": float(score),  # Already normalized within BM25 top-N
                         "hybrid": 0.0,
@@ -484,8 +509,9 @@ def retrieve(
                 for sem_item in ctx_original:
                     key = sem_item["chunk_id"]
                     if key in ctx_unioned:
-                        # Merge: overlapping chunks get both normalized scores
-                        ctx_unioned[key] = {**ctx_unioned[key], **sem_item}
+                        # Merge: preserve BM25 score, take sem_sim from semantic result
+                        existing = ctx_unioned[key]
+                        ctx_unioned[key] = {**existing, "sem_sim": sem_item["sem_sim"]}
                     else:
                         # Semantic-only chunks: sem_sim is normalized, bm25=0
                         ctx_unioned[key] = sem_item
