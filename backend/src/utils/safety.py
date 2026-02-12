@@ -313,3 +313,33 @@ def renumber_citations(answer: str, offset: int) -> str:
         return f"[{new_num}]"
 
     return CIT_RE.sub(replace_citation, answer)
+
+
+# --- 5) Sanitize historical messages before sending to LLM ---
+_SANITIZE_PATTERNS = [
+    (r"ignore\s+(all\s+)?(previous|above|prior)\s+instructions?", "[FILTERED]"),
+    (r"disregard\s+(all\s+)?(previous|above|prior)\s+instructions?", "[FILTERED]"),
+    (r"forget\s+(all\s+)?(previous|above|prior)\s+instructions?", "[FILTERED]"),
+    (r"you\s+are\s+now\s+(a|an)", "[FILTERED]"),
+    (r"new\s+instructions?:", "[FILTERED]"),
+    (r"system\s*:\s*you", "[FILTERED]"),
+    (r"<\|im_start\|>", ""),
+    (r"<\|im_end\|>", ""),
+    (r"\[INST\]|\[/INST\]", ""),
+]
+
+
+def sanitize_text(text: str, max_length: int = 10000) -> str:
+    """Sanitize text input to prevent prompt injection in historical messages."""
+    if not text:
+        return ""
+
+    text = text[:max_length]
+
+    for pattern, replacement in _SANITIZE_PATTERNS:
+        text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
+
+    # Remove excessive newlines
+    text = re.sub(r'\n{4,}', '\n\n\n', text)
+
+    return text.strip()

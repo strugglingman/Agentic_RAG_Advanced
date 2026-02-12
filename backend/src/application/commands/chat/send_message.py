@@ -65,7 +65,6 @@ import logging
 from dataclasses import dataclass
 from typing import Optional, Any
 from openai import AsyncOpenAI
-from src.utils.sanitizer import sanitize_text
 from src.utils.url_formatter import format_urls_as_markdown
 from src.domain.value_objects.conversation_id import ConversationId
 from src.domain.value_objects.user_email import UserEmail
@@ -80,7 +79,7 @@ from src.services.query_supervisor import QuerySupervisor
 from src.services.vector_db import VectorDB
 from src.services.llm_client import chat_completion
 from src.services.agent_state import AgentSessionStateStore
-from src.utils.safety import looks_like_injection
+from src.utils.safety import looks_like_injection, sanitize_text
 from src.config.settings import Config
 
 logger = logging.getLogger(__name__)

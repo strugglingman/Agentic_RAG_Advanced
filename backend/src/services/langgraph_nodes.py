@@ -47,8 +47,8 @@ from src.utils.safety import (
     enforce_citations,
     add_sources_from_citations,
     renumber_citations,
+    sanitize_text,
 )
-from src.utils.sanitizer import sanitize_text
 from src.utils.file_content_extractor import extract_file_content as _extract_attachment_content
 from src.config.settings import Config
 from src.prompts import PlanningPrompts, GenerationPrompts, ToolPrompts
