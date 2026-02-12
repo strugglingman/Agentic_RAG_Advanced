@@ -12,6 +12,7 @@ Replaces the old FileManager class with a cleaner architecture.
 """
 
 import os
+import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import Optional, Dict, List, Any
@@ -90,9 +91,10 @@ class FileService:
         Returns:
             file_id: Unique identifier for the saved file
         """
-        # 1. Save to disk
+        # 1. Save to disk (off event loop — blocking I/O)
         directory = self._storage.get_chat_attachment_dir(user_email)
-        storage_path = self._storage.save_file(
+        storage_path = await asyncio.to_thread(
+            self._storage.save_file,
             content=content,
             directory=directory,
             filename=filename,
@@ -152,9 +154,10 @@ class FileService:
         Returns:
             Dict with file_id and download_url
         """
-        # 1. Save to disk
+        # 1. Save to disk (off event loop — blocking I/O)
         directory = self._storage.get_downloaded_files_dir(user_email)
-        storage_path = self._storage.save_file(
+        storage_path = await asyncio.to_thread(
+            self._storage.save_file,
             content=content,
             directory=directory,
             filename=filename,
@@ -235,8 +238,9 @@ class FileService:
             # For uploaded or unknown, use a generic path
             directory = self._storage.create_download_dir(user_email, category)
 
-        # 1. Save to disk
-        storage_path = self._storage.save_file(
+        # 1. Save to disk (off event loop — blocking I/O)
+        storage_path = await asyncio.to_thread(
+            self._storage.save_file,
             content=content,
             directory=directory,
             filename=filename,
@@ -440,8 +444,8 @@ class FileService:
                 f"File not found or access denied: {file_id} for user {user_email}"
             )
 
-        # Delete from disk
-        self._storage.delete_file(file_entity.storage_path.value)
+        # Delete from disk (off event loop — blocking I/O)
+        await asyncio.to_thread(self._storage.delete_file, file_entity.storage_path.value)
 
         # Delete from database
         await self._repository.delete(FileId(file_id))
