@@ -8,7 +8,7 @@ Week 2 - Day 4: Clarification & Progressive Fallback
 """
 
 from typing import Optional
-from openai import OpenAI
+from openai import AsyncOpenAI
 from src.models.evaluation import EvaluationResult
 from src.config.settings import Config
 from langsmith import traceable
@@ -32,7 +32,7 @@ class ClarificationHelper:
 
     def __init__(
         self,
-        openai_client: Optional[OpenAI] = None,
+        openai_client: Optional[AsyncOpenAI] = None,
         model: str = None,
         temperature: float = 0.1,
     ):

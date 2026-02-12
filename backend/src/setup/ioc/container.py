@@ -29,7 +29,7 @@ import logging
 from typing import Optional
 from dishka import Provider, Scope, make_async_container, provide, AsyncContainer
 from prisma import Prisma
-from openai import OpenAI
+from openai import AsyncOpenAI
 from redis.asyncio import Redis
 from src.services.vector_db import VectorDB
 from src.services.query_supervisor import QuerySupervisor
@@ -95,8 +95,8 @@ class AppProvider(Provider):
 
     # ==================== OPENAI CLIENT ====================
     @provide(scope=Scope.APP)
-    def get_openai_client(self) -> OpenAI:
-        return OpenAI(api_key=Config.OPENAI_KEY)
+    def get_openai_client(self) -> AsyncOpenAI:
+        return AsyncOpenAI(api_key=Config.OPENAI_KEY)
 
     # ==================== REDIS CACHE ====================
 
@@ -157,7 +157,7 @@ class AppProvider(Provider):
 
     # ==================== SERVICES ====================
     @provide(scope=Scope.REQUEST)
-    def get_query_supervisor(self, openai_client: OpenAI) -> QuerySupervisor:
+    def get_query_supervisor(self, openai_client: AsyncOpenAI) -> QuerySupervisor:
         return QuerySupervisor(openai_client=openai_client)
 
     @provide(scope=Scope.APP)
@@ -257,7 +257,7 @@ class AppProvider(Provider):
         query_supervisor: QuerySupervisor,
         file_service: FileService,
         vector_db: VectorDB,
-        openai_client: OpenAI,
+        openai_client: AsyncOpenAI,
         agent_state_store: Optional[AgentSessionStateStore],
     ) -> SendMessageHandler:
         return SendMessageHandler(

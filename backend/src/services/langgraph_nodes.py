@@ -49,6 +49,7 @@ from src.utils.safety import (
     renumber_citations,
 )
 from src.utils.sanitizer import sanitize_text
+from src.utils.file_content_extractor import extract_file_content as _extract_attachment_content
 from src.config.settings import Config
 from src.prompts import PlanningPrompts, GenerationPrompts, ToolPrompts
 from src.prompts.generation import ContextType
@@ -291,7 +292,7 @@ async def get_attachment_context(
 # ==================== HELPER: Query Optimization for Tools ====================
 
 
-def _optimize_step_query(step_query: str, tool_type: str, openai_client) -> str:
+async def _optimize_step_query(step_query: str, tool_type: str, openai_client) -> str:
     """
     Optimize a planner-generated step query for the target tool.
 
@@ -359,7 +360,7 @@ Output ONLY the optimized query."""
         else:
             return step_query
 
-        response = chat_completion(
+        response = await chat_completion(
             client=openai_client,
             model=Config.OPENAI_MODEL,
             messages=[{"role": "user", "content": prompt}],
@@ -378,221 +379,6 @@ Output ONLY the optimized query."""
     except Exception as e:
         logger.warning(f"[QUERY_OPT] Failed: {e}")
         return step_query
-
-
-# ==================== HELPER: Extract Attachment Content ====================
-
-
-def _describe_image_with_vision(
-    file_path: str, mime_type: str, openai_client=None
-) -> str:
-    """
-    Use Vision API to describe an image.
-
-    Args:
-        file_path: Absolute path to image file
-        mime_type: MIME type (image/png, image/jpeg, etc.)
-        openai_client: OpenAI client instance
-
-    Returns:
-        Text description of the image from Vision API
-    """
-    import base64
-    import os
-
-    if not openai_client:
-        file_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
-        return f"[Image file ({mime_type}) - {file_size} bytes - Vision API client not available]"
-
-    try:
-        # Read and encode image as base64
-        with open(file_path, "rb") as f:
-            image_data = base64.b64encode(f.read()).decode("utf-8")
-
-        # Build multimodal message for Vision API
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": (
-                            "Describe this image in detail. Include:\n"
-                            "- What the image shows (objects, people, scenes)\n"
-                            "- Any text visible in the image\n"
-                            "- Charts/graphs: describe the data and trends\n"
-                            "- Documents: summarize the content\n"
-                            "Be concise but thorough."
-                        ),
-                    },
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:{mime_type};base64,{image_data}",
-                            "detail": "auto",
-                        },
-                    },
-                ],
-            }
-        ]
-
-        # Call Vision API
-        response = chat_completion(
-            client=openai_client,
-            model=Config.OPENAI_VISION_MODEL,
-            messages=messages,
-            max_tokens=1000,
-            temperature=0.3,
-        )
-
-        description = response.choices[0].message.content.strip()
-        logger.info(f"[LANGGRAPH] Vision API described image: {file_path[:50]}...")
-        return f"[IMAGE DESCRIPTION]\n{description}"
-
-    except Exception as e:
-        logger.error(f"[LANGGRAPH] Vision API failed for {file_path}: {e}")
-        # Fallback: return basic info about the image
-        try:
-            file_size = os.path.getsize(file_path)
-            return f"[Image file ({mime_type}) - {file_size} bytes - Vision API error: {e}]"
-        except Exception:
-            return f"[Image file ({mime_type}) - Vision API unavailable]"
-
-
-async def _extract_attachment_content(
-    file_path: str, mime_type: str, openai_client=None
-) -> str:
-    """
-    Extract text content from attachment file (async wrapper).
-
-    Supports PDF, DOCX, Excel, text files, and images (via Vision API).
-    Similar to agent_service._extract_file_content but async-compatible.
-
-    Args:
-        file_path: Absolute path to file on disk
-        mime_type: MIME type of the file
-        openai_client: Optional OpenAI client for Vision API (images)
-
-    Returns:
-        Extracted text content (truncated if too long)
-    """
-    import asyncio
-    from functools import partial
-
-    # Run sync extraction in thread pool to avoid blocking
-    loop = asyncio.get_event_loop()
-    func = partial(_extract_file_content_sync, file_path, mime_type, openai_client)
-    return await loop.run_in_executor(None, func)
-
-
-def _extract_file_content_sync(
-    file_path: str, mime_type: str, openai_client=None
-) -> str:
-    """
-    Synchronous file content extraction.
-
-    Args:
-        file_path: Absolute path to file on disk
-        mime_type: MIME type of the file
-        openai_client: Optional OpenAI client for Vision API (images)
-
-    Returns:
-        Extracted text content
-    """
-    try:
-        max_chars = 50000  # Limit to prevent overwhelming context
-
-        # Image files - use Vision API
-        if mime_type.startswith("image/"):
-            return _describe_image_with_vision(file_path, mime_type, openai_client)
-
-        # PDF files
-        elif mime_type == "application/pdf":
-            try:
-                import PyPDF2
-
-                with open(file_path, "rb") as f:
-                    reader = PyPDF2.PdfReader(f)
-                    text_parts = []
-                    for page in reader.pages[:50]:  # Limit to first 50 pages
-                        text_parts.append(page.extract_text())
-                    content = "\n".join(text_parts)
-                    return content[:max_chars] + (
-                        "..." if len(content) > max_chars else ""
-                    )
-            except Exception as e:
-                logger.error(f"[LANGGRAPH] Failed to extract PDF content: {e}")
-                return f"[PDF file - text extraction failed: {e}]"
-
-        # DOCX files
-        elif (
-            mime_type
-            == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        ):
-            try:
-                import docx
-
-                doc = docx.Document(file_path)
-                text_parts = [paragraph.text for paragraph in doc.paragraphs]
-                content = "\n".join(text_parts)
-                return content[:max_chars] + ("..." if len(content) > max_chars else "")
-            except Exception as e:
-                logger.error(f"[LANGGRAPH] Failed to extract DOCX content: {e}")
-                return f"[DOCX file - text extraction failed]"
-
-        # Excel files
-        elif mime_type in [
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            "application/vnd.ms-excel",
-        ]:
-            try:
-                import openpyxl
-
-                wb = openpyxl.load_workbook(file_path, data_only=True)
-                text_parts = []
-                for sheet in wb.worksheets[:5]:  # Limit to first 5 sheets
-                    text_parts.append(f"Sheet: {sheet.title}")
-                    for row in list(sheet.iter_rows(values_only=True))[:100]:
-                        row_text = "\t".join(
-                            str(cell) if cell is not None else "" for cell in row
-                        )
-                        if row_text.strip():
-                            text_parts.append(row_text)
-                content = "\n".join(text_parts)
-                return content[:max_chars] + ("..." if len(content) > max_chars else "")
-            except Exception as e:
-                logger.error(f"[LANGGRAPH] Failed to extract Excel content: {e}")
-                return f"[Excel file - text extraction failed]"
-
-        # Text files (plain text, markdown, CSV, etc.)
-        elif mime_type.startswith("text/"):
-            try:
-                with open(file_path, "r", encoding="utf-8") as f:
-                    content = f.read()
-                    return content[:max_chars] + (
-                        "..." if len(content) > max_chars else ""
-                    )
-            except UnicodeDecodeError:
-                try:
-                    with open(file_path, "r", encoding="latin-1") as f:
-                        content = f.read()
-                        return content[:max_chars] + (
-                            "..." if len(content) > max_chars else ""
-                        )
-                except Exception as e:
-                    logger.error(f"[LANGGRAPH] Failed to read text file: {e}")
-                    return f"[Text file - encoding error]"
-
-        # Unsupported file type
-        else:
-            import os
-
-            file_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
-            return f"[File type {mime_type} not supported - {file_size} bytes]"
-
-    except Exception as e:
-        logger.error(f"[LANGGRAPH] Unexpected error extracting file content: {e}")
-        return f"[Error reading file: {str(e)}]"
 
 
 # ==================== PLANNING NODE ====================
@@ -764,7 +550,7 @@ def create_plan_node(
                 },
             }
 
-            response = chat_completion_structured(
+            response = await chat_completion_structured(
                 client=client,
                 messages=[{"role": "user", "content": planning_prompt}],
                 schema=plan_schema,
@@ -927,13 +713,13 @@ def create_retrieve_node(
             else:
                 # First call - optimize verbose planner query for retrieval
                 logger.info(f"[RETRIEVE] Optimizing step_query: '{step_query}'")
-                query = _optimize_step_query(
+                query = await _optimize_step_query(
                     step_query, "retrieve", openai_client
                 ) or state.get("query")
                 logger.info(f"[RETRIEVE] Optimized query: '{query}'")
 
             where = build_where(request_data, dept_id, user_id)
-            ctx, _ = retrieve_with_decomposition(
+            ctx, _ = await retrieve_with_decomposition(
                 vector_db=vector_db,
                 openai_client=openai_client,
                 query=query,
@@ -1066,7 +852,7 @@ def create_reflect_node(
                 config=reflection_config,
                 openai_client=openai_client,
             )
-            evaluation_result = evaluator.evaluate(evaluator_criteria)
+            evaluation_result = await evaluator.evaluate(evaluator_criteria)
 
             # Convert EvaluationResult to dict for serialization
             return {
@@ -1185,7 +971,7 @@ def create_tool_calculator_node(
                 # True fallback - no plan, no detour
                 prompt = ToolPrompts.fallback_prompt(query, "calculator")
 
-            response = chat_completion_with_tools(
+            response = await chat_completion_with_tools(
                 client=client,
                 model=Config.OPENAI_MODEL,
                 messages=[{"role": "user", "content": prompt}],
@@ -1371,7 +1157,7 @@ def create_tool_web_search_node(
                 )
                 # Optimize verbose planner query for web search (stay under Tavily 400 char limit)
                 logger.info(f"[WEB_SEARCH] Optimizing step_query: '{clean_query}'")
-                clean_query = _optimize_step_query(clean_query, "web_search", client)
+                clean_query = await _optimize_step_query(clean_query, "web_search", client)
                 logger.info(f"[WEB_SEARCH] Optimized query: '{clean_query}'")
                 prompt = ToolPrompts.web_search_prompt(clean_query, is_detour=False)
             elif is_detour:
@@ -1395,7 +1181,7 @@ def create_tool_web_search_node(
             else:
                 prompt = ToolPrompts.fallback_prompt(query, "web_search")
 
-            response = chat_completion_with_tools(
+            response = await chat_completion_with_tools(
                 client=client,
                 model=Config.OPENAI_MODEL,
                 messages=[{"role": "user", "content": prompt}],
@@ -1585,7 +1371,7 @@ def create_tool_download_file_node(
             else:
                 prompt = ToolPrompts.fallback_prompt(query, "download_file")
 
-            response = chat_completion_with_tools(
+            response = await chat_completion_with_tools(
                 client=client,
                 model=Config.OPENAI_MODEL,
                 messages=[{"role": "user", "content": prompt}],
@@ -1813,7 +1599,7 @@ def create_tool_create_documents_node(
             else:
                 prompt = ToolPrompts.fallback_prompt(query, "create_documents")
 
-            response = chat_completion_with_tools(
+            response = await chat_completion_with_tools(
                 client=client,
                 model=Config.OPENAI_MODEL,
                 messages=[{"role": "user", "content": prompt}],
@@ -2062,7 +1848,7 @@ def create_tool_send_email_node(
             logger.info(
                 f"[SEND_EMAIL_NODE] Calling LLM with session_file_ids={session_file_ids}, history_len={len(conversation_history)}"
             )
-            response = chat_completion_with_tools(
+            response = await chat_completion_with_tools(
                 client=client,
                 model=Config.OPENAI_MODEL,
                 messages=messages,
@@ -2313,7 +2099,7 @@ def create_tool_code_execution_node(
             else:
                 prompt = ToolPrompts.fallback_prompt(query, "code_execution")
 
-            response = chat_completion_with_tools(
+            response = await chat_completion_with_tools(
                 client=client,
                 model=Config.OPENAI_MODEL,
                 messages=[{"role": "user", "content": prompt}],
@@ -2509,7 +2295,7 @@ def create_direct_answer_node(
             user_message = GenerationPrompts.build_user_message(step_query)
             openai_messages.append({"role": "user", "content": user_message})
 
-            response = chat_completion(
+            response = await chat_completion(
                 client=openai_client,
                 model=Config.OPENAI_MODEL,
                 messages=openai_messages,
@@ -2622,7 +2408,7 @@ def create_refine_node(
 
             evaluation_result = dict_to_evaluation_result(evaluation_result_dict)
 
-            refined_query = refiner.refine_query(
+            refined_query = await refiner.refine_query(
                 original_query=current_query,
                 eval_result=evaluation_result,
             )
@@ -2934,7 +2720,7 @@ def create_generate_node(
                 {"role": "user", "content": user_message_with_context}
             )
 
-            response = chat_completion(
+            response = await chat_completion(
                 client=openai_client,
                 model=Config.OPENAI_MODEL,
                 messages=openai_messages,

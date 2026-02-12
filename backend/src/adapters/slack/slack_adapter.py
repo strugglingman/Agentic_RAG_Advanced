@@ -354,13 +354,13 @@ class SlackBotAdapter(BaseBotAdapter):
         """
         # Use LLM to determine how many history messages this query needs
         try:
-            from openai import OpenAI
+            from openai import AsyncOpenAI
 
-            openai_client = OpenAI(api_key=Config.OPENAI_KEY) if Config.OPENAI_KEY else None
+            openai_client = AsyncOpenAI(api_key=Config.OPENAI_KEY) if Config.OPENAI_KEY else None
         except ImportError:
             openai_client = None
 
-        messages_needed = determine_message_count(
+        messages_needed = await determine_message_count(
             current_query, openai_client, fallback_limit=Config.SLACK_HISTORY_LIMIT
         )
 

@@ -15,7 +15,7 @@ from src.config.settings import Config
 logger = logging.getLogger(__name__)
 
 
-def determine_message_count(
+async def determine_message_count(
     query: str,
     openai_client: Any,
     fallback_limit: int = Config.REDIS_CACHE_LIMIT,
@@ -72,7 +72,7 @@ Examples:
 - "yes, proceed" → {{"messages_needed": 10, "reasoning": "Approval of previous action"}}
 """
 
-        response = chat_completion_json(
+        response = await chat_completion_json(
             client=openai_client,
             model=Config.OPENAI_SIMPLE_MODEL,
             messages=[{"role": "user", "content": prompt}],

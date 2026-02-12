@@ -25,16 +25,19 @@ from datetime import datetime
 # Add backend to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from openai import OpenAI
+import asyncio
+
+from openai import AsyncOpenAI
 from src.config.settings import Config
 from src.services.vector_db import VectorDB
 from src.services.retrieval import retrieve
 from src.services.retrieval_decomposition import retrieve_with_decomposition
+from src.services.llm_client import chat_completion
 from src.evaluation.ragas_evaluator import RagasEvaluator
 from src.evaluation.dataset import EvalDataset, EvalRow
 
 
-def optimize_query_for_retrieval(query: str, client: OpenAI) -> str:
+async def optimize_query_for_retrieval(query: str, client: AsyncOpenAI) -> str:
     """
     Optimize query for retrieval by expanding abbreviations and removing filler.
 
@@ -43,7 +46,7 @@ def optimize_query_for_retrieval(query: str, client: OpenAI) -> str:
 
     Args:
         query: Original user query
-        client: OpenAI client
+        client: AsyncOpenAI client
 
     Returns:
         Optimized query string
@@ -82,7 +85,8 @@ Tasks (do ALL):
 Output a clear query (under 120 chars) with abbreviations expanded.
 Output ONLY the optimized query, nothing else."""
 
-        response = client.chat.completions.create(
+        response = await chat_completion(
+            client=client,
             model=Config.OPENAI_MODEL,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.1,
@@ -110,7 +114,7 @@ def load_test_data(path: str) -> list[dict]:
     return data
 
 
-def generate_answer(client: OpenAI, query: str, contexts: list[dict]) -> str:
+async def generate_answer(client: AsyncOpenAI, query: str, contexts: list[dict]) -> str:
     """
     Generate answer using OpenAI with retrieved contexts.
     Mimics the agent's answer generation logic.
@@ -171,21 +175,22 @@ Question: {query}
 
 Answer:"""
 
-    response = client.chat.completions.create(
+    response = await chat_completion(
+        client=client,
         model=Config.OPENAI_MODEL,
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
         temperature=0.1,
-        max_completion_tokens=2000,
+        max_tokens=2000,
     )
 
     return response.choices[0].message.content.strip()
 
 
-def run_rag_pipeline(
-    client: OpenAI,
+async def run_rag_pipeline(
+    client: AsyncOpenAI,
     vector_db: VectorDB,
     question: str,
     dept_id: str,
@@ -209,13 +214,13 @@ def run_rag_pipeline(
     # Optionally optimize query (expand abbreviations, remove filler)
     retrieval_query = question
     if optimize_query:
-        retrieval_query = optimize_query_for_retrieval(question, client)
+        retrieval_query = await optimize_query_for_retrieval(question, client)
         if retrieval_query != question:
             print(f"         Optimized: {retrieval_query[:60]}...")
 
     # Retrieve contexts - with or without decomposition
     if use_decomposition:
-        ctx_list, error = retrieve_with_decomposition(
+        ctx_list, error = await retrieve_with_decomposition(
             vector_db=vector_db,
             openai_client=client,
             query=retrieval_query,
@@ -240,7 +245,7 @@ def run_rag_pipeline(
         return "No relevant documents found.", [], []
 
     # Generate answer
-    answer = generate_answer(client, question, ctx_list)
+    answer = await generate_answer(client, question, ctx_list)
 
     # Extract context strings for RAGAS (just the chunk text)
     context_strings = [c.get("chunk", "") for c in ctx_list]
@@ -248,7 +253,7 @@ def run_rag_pipeline(
     return answer, context_strings, ctx_list
 
 
-def main():
+async def main():
     parser = argparse.ArgumentParser(
         description="Run RAGAS evaluation using actual RAG pipeline"
     )
@@ -320,7 +325,7 @@ def main():
 
     # Initialize clients
     print("Initializing OpenAI client and VectorDB...")
-    client = OpenAI(api_key=Config.OPENAI_KEY)
+    client = AsyncOpenAI(api_key=Config.OPENAI_KEY)
     vector_db = VectorDB(path="chroma_db", embedding_provider="openai")
 
     # Load test data
@@ -351,7 +356,7 @@ def main():
         print(f"[{i}/{len(test_data)}] Processing: {question[:50]}...")
 
         # Run RAG pipeline
-        answer, contexts, raw_contexts = run_rag_pipeline(
+        answer, contexts, raw_contexts = await run_rag_pipeline(
             client=client,
             vector_db=vector_db,
             question=question,
@@ -453,4 +458,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

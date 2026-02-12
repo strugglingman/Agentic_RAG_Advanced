@@ -14,6 +14,7 @@ Each tool has two parts:
 import os
 import re
 import inspect
+import asyncio
 from datetime import datetime
 from typing import Dict, Any
 import logging
@@ -21,7 +22,7 @@ import logging
 from src.application.services import FileService
 from urllib.parse import urlparse
 import urllib.parse
-import requests
+import httpx
 from langsmith import traceable
 from src.services.retrieval import build_where
 from src.services.retrieval_decomposition import retrieve_with_decomposition
@@ -70,7 +71,7 @@ SEARCH_DOCUMENTS_SCHEMA = {
 
 
 @traceable
-def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]) -> str:
+async def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]) -> str:
     """
     Execute the search_documents tool.
 
@@ -119,7 +120,7 @@ def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
 
         # Initial retrieval
         current_query = query
-        ctx, _ = retrieve_with_decomposition(
+        ctx, _ = await retrieve_with_decomposition(
             vector_db=vector_db,
             openai_client=client,
             query=current_query,
@@ -160,7 +161,7 @@ def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
                 },
                 mode=config.mode,
             )
-            eval_result = evaluator.evaluate(criteria)
+            eval_result = await evaluator.evaluate(criteria)
             context["_last_evaluation"] = eval_result
 
             # Log initial evaluation
@@ -226,7 +227,7 @@ def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
                     )
 
                     # Refine the query (use current_query, not original)
-                    refined_query = query_refiner.refine_query(
+                    refined_query = await query_refiner.refine_query(
                         original_query=current_query,
                         eval_result=eval_result,
                         context_hint=" ".join([c.get("chunk", "")[:100] for c in ctx]),
@@ -248,7 +249,7 @@ def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
                     current_query = refined_query
 
                     # Retrieve with refined query
-                    ctx, _ = retrieve_with_decomposition(
+                    ctx, _ = await retrieve_with_decomposition(
                         vector_db=vector_db,
                         openai_client=client,
                         query=current_query,
@@ -282,7 +283,7 @@ def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]) -> s
                         },
                         mode=config.mode,
                     )
-                    eval_result = evaluator.evaluate(criteria)
+                    eval_result = await evaluator.evaluate(criteria)
                     context["_last_evaluation"] = eval_result
 
                     # Log refined evaluation
@@ -1065,103 +1066,113 @@ async def execute_download_file(args: Dict[str, Any], context: Dict[str, Any]) -
                 errors.append(f"⚠️ Invalid URL scheme: {file_url}")
                 continue
 
-            # Check file size before downloading
-            try:
-                request_header = requests.head(
-                    file_url, timeout=10, allow_redirects=True, headers=headers
-                )
-                content_length = request_header.headers.get("Content-Length", 0)
-                if Config.MAX_DOWNLOAD_SIZE_MB and content_length:
-                    file_size_mb = int(content_length) / (1024 * 1024)
-                    if file_size_mb > Config.MAX_DOWNLOAD_SIZE_MB:
+            # Use async HTTP client for non-blocking downloads
+            async with httpx.AsyncClient(
+                follow_redirects=True, headers=headers
+            ) as http_client:
+                # Check file size before downloading
+                try:
+                    request_header = await http_client.head(file_url, timeout=10.0)
+                    content_length = request_header.headers.get("Content-Length", 0)
+                    if Config.MAX_DOWNLOAD_SIZE_MB and content_length:
+                        file_size_mb = int(content_length) / (1024 * 1024)
+                        if file_size_mb > Config.MAX_DOWNLOAD_SIZE_MB:
+                            errors.append(
+                                f"⚠️ File too large: {file_url} ({file_size_mb:.1f}MB > {Config.MAX_DOWNLOAD_SIZE_MB}MB)"
+                            )
+                            continue
+                except httpx.HTTPError:
+                    # HEAD request failed, try downloading anyway
+                    pass
+
+                # Stream download to avoid loading entire file into memory
+                async with http_client.stream(
+                    "GET", file_url, timeout=float(Config.DOWNLOAD_TIMEOUT)
+                ) as res:
+                    if res.status_code != 200:
+                        # Try browser fallback for auth errors (401, 403) or other failures
+                        if res.status_code in (401, 403, 404, 500, 502, 503):
+                            browser_result = await _try_browser_download(
+                                file_url,
+                                user_id,
+                                context,
+                                args.get("task_description", ""),
+                            )
+                            if browser_result:
+                                results.append(browser_result)
+                                continue
                         errors.append(
-                            f"⚠️ File too large: {file_url} ({file_size_mb:.1f}MB > {Config.MAX_DOWNLOAD_SIZE_MB}MB)"
+                            f"⚠️ Download failed: {file_url} (HTTP {res.status_code})"
                         )
                         continue
-            except requests.RequestException:
-                # HEAD request failed, try downloading anyway
-                pass
 
-            # Download file with browser-like headers
-            res = requests.get(
-                file_url,
-                stream=True,
-                timeout=Config.DOWNLOAD_TIMEOUT,
-                allow_redirects=True,
-                headers=headers,
-            )
-            if res.status_code != 200:
-                # Try browser fallback for auth errors (401, 403) or other failures
-                if res.status_code in (401, 403, 404, 500, 502, 503):
-                    browser_result = await _try_browser_download(
-                        file_url, user_id, context, args.get("task_description", "")
-                    )
-                    if browser_result:
-                        results.append(browser_result)
-                        continue
-                errors.append(f"⚠️ Download failed: {file_url} (HTTP {res.status_code})")
-                continue
+                    # Extract filename from headers
+                    filename = ""
+                    if "Content-Disposition" in res.headers:
+                        cd = res.headers.get("Content-Disposition")
+                        fname_match = re.findall('filename="?([^\'";]+)"?', cd)
+                        if fname_match:
+                            filename = fname_match[0]
 
-            # Extract filename
-            filename = ""
-            if "Content-Disposition" in res.headers:
-                cd = res.headers.get("Content-Disposition")
-                fname_match = re.findall('filename="?([^\'";]+)"?', cd)
-                if fname_match:
-                    filename = fname_match[0]
+                    if not filename:
+                        filename = os.path.basename(parsed_url.path)
 
-            if not filename:
-                filename = os.path.basename(parsed_url.path)
+                    if not filename:
+                        filename = "downloaded_file"
 
-            if not filename:
-                filename = "downloaded_file"
+                    filename = urllib.parse.unquote(filename)
+                    filename = re.sub(r"[^\w\-_\. ]", "_", filename)
 
-            filename = urllib.parse.unquote(filename)
-            filename = re.sub(r"[^\w\-_\. ]", "_", filename)
+                    # Add extension based on Content-Type if filename has no extension
+                    if "." not in filename or filename.endswith("_"):
+                        content_type = (
+                            res.headers.get("Content-Type", "")
+                            .split(";")[0]
+                            .strip()
+                            .lower()
+                        )
+                        extension_map = {
+                            "text/html": ".html",
+                            "application/pdf": ".pdf",
+                            "image/jpeg": ".jpg",
+                            "image/png": ".png",
+                            "image/gif": ".gif",
+                            "image/webp": ".webp",
+                            "application/json": ".json",
+                            "text/plain": ".txt",
+                            "text/csv": ".csv",
+                            "application/xml": ".xml",
+                            "text/xml": ".xml",
+                            "application/zip": ".zip",
+                            "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+                            "application/msword": ".doc",
+                            "application/vnd.ms-excel": ".xls",
+                        }
+                        ext = extension_map.get(content_type, "")
+                        if ext:
+                            filename = filename.rstrip("_") + ext
+                            logger.info(
+                                f"[DOWNLOAD_FILE] Added extension {ext} based on Content-Type: {content_type}"
+                            )
 
-            # Add extension based on Content-Type if filename has no extension
-            if "." not in filename or filename.endswith("_"):
-                content_type = (
-                    res.headers.get("Content-Type", "").split(";")[0].strip().lower()
-                )
-                extension_map = {
-                    "text/html": ".html",
-                    "application/pdf": ".pdf",
-                    "image/jpeg": ".jpg",
-                    "image/png": ".png",
-                    "image/gif": ".gif",
-                    "image/webp": ".webp",
-                    "application/json": ".json",
-                    "text/plain": ".txt",
-                    "text/csv": ".csv",
-                    "application/xml": ".xml",
-                    "text/xml": ".xml",
-                    "application/zip": ".zip",
-                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
-                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
-                    "application/msword": ".doc",
-                    "application/vnd.ms-excel": ".xls",
-                }
-                ext = extension_map.get(content_type, "")
-                if ext:
-                    filename = filename.rstrip("_") + ext
-                    logger.info(
-                        f"[DOWNLOAD_FILE] Added extension {ext} based on Content-Type: {content_type}"
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    unique_filename = f"{timestamp}_{filename}"
+                    download_path = os.path.join(
+                        Config.DOWNLOAD_BASE, user_id, unique_filename
                     )
 
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            unique_filename = f"{timestamp}_{filename}"
-            download_path = os.path.join(Config.DOWNLOAD_BASE, user_id, unique_filename)
+                    # Stream file to disk in chunks (only 8KB in memory at a time)
+                    with open(download_path, "wb") as f:
+                        async for chunk in res.aiter_bytes(chunk_size=8192):
+                            f.write(chunk)
 
-            # Save file in chunks
-            with open(download_path, "wb") as f:
-                for chunk in res.iter_content(chunk_size=8192):
-                    if chunk:  # Filter out keep-alive chunks
-                        f.write(chunk)
+                    mime_type = res.headers.get(
+                        "Content-Type", "application/octet-stream"
+                    )
 
             # Register file in FileRegistry database using FileService
             file_size = os.path.getsize(download_path)
-            mime_type = res.headers.get("Content-Type", "application/octet-stream")
 
             file_service: FileService = context.get("file_service")
             if not file_service:
@@ -1191,7 +1202,7 @@ async def execute_download_file(args: Dict[str, Any], context: Dict[str, Any]) -
                 f"   → Use file ID '{file_id}' for email attachments"
             )
 
-        except requests.RequestException as e:
+        except httpx.HTTPError as e:
             # Try browser fallback if enabled
             browser_result = await _try_browser_download(
                 file_url, user_id, context, args.get("task_description", "")
@@ -1289,7 +1300,9 @@ async def execute_send_email(args: Dict[str, Any], context: Dict[str, Any]) -> s
     logger.debug(f"[SEND_EMAIL] Resolved attachments: {real_attachments}")
 
     # Send email with resolved file paths
-    result = send_email(to_addresses, subject, body, real_attachments)
+    result = await asyncio.to_thread(
+        send_email, to_addresses, subject, body, real_attachments
+    )
 
     if result.get("status", "failed") == "failed":
         logger.error(
@@ -1298,6 +1311,242 @@ async def execute_send_email(args: Dict[str, Any], context: Dict[str, Any]) -> s
         return f"Failed to send email: {result.get('error', 'Unknown error')}"
 
     return f"Email sent successfully to recipients: {', '.join(to_addresses)} with subject: {subject}"
+
+
+def _generate_document_file(
+    content: str, title: str, base_filename: str, format_type: str,
+    metadata: dict, timestamp: str, user_dir: str,
+) -> str | None:
+    """
+    Sync helper: generate a document file on disk.
+
+    Returns the filepath on success, or None on failure.
+    Called via asyncio.to_thread() to avoid blocking the event loop.
+    """
+    filename = f"{timestamp}_{base_filename}.{format_type}"
+    filepath = os.path.join(user_dir, filename)
+
+    if format_type in ("txt", "md"):
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(content)
+
+    elif format_type == "html":
+        try:
+            import markdown2
+        except ImportError:
+            logger.error("[CREATE_DOCUMENTS] HTML format requires markdown2 library")
+            return None
+        html_content = markdown2.markdown(content)
+        full_html = (
+            f"<!DOCTYPE html>\n<html>\n<head>\n"
+            f'    <meta charset="UTF-8">\n    <title>{title}</title>\n'
+            f"    <style>\n"
+            f"        body {{ font-family: Arial, sans-serif; max-width: 800px; margin: 40px auto; padding: 20px; }}\n"
+            f"        h1, h2, h3 {{ color: #333; }}\n"
+            f"        table {{ border-collapse: collapse; width: 100%; }}\n"
+            f"        th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}\n"
+            f"        th {{ background-color: #f2f2f2; }}\n"
+            f"    </style>\n</head>\n<body>\n"
+            f"    <h1>{title}</h1>\n    {html_content}\n</body>\n</html>"
+        )
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(full_html)
+
+    elif format_type == "pdf":
+        try:
+            from fpdf import FPDF
+        except ImportError:
+            logger.error("[CREATE_DOCUMENTS] PDF format requires fpdf2 library")
+            return None
+
+        pdf = FPDF(orientation="P", unit="mm", format="A4")
+        pdf.set_margins(left=20, top=20, right=20)
+        pdf.set_auto_page_break(auto=True, margin=20)
+
+        # Try to add Unicode font for CJK support
+        unicode_font = None
+        font_paths = [
+            ("C:/Windows/Fonts/simhei.ttf", "SimHei"),
+            ("C:/Windows/Fonts/msyh.ttc", "MSYH"),
+            ("C:/Windows/Fonts/simsun.ttc", "SimSun"),
+            ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "DejaVu"),
+            ("/Library/Fonts/Arial Unicode.ttf", "ArialUnicode"),
+        ]
+        for font_path, font_name in font_paths:
+            if os.path.exists(font_path):
+                try:
+                    pdf.add_font(font_name, fname=font_path)
+                    unicode_font = font_name
+                    break
+                except Exception:
+                    continue
+
+        pdf.add_page()
+        usable_width = pdf.w - pdf.l_margin - pdf.r_margin
+
+        def set_font_safe(size, style=""):
+            if unicode_font:
+                pdf.set_font(unicode_font, size=size)
+            else:
+                pdf.set_font("Helvetica", style=style, size=size)
+
+        # Title
+        set_font_safe(16, "B")
+        pdf.set_text_color(33, 33, 33)
+        pdf.multi_cell(w=usable_width, h=10, text=title, align="L", new_x="LMARGIN", new_y="NEXT")
+        pdf.ln(5)
+        pdf.set_draw_color(150, 150, 150)
+        y = pdf.get_y()
+        pdf.line(pdf.l_margin, y, pdf.w - pdf.r_margin, y)
+        pdf.ln(8)
+
+        # Content
+        set_font_safe(10)
+        pdf.set_text_color(51, 51, 51)
+
+        def render_table(table_lines):
+            if len(table_lines) < 2:
+                return
+            rows = []
+            for tl in table_lines:
+                if tl.replace("|", "").replace("-", "").replace(":", "").strip() == "":
+                    continue
+                cells = [c.strip() for c in tl.split("|")]
+                if cells and cells[0] == "":
+                    cells = cells[1:]
+                if cells and cells[-1] == "":
+                    cells = cells[:-1]
+                if cells:
+                    rows.append(cells)
+            if not rows:
+                return
+            num_cols = max(len(r) for r in rows)
+            col_width = usable_width / num_cols if num_cols > 0 else usable_width
+            row_height = 8
+            pdf.set_draw_color(100, 100, 100)
+            for row_idx, row in enumerate(rows):
+                while len(row) < num_cols:
+                    row.append("")
+                if row_idx == 0:
+                    set_font_safe(10, "B")
+                    pdf.set_fill_color(240, 240, 240)
+                    for cell in row:
+                        pdf.cell(w=col_width, h=row_height, text=cell, border=1, fill=True, align="C")
+                    pdf.ln(row_height)
+                    set_font_safe(10)
+                else:
+                    for cell in row:
+                        pdf.cell(w=col_width, h=row_height, text=cell, border=1, align="C")
+                    pdf.ln(row_height)
+            pdf.ln(4)
+
+        lines = content.split("\n")
+        i = 0
+        while i < len(lines):
+            line = lines[i].strip()
+            if not line:
+                pdf.ln(4)
+                i += 1
+                continue
+            if line.startswith("|") and line.endswith("|"):
+                tbl = []
+                while i < len(lines):
+                    tl = lines[i].strip()
+                    if tl.startswith("|") and (tl.endswith("|") or tl.rstrip().endswith("|")):
+                        tbl.append(tl)
+                        i += 1
+                    else:
+                        break
+                render_table(tbl)
+                continue
+
+            clean = line.replace("**", "").replace("*", "").replace("\t", "    ")
+            if line.startswith("### "):
+                set_font_safe(11, "B")
+                pdf.multi_cell(w=usable_width, h=7, text=clean[4:], new_x="LMARGIN", new_y="NEXT")
+                set_font_safe(10)
+            elif line.startswith("## "):
+                pdf.ln(3)
+                set_font_safe(13, "B")
+                pdf.multi_cell(w=usable_width, h=8, text=clean[3:], new_x="LMARGIN", new_y="NEXT")
+                set_font_safe(10)
+            elif line.startswith("# "):
+                pdf.ln(4)
+                set_font_safe(14, "B")
+                pdf.multi_cell(w=usable_width, h=9, text=clean[2:], new_x="LMARGIN", new_y="NEXT")
+                set_font_safe(10)
+            elif line.startswith("- ") or line.startswith("* "):
+                pdf.multi_cell(w=usable_width, h=6, text=f"  • {clean[2:]}", new_x="LMARGIN", new_y="NEXT")
+            elif (
+                len(clean) > 2 and clean[0].isdigit() and clean[1] in ".)"
+                or (len(clean) > 3 and clean[:2].isdigit() and clean[2] in ".)")
+            ):
+                match = re.match(r"^(\d+[.\)])\s*", clean)
+                if match:
+                    pdf.multi_cell(
+                        w=usable_width, h=6,
+                        text=f"  {match.group(1)} {clean[match.end():]}", new_x="LMARGIN", new_y="NEXT",
+                    )
+                else:
+                    pdf.multi_cell(w=usable_width, h=6, text=clean, new_x="LMARGIN", new_y="NEXT")
+            else:
+                pdf.multi_cell(w=usable_width, h=6, text=clean, new_x="LMARGIN", new_y="NEXT")
+            i += 1
+
+        pdf.output(filepath)
+
+    elif format_type == "docx":
+        try:
+            from docx import Document
+        except ImportError:
+            logger.error("[CREATE_DOCUMENTS] DOCX format requires python-docx library")
+            return None
+        doc_docx = Document()
+        doc_docx.add_heading(title, 0)
+        for line in content.split("\n"):
+            if line.strip():
+                doc_docx.add_paragraph(line)
+        core_props = doc_docx.core_properties
+        if metadata.get("author"):
+            core_props.author = metadata["author"]
+        if metadata.get("subject"):
+            core_props.subject = metadata["subject"]
+        doc_docx.save(filepath)
+
+    elif format_type == "csv":
+        import csv
+        with open(filepath, "w", encoding="utf-8", newline="") as f:
+            writer = csv.writer(f)
+            for line in content.split("\n"):
+                if line.strip():
+                    if "\t" in line:
+                        cells = [cell.strip() for cell in line.split("\t")]
+                    else:
+                        cells = [cell.strip() for cell in line.split(",")]
+                    writer.writerow(cells)
+
+    elif format_type == "xlsx":
+        try:
+            from openpyxl import Workbook
+        except ImportError:
+            logger.error("[CREATE_DOCUMENTS] XLSX format requires openpyxl library")
+            return None
+        wb = Workbook()
+        ws = wb.active
+        ws.title = title[:31]
+        row_num = 1
+        for line in content.split("\n"):
+            if line.strip():
+                if "\t" in line:
+                    cells = [cell.strip() for cell in line.split("\t")]
+                else:
+                    cells = [cell.strip() for cell in line.split(",")]
+                for col_num, cell_value in enumerate(cells, 1):
+                    ws.cell(row=row_num, column=col_num, value=cell_value)
+                row_num += 1
+        wb.save(filepath)
+
+    return filepath
 
 
 @traceable
@@ -1411,391 +1660,16 @@ async def execute_create_documents(
             base_filename = re.sub(r"[^\w\-_\. ]", "_", base_filename)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-            # Generate file based on format
-            if format_type == "txt":
-                filename = f"{timestamp}_{base_filename}.txt"
-                filepath = os.path.join(user_dir, filename)
-                with open(filepath, "w", encoding="utf-8") as f:
-                    f.write(content)
-
-            elif format_type == "md":
-                filename = f"{timestamp}_{base_filename}.md"
-                filepath = os.path.join(user_dir, filename)
-                with open(filepath, "w", encoding="utf-8") as f:
-                    f.write(content)
-
-            elif format_type == "html":
-                filename = f"{timestamp}_{base_filename}.html"
-                filepath = os.path.join(user_dir, filename)
-                try:
-                    import markdown2
-
-                    html_content = markdown2.markdown(content)
-                    full_html = f"""<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <title>{title}</title>
-    <style>
-        body {{ font-family: Arial, sans-serif; max-width: 800px; margin: 40px auto; padding: 20px; }}
-        h1, h2, h3 {{ color: #333; }}
-        table {{ border-collapse: collapse; width: 100%; }}
-        th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
-        th {{ background-color: #f2f2f2; }}
-    </style>
-</head>
-<body>
-    <h1>{title}</h1>
-    {html_content}
-</body>
-</html>"""
-                    with open(filepath, "w", encoding="utf-8") as f:
-                        f.write(full_html)
-                except ImportError:
-                    errors.append(f"⚠️ HTML format requires markdown2 library: {title}")
-                    continue
-
-            elif format_type == "pdf":
-                filename = f"{timestamp}_{base_filename}.pdf"
-                filepath = os.path.join(user_dir, filename)
-                try:
-                    from fpdf import FPDF
-
-                    # Create PDF with Unicode support
-                    pdf = FPDF(orientation="P", unit="mm", format="A4")
-                    pdf.set_margins(left=20, top=20, right=20)
-                    pdf.set_auto_page_break(auto=True, margin=20)
-
-                    # Try to add Unicode font for CJK support
-                    unicode_font = None
-                    font_paths = [
-                        # Windows - use .ttf not .ttc for better compatibility
-                        ("C:/Windows/Fonts/simhei.ttf", "SimHei"),
-                        ("C:/Windows/Fonts/msyh.ttc", "MSYH"),
-                        ("C:/Windows/Fonts/simsun.ttc", "SimSun"),
-                        # Linux
-                        ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "DejaVu"),
-                        # macOS
-                        ("/Library/Fonts/Arial Unicode.ttf", "ArialUnicode"),
-                    ]
-                    for font_path, font_name in font_paths:
-                        if os.path.exists(font_path):
-                            try:
-                                pdf.add_font(font_name, fname=font_path)
-                                unicode_font = font_name
-                                logger.info(f"[PDF] Loaded font: {font_name}")
-                                break
-                            except Exception as fe:
-                                logger.warning(f"[PDF] Font {font_name} failed: {fe}")
-                                continue
-
-                    pdf.add_page()
-
-                    # Calculate usable width
-                    usable_width = pdf.w - pdf.l_margin - pdf.r_margin
-
-                    # Use unicode font or fallback
-                    def set_font_safe(size, style=""):
-                        if unicode_font:
-                            pdf.set_font(unicode_font, size=size)
-                        else:
-                            pdf.set_font("Helvetica", style=style, size=size)
-
-                    # Add title
-                    set_font_safe(16, "B")
-                    pdf.set_text_color(33, 33, 33)
-                    pdf.multi_cell(
-                        w=usable_width,
-                        h=10,
-                        text=title,
-                        align="L",
-                        new_x="LMARGIN",
-                        new_y="NEXT",
-                    )
-                    pdf.ln(5)
-
-                    # Add separator line
-                    pdf.set_draw_color(150, 150, 150)
-                    y = pdf.get_y()
-                    pdf.line(pdf.l_margin, y, pdf.w - pdf.r_margin, y)
-                    pdf.ln(8)
-
-                    # Add content
-                    set_font_safe(10)
-                    pdf.set_text_color(51, 51, 51)
-
-                    # Helper function to render a markdown table
-                    def render_table(table_lines):
-                        if len(table_lines) < 2:
-                            return
-
-                        # Parse table rows
-                        rows = []
-                        for tl in table_lines:
-                            # Skip separator rows (|---|---|)
-                            if (
-                                tl.replace("|", "")
-                                .replace("-", "")
-                                .replace(":", "")
-                                .strip()
-                                == ""
-                            ):
-                                continue
-                            # Parse cells
-                            cells = [c.strip() for c in tl.split("|")]
-                            # Remove empty first/last cells from leading/trailing |
-                            if cells and cells[0] == "":
-                                cells = cells[1:]
-                            if cells and cells[-1] == "":
-                                cells = cells[:-1]
-                            if cells:
-                                rows.append(cells)
-
-                        if not rows:
-                            return
-
-                        # Calculate column widths
-                        num_cols = max(len(r) for r in rows)
-                        col_width = (
-                            usable_width / num_cols if num_cols > 0 else usable_width
-                        )
-                        row_height = 8
-
-                        # Draw table
-                        pdf.set_draw_color(100, 100, 100)
-                        for row_idx, row in enumerate(rows):
-                            # Pad row to have consistent columns
-                            while len(row) < num_cols:
-                                row.append("")
-
-                            # Header row (first row) - bold with background
-                            if row_idx == 0:
-                                set_font_safe(10, "B")
-                                pdf.set_fill_color(240, 240, 240)
-                                for cell in row:
-                                    pdf.cell(
-                                        w=col_width,
-                                        h=row_height,
-                                        text=cell,
-                                        border=1,
-                                        fill=True,
-                                        align="C",
-                                    )
-                                pdf.ln(row_height)
-                                set_font_safe(10)
-                            else:
-                                # Data rows
-                                for cell in row:
-                                    pdf.cell(
-                                        w=col_width,
-                                        h=row_height,
-                                        text=cell,
-                                        border=1,
-                                        align="C",
-                                    )
-                                pdf.ln(row_height)
-
-                        pdf.ln(4)  # Space after table
-
-                    # Process content line by line, collecting table lines
-                    lines = content.split("\n")
-                    i = 0
-                    while i < len(lines):
-                        line = lines[i].strip()
-
-                        if not line:
-                            pdf.ln(4)
-                            i += 1
-                            continue
-
-                        # Check if this is a markdown table row
-                        if line.startswith("|") and line.endswith("|"):
-                            # Collect all consecutive table lines
-                            table_lines = []
-                            while i < len(lines):
-                                tl = lines[i].strip()
-                                if tl.startswith("|") and (
-                                    tl.endswith("|") or tl.rstrip().endswith("|")
-                                ):
-                                    table_lines.append(tl)
-                                    i += 1
-                                else:
-                                    break
-                            render_table(table_lines)
-                            continue
-
-                        # Strip markdown formatting and normalize whitespace
-                        clean = line.replace("**", "").replace("*", "")
-                        # Replace tabs with spaces to prevent layout issues
-                        clean = clean.replace("\t", "    ")
-
-                        # Handle markdown headers
-                        if line.startswith("### "):
-                            set_font_safe(11, "B")
-                            pdf.multi_cell(
-                                w=usable_width,
-                                h=7,
-                                text=clean[4:],
-                                new_x="LMARGIN",
-                                new_y="NEXT",
-                            )
-                            set_font_safe(10)
-                        elif line.startswith("## "):
-                            pdf.ln(3)
-                            set_font_safe(13, "B")
-                            pdf.multi_cell(
-                                w=usable_width,
-                                h=8,
-                                text=clean[3:],
-                                new_x="LMARGIN",
-                                new_y="NEXT",
-                            )
-                            set_font_safe(10)
-                        elif line.startswith("# "):
-                            pdf.ln(4)
-                            set_font_safe(14, "B")
-                            pdf.multi_cell(
-                                w=usable_width,
-                                h=9,
-                                text=clean[2:],
-                                new_x="LMARGIN",
-                                new_y="NEXT",
-                            )
-                            set_font_safe(10)
-                        elif line.startswith("- ") or line.startswith("* "):
-                            pdf.multi_cell(
-                                w=usable_width,
-                                h=6,
-                                text=f"  • {clean[2:]}",
-                                new_x="LMARGIN",
-                                new_y="NEXT",
-                            )
-                        # Handle numbered lists (1. 2. 3. etc.)
-                        elif (
-                            len(clean) > 2
-                            and clean[0].isdigit()
-                            and clean[1] in ".)"
-                            or (
-                                len(clean) > 3
-                                and clean[:2].isdigit()
-                                and clean[2] in ".)"
-                            )
-                        ):
-                            # Find where the number ends
-                            match = re.match(r"^(\d+[.\)])\s*", clean)
-                            if match:
-                                num_part = match.group(1)
-                                text_part = clean[match.end() :]
-                                pdf.multi_cell(
-                                    w=usable_width,
-                                    h=6,
-                                    text=f"  {num_part} {text_part}",
-                                    new_x="LMARGIN",
-                                    new_y="NEXT",
-                                )
-                            else:
-                                pdf.multi_cell(
-                                    w=usable_width,
-                                    h=6,
-                                    text=clean,
-                                    new_x="LMARGIN",
-                                    new_y="NEXT",
-                                )
-                        else:
-                            pdf.multi_cell(
-                                w=usable_width,
-                                h=6,
-                                text=clean,
-                                new_x="LMARGIN",
-                                new_y="NEXT",
-                            )
-
-                        i += 1
-
-                    pdf.output(filepath)
-                except ImportError:
-                    errors.append(f"⚠️ PDF format requires fpdf2 library: {title}")
-                    continue
-                except Exception as pdf_err:
-                    logger.error(f"[PDF] Creation failed: {pdf_err}")
-                    errors.append(
-                        f"⚠️ PDF creation failed for '{title}': {str(pdf_err)}"
-                    )
-                    continue
-
-            elif format_type == "docx":
-                filename = f"{timestamp}_{base_filename}.docx"
-                filepath = os.path.join(user_dir, filename)
-                try:
-                    from docx import Document
-
-                    doc_docx = Document()
-
-                    # Add title
-                    doc_docx.add_heading(title, 0)
-
-                    # Add content (basic paragraph formatting)
-                    for line in content.split("\n"):
-                        if line.strip():
-                            doc_docx.add_paragraph(line)
-
-                    # Set metadata if provided
-                    core_props = doc_docx.core_properties
-                    if metadata.get("author"):
-                        core_props.author = metadata["author"]
-                    if metadata.get("subject"):
-                        core_props.subject = metadata["subject"]
-
-                    doc_docx.save(filepath)
-                except ImportError:
-                    errors.append(
-                        f"⚠️ DOCX format requires python-docx library: {title}"
-                    )
-                    continue
-
-            elif format_type == "csv":
-                filename = f"{timestamp}_{base_filename}.csv"
-                filepath = os.path.join(user_dir, filename)
-                import csv
-
-                # Simple CSV: treat each line as a row, split by commas or tabs
-                with open(filepath, "w", encoding="utf-8", newline="") as f:
-                    writer = csv.writer(f)
-                    for line in content.split("\n"):
-                        if line.strip():
-                            # Try tab-separated first, then comma-separated
-                            if "\t" in line:
-                                cells = [cell.strip() for cell in line.split("\t")]
-                            else:
-                                cells = [cell.strip() for cell in line.split(",")]
-                            writer.writerow(cells)
-
-            elif format_type == "xlsx":
-                filename = f"{timestamp}_{base_filename}.xlsx"
-                filepath = os.path.join(user_dir, filename)
-                try:
-                    from openpyxl import Workbook
-
-                    wb = Workbook()
-                    ws = wb.active
-                    ws.title = title[:31]  # Excel sheet name limit
-
-                    # Parse content as simple table (comma or tab-separated)
-                    row_num = 1
-                    for line in content.split("\n"):
-                        if line.strip():
-                            if "\t" in line:
-                                cells = [cell.strip() for cell in line.split("\t")]
-                            else:
-                                cells = [cell.strip() for cell in line.split(",")]
-                            for col_num, cell_value in enumerate(cells, 1):
-                                ws.cell(row=row_num, column=col_num, value=cell_value)
-                            row_num += 1
-
-                    wb.save(filepath)
-                except ImportError:
-                    errors.append(f"⚠️ XLSX format requires openpyxl library: {title}")
-                    continue
+            # Generate file in thread pool to avoid blocking event loop
+            # (PDF/DOCX/XLSX generation is CPU+I/O bound: 100-1000ms)
+            filepath = await asyncio.to_thread(
+                _generate_document_file,
+                content, title, base_filename, format_type, metadata,
+                timestamp, user_dir,
+            )
+            if filepath is None:
+                errors.append(f"⚠️ Failed to generate {format_type} for '{title}'")
+                continue
 
             # Register file using FileService
             file_size = os.path.getsize(filepath)
@@ -1923,27 +1797,27 @@ async def execute_code_execution(args: Dict[str, Any], context: Dict[str, Any]) 
             "Error: E2B API key not configured. Set E2B_API_KEY environment variable."
         )
 
+    # E2B Sandbox.create() + run_code() are remote API calls (1-10s idle) — run in thread pool
+    return await asyncio.to_thread(_run_code_in_sandbox, code)
+
+
+def _run_code_in_sandbox(code: str) -> str:
+    """Sync helper: execute code in E2B sandbox. Called via asyncio.to_thread()."""
     try:
         from e2b_code_interpreter import Sandbox
 
-        # Execute code in E2B sandbox
-        # Note: E2B v2.x uses Sandbox.create() and reads API key from E2B_API_KEY env var
         with Sandbox.create() as sandbox:
             execution = sandbox.run_code(code)
 
-            # Build result from execution
             result_parts = []
 
-            # Capture stdout
             if execution.text:
                 result_parts.append(execution.text)
 
-            # Capture any logs/prints
             if execution.logs and execution.logs.stdout:
                 for log in execution.logs.stdout:
                     result_parts.append(log)
 
-            # Capture errors
             if execution.error:
                 result_parts.append(f"Error: {execution.error}")
 
@@ -2075,7 +1949,7 @@ async def execute_tool_call(
         if inspect.iscoroutinefunction(executor):
             result = await executor(executor_args, context)
         else:
-            result = executor(executor_args, context)
+            result = await asyncio.to_thread(executor, executor_args, context)
         return result
     except Exception as e:
         # Log error and return error message

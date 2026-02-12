@@ -14,7 +14,7 @@ import re
 import json
 import logging
 from typing import Dict, Any, List, Optional, Tuple
-from openai import OpenAI
+from openai import AsyncOpenAI
 from langsmith import traceable
 
 from src.config.settings import Config
@@ -47,7 +47,7 @@ class RetrievalEvaluator:
     """
 
     def __init__(
-        self, config: ReflectionConfig, openai_client: Optional[OpenAI] = None
+        self, config: ReflectionConfig, openai_client: Optional[AsyncOpenAI] = None
     ):
         """
         Initialize the evaluator.
@@ -75,7 +75,7 @@ class RetrievalEvaluator:
                 raise ValueError("OpenAI client required for BALANCED/THOROUGH modes")
 
     @traceable
-    def evaluate(self, criteria: EvaluationCriteria) -> EvaluationResult:
+    async def evaluate(self, criteria: EvaluationCriteria) -> EvaluationResult:
         """
         Evaluate retrieval quality.
 
@@ -91,9 +91,9 @@ class RetrievalEvaluator:
         if mode == ReflectionMode.FAST:
             result = self._evaluate_fast(criteria)
         elif mode == ReflectionMode.BALANCED:
-            result = self._evaluate_balanced(criteria)
+            result = await self._evaluate_balanced(criteria)
         elif mode == ReflectionMode.THOROUGH:
-            result = self._evaluate_thorough(criteria)
+            result = await self._evaluate_thorough(criteria)
         else:
             raise ValueError(f"Invalid reflection mode: {mode}")
 
@@ -248,7 +248,9 @@ class RetrievalEvaluator:
     # BALANCED MODE: Heuristics + Light LLM Check
     # =========================================================================
 
-    def _evaluate_balanced(self, criteria: EvaluationCriteria) -> EvaluationResult:
+    async def _evaluate_balanced(
+        self, criteria: EvaluationCriteria
+    ) -> EvaluationResult:
         """
         Balanced evaluation: heuristics + light LLM validation.
 
@@ -285,7 +287,7 @@ class RetrievalEvaluator:
             logger.info(
                 f"[EVAL_BALANCED] Borderline confidence ({partial_threshold} <= {result.confidence:.4f} < {good_threshold}), calling LLM check..."
             )
-            adjusted_confidence, llm_reasoning = self._quick_llm_check(
+            adjusted_confidence, llm_reasoning = await self._quick_llm_check(
                 criteria.query, criteria.contexts, result.confidence
             )
             logger.info(
@@ -306,7 +308,7 @@ class RetrievalEvaluator:
         result.mode_used = ReflectionMode.BALANCED
         return result
 
-    def _quick_llm_check(
+    async def _quick_llm_check(
         self, query: str, contexts: List[Dict[str, Any]], baseline_confidence: float
     ) -> Tuple[float, str]:
         """
@@ -385,7 +387,7 @@ class RetrievalEvaluator:
 
                 Be strict: only answer 'yes' if contexts directly and completely answer the query.
             """
-            response = chat_completion(
+            response = await chat_completion(
                 client=self.client,
                 model=Config.OPENAI_MODEL,
                 temperature=0.0,
@@ -435,7 +437,9 @@ class RetrievalEvaluator:
     # THOROUGH MODE: Full LLM Evaluation
     # =========================================================================
 
-    def _evaluate_thorough(self, criteria: EvaluationCriteria) -> EvaluationResult:
+    async def _evaluate_thorough(
+        self, criteria: EvaluationCriteria
+    ) -> EvaluationResult:
         """
         Thorough LLM-based evaluation.
 
@@ -548,7 +552,7 @@ class RetrievalEvaluator:
 
         # Step 3: Call OpenAI API
         try:
-            response = chat_completion_json(
+            response = await chat_completion_json(
                 client=self.client,
                 model=Config.OPENAI_MODEL,
                 temperature=0.0,
@@ -608,11 +612,11 @@ class RetrievalEvaluator:
         except json.JSONDecodeError as e:
             # Step 6: Error handling - JSON parsing failed
             print(f"THOROUGH mode JSON parsing failed: {e}")
-            return self._evaluate_balanced(criteria)
+            return await self._evaluate_balanced(criteria)
         except Exception as e:
             # Step 6: Error handling - LLM call failed
             print(f"THOROUGH mode failed: {e}")
-            return self._evaluate_balanced(criteria)
+            return await self._evaluate_balanced(criteria)
 
     # =========================================================================
     # HELPER METHODS
@@ -1045,75 +1049,78 @@ class RetrievalEvaluator:
 
 if __name__ == "__main__":
     """Test the retrieval evaluator."""
+    import asyncio
     from src.config.settings import Config
 
-    print("=" * 70)
-    print("TESTING RETRIEVAL EVALUATOR")
-    print("=" * 70)
+    async def run_tests():
+        print("=" * 70)
+        print("TESTING RETRIEVAL EVALUATOR")
+        print("=" * 70)
 
-    # Load config
-    config = ReflectionConfig.from_settings(Config)
-    print(f"\nConfig loaded: mode={config.mode.value}")
+        # Load config
+        config = ReflectionConfig.from_settings(Config)
+        print(f"\nConfig loaded: mode={config.mode.value}")
 
-    # Test 1: Create evaluator (FAST mode, no LLM needed)
-    print("\n[Test 1] Creating evaluator (FAST mode)...")
-    try:
-        config.mode = ReflectionMode.FAST
-        evaluator = RetrievalEvaluator(config=config, openai_client=None)
-        print("  [OK] Evaluator created")
-    except Exception as e:
-        print(f"  [FAIL] {e}")
+        # Test 1: Create evaluator (FAST mode, no LLM needed)
+        print("\n[Test 1] Creating evaluator (FAST mode)...")
+        try:
+            config.mode = ReflectionMode.FAST
+            evaluator = RetrievalEvaluator(config=config, openai_client=None)
+            print("  [OK] Evaluator created")
+        except Exception as e:
+            print(f"  [FAIL] {e}")
 
-    # Test 2: Evaluate with good contexts
-    print("\n[Test 2] Evaluating good retrieval...")
-    try:
-        criteria = EvaluationCriteria(
-            query="What is the company vacation policy?",
-            contexts=[
-                {
-                    "chunk": "The company provides 15 days of vacation per year. Employees can accrue vacation time...",
-                    "score": 0.92,
-                },
-                {
-                    "chunk": "Vacation policy details: All employees are eligible for paid vacation after 90 days...",
-                    "score": 0.88,
-                },
-            ],
-            search_metadata={"hybrid": True, "top_k": 5},
-        )
+        # Test 2: Evaluate with good contexts
+        print("\n[Test 2] Evaluating good retrieval...")
+        try:
+            criteria = EvaluationCriteria(
+                query="What is the company vacation policy?",
+                contexts=[
+                    {
+                        "chunk": "The company provides 15 days of vacation per year. Employees can accrue vacation time...",
+                        "score": 0.92,
+                    },
+                    {
+                        "chunk": "Vacation policy details: All employees are eligible for paid vacation after 90 days...",
+                        "score": 0.88,
+                    },
+                ],
+                search_metadata={"hybrid": True, "top_k": 5},
+            )
 
-        result = evaluator.evaluate(criteria)
-        print(f"  Quality: {result.quality.value}")
-        print(f"  Confidence: {result.confidence:.2f}")
-        print(f"  Recommendation: {result.recommendation.value}")
-        print(f"  Reasoning: {result.reasoning}")
-        print("  [OK] Evaluation complete")
-    except Exception as e:
-        print(f"  [FAIL] {e}")
+            result = await evaluator.evaluate(criteria)
+            print(f"  Quality: {result.quality.value}")
+            print(f"  Confidence: {result.confidence:.2f}")
+            print(f"  Recommendation: {result.recommendation.value}")
+            print(f"  Reasoning: {result.reasoning}")
+            print("  [OK] Evaluation complete")
+        except Exception as e:
+            print(f"  [FAIL] {e}")
 
-    # Test 3: Evaluate with poor contexts
-    print("\n[Test 3] Evaluating poor retrieval...")
-    try:
-        criteria = EvaluationCriteria(
-            query="What is quantum computing?",
-            contexts=[
-                {
-                    "chunk": "The company has various employee benefits including health insurance...",
-                    "score": 0.15,
-                }
-            ],
-            search_metadata={"hybrid": True, "top_k": 5},
-        )
+        # Test 3: Evaluate with poor contexts
+        print("\n[Test 3] Evaluating poor retrieval...")
+        try:
+            criteria = EvaluationCriteria(
+                query="What is quantum computing?",
+                contexts=[
+                    {
+                        "chunk": "The company has various employee benefits including health insurance...",
+                        "score": 0.15,
+                    }
+                ],
+                search_metadata={"hybrid": True, "top_k": 5},
+            )
 
-        result = evaluator.evaluate(criteria)
-        print(f"  Quality: {result.quality.value}")
-        print(f"  Confidence: {result.confidence:.2f}")
-        print(f"  Recommendation: {result.recommendation.value}")
-        print("  [OK] Evaluation complete")
-    except Exception as e:
-        print(f"  [FAIL] {e}")
+            result = await evaluator.evaluate(criteria)
+            print(f"  Quality: {result.quality.value}")
+            print(f"  Confidence: {result.confidence:.2f}")
+            print(f"  Recommendation: {result.recommendation.value}")
+            print("  [OK] Evaluation complete")
+        except Exception as e:
+            print(f"  [FAIL] {e}")
 
-    print("\n" + "=" * 70)
-    print("TESTS COMPLETE!")
-    print("=" * 70)
-    print("\nNext: Implement the TODO methods marked in the code")
+        print("\n" + "=" * 70)
+        print("TESTS COMPLETE!")
+        print("=" * 70)
+
+    asyncio.run(run_tests())

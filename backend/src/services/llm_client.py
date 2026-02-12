@@ -1,14 +1,13 @@
 """
-Centralized LLM client wrapper.
+Centralized LLM client wrapper (async).
 
-Simple wrapper functions for chat completions that can be easily swapped
-to different providers (OpenAI, Anthropic, etc.).
+Uses AsyncOpenAI for non-blocking LLM calls that don't hold the event loop.
 
 Usage:
     from src.services.llm_client import chat_completion, chat_completion_with_tools
 
     # Simple chat
-    response = chat_completion(
+    response = await chat_completion(
         client=openai_client,
         messages=[{"role": "user", "content": "Hello"}],
         model="gpt-4o-mini",
@@ -16,7 +15,7 @@ Usage:
     print(response.choices[0].message.content)
 
     # With tools
-    response = chat_completion_with_tools(
+    response = await chat_completion_with_tools(
         client=openai_client,
         messages=messages,
         tools=tools,
@@ -35,7 +34,7 @@ DEFAULT_TIMEOUT = Timeout(120.0, connect=10.0)
 
 
 @traceable(run_type="llm", name="chat_completion")
-def chat_completion(
+async def chat_completion(
     client,
     messages: list[dict],
     model: str,
@@ -47,7 +46,7 @@ def chat_completion(
     """Basic chat completion.
 
     Args:
-        client: OpenAI client instance
+        client: AsyncOpenAI client instance
         messages: List of message dicts [{"role": "user", "content": "..."}]
         model: Model name (e.g., "gpt-4o-mini")
         temperature: Sampling temperature
@@ -59,7 +58,7 @@ def chat_completion(
         OpenAI ChatCompletion response
     """
     try:
-        response = client.chat.completions.create(
+        response = await client.chat.completions.create(
             model=model,
             messages=messages,
             temperature=temperature,
@@ -79,7 +78,7 @@ def chat_completion(
 
 
 @traceable(run_type="llm", name="chat_completion_with_tools")
-def chat_completion_with_tools(
+async def chat_completion_with_tools(
     client,
     messages: list[dict],
     tools: list[dict],
@@ -94,7 +93,7 @@ def chat_completion_with_tools(
     """Chat completion with tool/function calling.
 
     Args:
-        client: OpenAI client instance
+        client: AsyncOpenAI client instance
         messages: List of message dicts
         tools: List of tool definitions
         model: Model name
@@ -109,7 +108,7 @@ def chat_completion_with_tools(
         OpenAI ChatCompletion response
     """
     try:
-        response = client.chat.completions.create(
+        response = await client.chat.completions.create(
             model=model,
             messages=messages,
             tools=tools,
@@ -132,7 +131,7 @@ def chat_completion_with_tools(
 
 
 @traceable(run_type="llm", name="chat_completion_json")
-def chat_completion_json(
+async def chat_completion_json(
     client,
     messages: list[dict],
     model: str,
@@ -143,7 +142,7 @@ def chat_completion_json(
     """Chat completion with JSON response format.
 
     Args:
-        client: OpenAI client instance
+        client: AsyncOpenAI client instance
         messages: List of message dicts
         model: Model name
         temperature: Sampling temperature
@@ -154,7 +153,7 @@ def chat_completion_json(
         OpenAI ChatCompletion response with JSON content
     """
     try:
-        response = client.chat.completions.create(
+        response = await client.chat.completions.create(
             model=model,
             messages=messages,
             temperature=temperature,
@@ -174,7 +173,7 @@ def chat_completion_json(
 
 
 @traceable(run_type="llm", name="chat_completion_structured")
-def chat_completion_structured(
+async def chat_completion_structured(
     client,
     messages: list[dict],
     schema: dict,
@@ -186,7 +185,7 @@ def chat_completion_structured(
     """Chat completion with structured output (JSON schema).
 
     Args:
-        client: OpenAI client instance
+        client: AsyncOpenAI client instance
         messages: List of message dicts
         schema: Full response_format dict with type and json_schema, e.g.:
                 {"type": "json_schema", "json_schema": {"name": "...", "schema": {...}}}
@@ -199,7 +198,7 @@ def chat_completion_structured(
         OpenAI ChatCompletion response matching schema
     """
     try:
-        response = client.chat.completions.create(
+        response = await client.chat.completions.create(
             model=model,
             messages=messages,
             temperature=temperature,
@@ -219,7 +218,7 @@ def chat_completion_structured(
 
 
 @traceable(run_type="llm", name="chat_completion_stream")
-def chat_completion_stream(
+async def chat_completion_stream(
     client,
     messages: list[dict],
     model: str,
@@ -230,7 +229,7 @@ def chat_completion_stream(
     """Chat completion with streaming response.
 
     Args:
-        client: OpenAI client instance
+        client: AsyncOpenAI client instance
         messages: List of message dicts
         model: Model name
         temperature: Sampling temperature
@@ -238,10 +237,10 @@ def chat_completion_stream(
         timeout: Request timeout (default: 120s total, 10s connect)
 
     Returns:
-        OpenAI streaming response iterator
+        OpenAI async streaming response iterator
     """
     try:
-        return client.chat.completions.create(
+        return await client.chat.completions.create(
             model=model,
             messages=messages,
             temperature=temperature,

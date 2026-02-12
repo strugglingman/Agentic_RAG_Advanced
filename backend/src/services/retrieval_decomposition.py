@@ -30,13 +30,13 @@ Key Design Decisions:
 Reference: src/evaluation/eval_data/multihop_test.jsonl for example decompositions
 """
 
+import asyncio
 import json
 import logging
 import atexit
 import time
 from typing import Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from openai import OpenAI
 from src.services.vector_db import VectorDB
 from src.services.retrieval import retrieve
 from src.services.llm_client import chat_completion_json
@@ -178,9 +178,9 @@ Output ONLY valid JSON object:
 # =============================================================================
 
 
-def decompose_query(
+async def decompose_query(
     query: str,
-    openai_client: OpenAI,
+    openai_client,
     model: str = Config.OPENAI_MODEL,
     temperature: float = 0.0,
 ) -> list[str]:
@@ -227,7 +227,7 @@ def decompose_query(
         },
     ]
     try:
-        response = chat_completion_json(
+        response = await chat_completion_json(
             client=openai_client,
             messages=messages,
             model=model,
@@ -429,9 +429,9 @@ def merge_with_balanced_topk(
 # =============================================================================
 
 
-def retrieve_with_decomposition(
+async def retrieve_with_decomposition(
     vector_db: VectorDB,
-    openai_client: OpenAI,
+    openai_client,
     query: str,
     dept_id: str,
     user_id: str,
@@ -503,7 +503,8 @@ def retrieve_with_decomposition(
     try:
         if not Config.DECOMPOSITION_ENABLED:
             search_type = _get_search_mode()
-            return retrieve(
+            return await asyncio.to_thread(
+                retrieve,
                 vector_db=vector_db,
                 query=query,
                 dept_id=dept_id,
@@ -514,7 +515,7 @@ def retrieve_with_decomposition(
                 use_reranker=use_reranker,
             )
 
-        sub_queries = decompose_query(
+        sub_queries = await decompose_query(
             query, openai_client=openai_client, model=Config.OPENAI_MODEL, temperature=0
         )
 
@@ -524,7 +525,8 @@ def retrieve_with_decomposition(
         else:
             search_type = _get_search_mode()
 
-        results = parallel_retrieve(
+        results = await asyncio.to_thread(
+            parallel_retrieve,
             sub_queries=sub_queries,
             vector_db=vector_db,
             dept_id=dept_id,
@@ -544,7 +546,8 @@ def retrieve_with_decomposition(
     except Exception as e:
         logger.warning(f"[DECOMPOSITION] Failed: {e}, falling back to original query")
         search_type = _get_search_mode()
-        return retrieve(
+        return await asyncio.to_thread(
+            retrieve,
             vector_db=vector_db,
             query=query,
             dept_id=dept_id,

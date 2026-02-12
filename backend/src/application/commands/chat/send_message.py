@@ -64,7 +64,7 @@ import base64
 import logging
 from dataclasses import dataclass
 from typing import Optional, Any
-from openai import OpenAI
+from openai import AsyncOpenAI
 from src.utils.sanitizer import sanitize_text
 from src.utils.url_formatter import format_urls_as_markdown
 from src.domain.value_objects.conversation_id import ConversationId
@@ -129,7 +129,7 @@ class SendMessageHandler(CommandHandler[SendMessageResult]):
         query_supervisor: QuerySupervisor,
         file_service: FileService,
         vector_db: Optional[VectorDB] = None,
-        openai_client: Optional[OpenAI] = None,
+        openai_client: Optional[AsyncOpenAI] = None,
         agent_state_store: Optional[AgentSessionStateStore] = None,
     ):
         self.conv_repo = conv_repo
@@ -309,7 +309,7 @@ class SendMessageHandler(CommandHandler[SendMessageResult]):
 
         return attachment_file_ids
 
-    def _detect_file_intent_with_llm(
+    async def _detect_file_intent_with_llm(
         self, query: str, conversation_history: list[dict] = None
     ) -> bool:
         """Use LLM to detect if user wants file links/references (multilingual support).
@@ -344,7 +344,7 @@ User query: {query}
 
 CRITICAL! Answer ONLY with: yes or no"""
 
-            response = chat_completion(
+            response = await chat_completion(
                 client=self.openai_client,
                 model=Config.OPENAI_SIMPLE_MODEL,
                 messages=[
@@ -411,7 +411,7 @@ CRITICAL! Answer ONLY with: yes or no"""
         Uses LLM-based intent detection to support multilingual queries.
         Includes shared files in same department when dept_id is provided.
         """
-        needs_file_discovery = self._detect_file_intent_with_llm(
+        needs_file_discovery = await self._detect_file_intent_with_llm(
             query, conversation_history
         )
 

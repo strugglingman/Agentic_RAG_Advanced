@@ -8,7 +8,7 @@ Week 2 - Day 3: Query Refinement
 """
 
 from typing import Optional, List, Dict, Any
-from openai import OpenAI
+from openai import AsyncOpenAI
 from src.models.evaluation import EvaluationResult, RecommendationAction
 from src.services.llm_client import chat_completion
 from src.config.settings import Config
@@ -29,7 +29,7 @@ class QueryRefiner:
 
     def __init__(
         self,
-        openai_client: OpenAI,
+        openai_client: AsyncOpenAI,
         model: str = Config.OPENAI_MODEL,
         temperature: float = Config.OPENAI_TEMPERATURE,
     ):
@@ -52,7 +52,7 @@ class QueryRefiner:
         self.temperature = temperature
 
     @traceable
-    def refine_query(
+    async def refine_query(
         self,
         original_query: str,
         eval_result: EvaluationResult,
@@ -101,7 +101,7 @@ class QueryRefiner:
             context_hint=context_hint,
         )
         try:
-            response = chat_completion(
+            response = await chat_completion(
                 client=self.client,
                 model=self.model,
                 temperature=self.temperature,
@@ -399,93 +399,97 @@ if __name__ == "__main__":
        print("TEST COMPLETE")
        print("=" * 70)
     """
-    from openai import OpenAI
+    import asyncio
+    from openai import AsyncOpenAI
     from src.config.settings import Config
     from src.models.evaluation import RecommendationAction, QualityLevel
 
-    print("=" * 70)
-    print("QUERY REFINER TEST")
-    print("=" * 70)
+    async def run_tests():
+        print("=" * 70)
+        print("QUERY REFINER TEST")
+        print("=" * 70)
 
-    # Create refiner
-    client = OpenAI(api_key=Config.OPENAI_KEY)
-    refiner = QueryRefiner(openai_client=client)
-    print("[OK] QueryRefiner created")
+        # Create refiner
+        client = AsyncOpenAI(api_key=Config.OPENAI_KEY)
+        refiner = QueryRefiner(openai_client=client)
+        print("[OK] QueryRefiner created")
 
-    # Test 1: Abbreviation expansion
-    print("\n" + "-" * 70)
-    print("Test 1: Query Refinement with LLM")
-    print("-" * 70)
-    original = "Tell me about PTO"
-    mock_eval = EvaluationResult(
-        quality=QualityLevel.PARTIAL,
-        confidence=0.35,
-        coverage=0.2,
-        recommendation=RecommendationAction.REFINE,
-        reasoning="Poor keyword match",
-        issues=["Poor keyword match: 0.20"],
-        missing_aspects=["vacation", "time", "off", "policy"],
-        relevance_scores=[0.3, 0.4],
-        metrics={},
-    )
-    refined = refiner.refine_query(original, mock_eval)
-    print(f"  Original: {original}")
-    print(f"  Refined:  {refined}")
-    print("  [OK] LLM refinement complete")
+        # Test 1: Abbreviation expansion
+        print("\n" + "-" * 70)
+        print("Test 1: Query Refinement with LLM")
+        print("-" * 70)
+        original = "Tell me about PTO"
+        mock_eval = EvaluationResult(
+            quality=QualityLevel.PARTIAL,
+            confidence=0.35,
+            coverage=0.2,
+            recommendation=RecommendationAction.REFINE,
+            reasoning="Poor keyword match",
+            issues=["Poor keyword match: 0.20"],
+            missing_aspects=["vacation", "time", "off", "policy"],
+            relevance_scores=[0.3, 0.4],
+            metrics={},
+        )
+        refined = await refiner.refine_query(original, mock_eval)
+        print(f"  Original: {original}")
+        print(f"  Refined:  {refined}")
+        print("  [OK] LLM refinement complete")
 
-    # Test 2: Simple refinement fallback
-    print("\n" + "-" * 70)
-    print("Test 2: Simple Refinement (fallback)")
-    print("-" * 70)
-    simple_refined = refiner._simple_refinement(original, mock_eval)
-    print(f"  Original: {original}")
-    print(f"  Simple:   {simple_refined}")
-    print("  [OK] Simple refinement complete")
+        # Test 2: Simple refinement fallback
+        print("\n" + "-" * 70)
+        print("Test 2: Simple Refinement (fallback)")
+        print("-" * 70)
+        simple_refined = refiner._simple_refinement(original, mock_eval)
+        print(f"  Original: {original}")
+        print(f"  Simple:   {simple_refined}")
+        print("  [OK] Simple refinement complete")
 
-    # Test 3: should_refine logic
-    print("\n" + "-" * 70)
-    print("Test 3: should_refine Logic")
-    print("-" * 70)
-    max_attempts = Config.REFLECTION_MAX_REFINEMENT_ATTEMPTS
-    print(f"  Config.REFLECTION_MAX_REFINEMENT_ATTEMPTS = {max_attempts}")
+        # Test 3: should_refine logic
+        print("\n" + "-" * 70)
+        print("Test 3: should_refine Logic")
+        print("-" * 70)
+        max_attempts = Config.REFLECTION_MAX_REFINEMENT_ATTEMPTS
+        print(f"  Config.REFLECTION_MAX_REFINEMENT_ATTEMPTS = {max_attempts}")
 
-    # Should refine when count=0
-    context1 = {"_refinement_count": 0}
-    result1 = should_refine(mock_eval, context1)
-    print(f"  Count=0: should_refine={result1} (expected: True)")
+        # Should refine when count=0
+        context1 = {"_refinement_count": 0}
+        result1 = should_refine(mock_eval, context1)
+        print(f"  Count=0: should_refine={result1} (expected: True)")
 
-    # Should NOT refine when count >= max_attempts
-    context2 = {"_refinement_count": max_attempts}
-    result2 = should_refine(mock_eval, context2)
-    print(f"  Count={max_attempts}: should_refine={result2} (expected: False)")
+        # Should NOT refine when count >= max_attempts
+        context2 = {"_refinement_count": max_attempts}
+        result2 = should_refine(mock_eval, context2)
+        print(f"  Count={max_attempts}: should_refine={result2} (expected: False)")
 
-    # Should NOT refine when recommendation is not REFINE
-    mock_eval_answer = EvaluationResult(
-        quality=QualityLevel.GOOD,
-        confidence=0.85,
-        coverage=0.9,
-        recommendation=RecommendationAction.ANSWER,
-        reasoning="Good",
-        issues=[],
-        missing_aspects=[],
-        relevance_scores=[0.9],
-        metrics={},
-    )
-    result3 = should_refine(mock_eval_answer, context1)
-    print(f"  Recommendation=ANSWER: should_refine={result3} (expected: False)")
-    print("  [OK] should_refine logic verified")
+        # Should NOT refine when recommendation is not REFINE
+        mock_eval_answer = EvaluationResult(
+            quality=QualityLevel.GOOD,
+            confidence=0.85,
+            coverage=0.9,
+            recommendation=RecommendationAction.ANSWER,
+            reasoning="Good",
+            issues=[],
+            missing_aspects=[],
+            relevance_scores=[0.9],
+            metrics={},
+        )
+        result3 = should_refine(mock_eval_answer, context1)
+        print(f"  Recommendation=ANSWER: should_refine={result3} (expected: False)")
+        print("  [OK] should_refine logic verified")
 
-    # Test 4: track_refinement
-    print("\n" + "-" * 70)
-    print("Test 4: track_refinement")
-    print("-" * 70)
-    context = {}
-    track_refinement(context, "original query", "refined query v1")
-    track_refinement(context, "refined query v1", "refined query v2")
-    print(f"  Refinement count: {context['_refinement_count']} (expected: 2)")
-    print(f"  History length: {len(context['_refinement_history'])} (expected: 2)")
-    print("  [OK] track_refinement verified")
+        # Test 4: track_refinement
+        print("\n" + "-" * 70)
+        print("Test 4: track_refinement")
+        print("-" * 70)
+        context = {}
+        track_refinement(context, "original query", "refined query v1")
+        track_refinement(context, "refined query v1", "refined query v2")
+        print(f"  Refinement count: {context['_refinement_count']} (expected: 2)")
+        print(f"  History length: {len(context['_refinement_history'])} (expected: 2)")
+        print("  [OK] track_refinement verified")
 
-    print("\n" + "=" * 70)
-    print("ALL TESTS COMPLETE!")
-    print("=" * 70)
+        print("\n" + "=" * 70)
+        print("ALL TESTS COMPLETE!")
+        print("=" * 70)
+
+    asyncio.run(run_tests())

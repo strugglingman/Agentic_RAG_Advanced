@@ -226,7 +226,7 @@ class PrismaMessageRepository(MessageRepository):
         openai_client = context.get("openai_client") if context else None
 
         # Determine how many messages to fetch (shared utility used by both Web UI and Slack)
-        messages_needed = determine_message_count(query, openai_client)
+        messages_needed = await determine_message_count(query, openai_client)
 
         # Fetch messages using standard method
         logger.info(

@@ -11,23 +11,23 @@ ReAct Loop:
     Tool Result ? LLM (continue) ? Final Answer
 """
 
+import asyncio
 import json
 import logging
-import base64
 import re
 from typing import Dict, Any, List, Optional, Tuple
-from openai import OpenAI
+from openai import AsyncOpenAI
 from langsmith import traceable
 from src.services.agent_tools import ALL_TOOLS, execute_tool_call
-from src.services.llm_client import chat_completion_with_tools, chat_completion
+from src.services.llm_client import chat_completion_with_tools
 from src.services.agent_state import (
     AgentSessionState,
     AgentSessionStateStore,
     FileReference,
 )
 from src.config.settings import Config
-from src.utils.stream_utils import stream_text_smart
 from src.utils.safety import enforce_citations, add_sources_from_citations
+from src.utils.file_content_extractor import extract_file_content
 from src.observability.metrics import increment_query_routing
 
 logger = logging.getLogger(__name__)
@@ -50,7 +50,7 @@ class AgentService:
 
     def __init__(
         self,
-        openai_client: OpenAI,
+        openai_client: AsyncOpenAI,
         max_iterations: int = int(Config.AGENT_MAX_ITERATIONS),
         model: str = Config.OPENAI_MODEL,
         temperature: float = Config.OPENAI_TEMPERATURE,
@@ -146,7 +146,7 @@ class AgentService:
                 logger.info(
                     "[AGENT] Forcing search_documents as first tool call (FORCE_INTERNAL_RETRIEVAL=true)"
                 )
-                res = self._call_llm(
+                res = await self._call_llm(
                     messages,
                     tool_choice={
                         "type": "function",
@@ -155,7 +155,7 @@ class AgentService:
                 )
                 retrieval_done = True
             else:
-                res = self._call_llm(messages)
+                res = await self._call_llm(messages)
             if self._has_tool_calls(res):
                 assistant_message = res.choices[0].message
                 logger.debug(
@@ -206,53 +206,12 @@ class AgentService:
 
         return "Error: Maximum iterations reached without final answer.", []
 
-    @traceable
-    async def run_stream(self, query: str, context: Dict[str, Any]):
-        """
-        Run the agent with streaming support (generator).
 
-        Args:
-            query: User's question
-            context: System context (vector_db, dept_id, user_id, etc.)
-
-        Yields:
-            Text chunks and final contexts
-        """
-        # Initialize context tracking
-        context["_retrieved_contexts"] = []
-
-        messages_history = context.get("conversation_history", [])
-        messages = self._build_initial_messages(query, messages_history)
-
-        for _ in range(self.max_iterations):
-            res = self._call_llm(messages)
-            if self._has_tool_calls(res):
-                assistant_message = res.choices[0].message
-                tool_results = self._execute_tools(res, context)
-                messages = self._append_tool_results(
-                    messages, assistant_message, tool_results
-                )
-            elif res.choices[0].message.content:
-                # We have the final answer - stream it character by character
-                final_answer = res.choices[0].message.content
-
-                for chunk in stream_text_smart(final_answer, delay_ms=10):
-                    yield chunk
-
-                # Yield contexts at the end
-                contexts = context.get("_retrieved_contexts", [])
-                yield f"\n__CONTEXT__:{json.dumps(contexts)}"
-                return
-            else:
-                break
-
-        yield "Error: Maximum iterations reached without final answer."
-
-    def _call_llm(
+    async def _call_llm(
         self, messages: List[Dict[str, str]], tool_choice: Any = "auto"
     ) -> Any:
         """
-        Call OpenAI API with tools (non-streaming).
+        Call OpenAI API with tools (non-streaming, async).
 
         Args:
             messages: Conversation history
@@ -264,14 +223,14 @@ class AgentService:
         Returns:
             OpenAI chat completion response
         """
-        response = chat_completion_with_tools(
+        response = await chat_completion_with_tools(
             client=self.client,
             messages=messages,
             tools=self.tools,
             model=self.model,
             temperature=self.temperature,
             tool_choice=tool_choice,
-            parallel_tool_calls=False,  # Sequential execution for same-turn dependencies
+            parallel_tool_calls=False,
         )
 
         return response
@@ -731,7 +690,7 @@ class AgentService:
                     )
 
                     # Extract text based on file type
-                    content = self._extract_file_content(file_path, att["mime_type"])
+                    content = await extract_file_content(file_path, att["mime_type"], self.client)
                     if content:
                         attachment_texts.append(
                             f"\n\n--Attached File: {att['filename']} (file_id: {att['file_id']})--\n{content}"
@@ -751,193 +710,6 @@ class AgentService:
             return [system_msg] + messages_history + [user_msg]
         else:
             return [system_msg, user_msg]
-
-    def _extract_file_content(self, file_path: str, mime_type: str) -> str:
-        """
-        Extract text content from file based on MIME type.
-
-        Args:
-            file_path: Absolute path to file on disk
-            mime_type: MIME type of the file
-
-        Returns:
-            Extracted text content (truncated if too long)
-
-        Supported formats:
-            - Images: image/png, image/jpeg, image/gif, image/webp (via Vision API)
-            - PDF: application/pdf
-            - DOCX: application/vnd.openxmlformats-officedocument.wordprocessingml.document
-            - Excel: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
-            - Text: text/plain, text/markdown, text/csv
-        """
-        try:
-            max_chars = 50000  # Limit to prevent overwhelming context
-
-            # Image files - use Vision API to describe
-            if mime_type.startswith("image/"):
-                return self._describe_image_with_vision(file_path, mime_type)
-
-            # PDF files
-            elif mime_type == "application/pdf":
-                try:
-                    import PyPDF2
-
-                    with open(file_path, "rb") as f:
-                        reader = PyPDF2.PdfReader(f)
-                        text_parts = []
-                        for page in reader.pages[:50]:  # Limit to first 50 pages
-                            text_parts.append(page.extract_text())
-                        content = "\n".join(text_parts)
-                        return content[:max_chars] + (
-                            "..." if len(content) > max_chars else ""
-                        )
-                except Exception as e:
-                    logger.error(f"[AGENT] Failed to extract PDF content: {e}")
-                    return f"[PDF file - {len(open(file_path, 'rb').read())} bytes - text extraction failed]"
-
-            # DOCX files
-            elif (
-                mime_type
-                == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-            ):
-                try:
-                    import docx
-
-                    doc = docx.Document(file_path)
-                    text_parts = [paragraph.text for paragraph in doc.paragraphs]
-                    content = "\n".join(text_parts)
-                    return content[:max_chars] + (
-                        "..." if len(content) > max_chars else ""
-                    )
-                except Exception as e:
-                    logger.error(f"[AGENT] Failed to extract DOCX content: {e}")
-                    return f"[DOCX file - text extraction failed]"
-
-            # Excel files
-            elif mime_type in [
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                "application/vnd.ms-excel",
-            ]:
-                try:
-                    import openpyxl
-
-                    wb = openpyxl.load_workbook(file_path, data_only=True)
-                    text_parts = []
-                    for sheet in wb.worksheets[:5]:  # Limit to first 5 sheets
-                        text_parts.append(f"Sheet: {sheet.title}")
-                        for row in list(sheet.iter_rows(values_only=True))[
-                            :100
-                        ]:  # Limit to 100 rows
-                            row_text = "\t".join(
-                                str(cell) if cell is not None else "" for cell in row
-                            )
-                            if row_text.strip():
-                                text_parts.append(row_text)
-                    content = "\n".join(text_parts)
-                    return content[:max_chars] + (
-                        "..." if len(content) > max_chars else ""
-                    )
-                except Exception as e:
-                    logger.error(f"[AGENT] Failed to extract Excel content: {e}")
-                    return f"[Excel file - text extraction failed]"
-
-            # Text files (plain text, markdown, CSV, etc.)
-            elif mime_type.startswith("text/"):
-                try:
-                    with open(file_path, "r", encoding="utf-8") as f:
-                        content = f.read()
-                        return content[:max_chars] + (
-                            "..." if len(content) > max_chars else ""
-                        )
-                except UnicodeDecodeError:
-                    # Try with different encoding
-                    try:
-                        with open(file_path, "r", encoding="latin-1") as f:
-                            content = f.read()
-                            return content[:max_chars] + (
-                                "..." if len(content) > max_chars else ""
-                            )
-                    except Exception as e:
-                        logger.error(f"[AGENT] Failed to read text file: {e}")
-                        return f"[Text file - encoding error]"
-
-            # Unsupported file type
-            else:
-                import os
-
-                file_size = os.path.getsize(file_path)
-                return f"[File type {mime_type} not supported for inline content extraction - {file_size} bytes]"
-
-        except Exception as e:
-            logger.error(f"[AGENT] Unexpected error extracting file content: {e}")
-            return f"[Error reading file: {str(e)}]"
-
-    def _describe_image_with_vision(self, file_path: str, mime_type: str) -> str:
-        """
-        Use Vision API to describe an image.
-
-        Args:
-            file_path: Absolute path to image file
-            mime_type: MIME type (image/png, image/jpeg, etc.)
-
-        Returns:
-            Text description of the image from Vision API
-        """
-        try:
-            # Read and encode image as base64
-            with open(file_path, "rb") as f:
-                image_data = base64.b64encode(f.read()).decode("utf-8")
-
-            # Build multimodal message for Vision API
-            messages = [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": (
-                                "Describe this image in detail. Include:\n"
-                                "- What the image shows (objects, people, scenes)\n"
-                                "- Any text visible in the image\n"
-                                "- Charts/graphs: describe the data and trends\n"
-                                "- Documents: summarize the content\n"
-                                "Be concise but thorough."
-                            ),
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:{mime_type};base64,{image_data}",
-                                "detail": "auto",
-                            },
-                        },
-                    ],
-                }
-            ]
-
-            # Call Vision API (gpt-4o-mini supports vision)
-            response = chat_completion(
-                client=self.client,
-                model=Config.OPENAI_VISION_MODEL,
-                messages=messages,
-                temperature=0.3,
-                max_tokens=1000,
-            )
-
-            description = response.choices[0].message.content.strip()
-            logger.info(f"[AGENT] Vision API described image: {file_path[:50]}...")
-            return f"[IMAGE DESCRIPTION]\n{description}"
-
-        except Exception as e:
-            logger.error(f"[AGENT] Vision API failed for {file_path}: {e}")
-            # Fallback: return basic info about the image
-            try:
-                import os
-
-                file_size = os.path.getsize(file_path)
-                return f"[Image file ({mime_type}) - {file_size} bytes - Vision API unavailable]"
-            except Exception:
-                return f"[Image file ({mime_type}) - Vision API unavailable]"
 
     def _format_time_ago(self, created_at: Optional[str]) -> str:
         """
