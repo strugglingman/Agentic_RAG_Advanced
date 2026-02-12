@@ -189,7 +189,7 @@ class QuerySupervisor:
             logger.debug("[Process Query] Incrementing active queries counter")
             increment_active_queries()
 
-            route = self._classify_query(query)
+            route = await self._classify_query(query)
             if route == ExecutionRoute.AGENT_SERVICE:
                 answer, contexts = await self._execute_agent_service(query, context)
                 return QueryResult(answer=answer, contexts=contexts)
@@ -370,7 +370,7 @@ class QuerySupervisor:
         _, contexts = self._extract_langgraph_results(snapshot.values)
         return QueryResult(answer=final_answer, contexts=contexts)
 
-    def _classify_query(self, query: str) -> ExecutionRoute:
+    async def _classify_query(self, query: str) -> ExecutionRoute:
         """
         Use LLM to classify query complexity.
 
@@ -385,7 +385,7 @@ class QuerySupervisor:
             ExecutionRoute enum value
         """
         prompt = self._get_classification_prompt(query)
-        response = chat_completion_json(
+        response = await chat_completion_json(
             client=self.openai_client,
             messages=[{"role": "user", "content": prompt}],
             model=Config.OPENAI_MODEL,
@@ -476,10 +476,7 @@ class QuerySupervisor:
             Tuple of (answer, contexts)
         """
         # Use pre-loaded history from context (loaded in chat.py, avoids async issues)
-        messages_history = context.get("conversation_history", [])
-        final_answer, retrieved_contexts = await self.agent_service.run(
-            query, context, messages_history=messages_history
-        )
+        final_answer, retrieved_contexts = await self.agent_service.run(query, context)
 
         return final_answer, retrieved_contexts
 
