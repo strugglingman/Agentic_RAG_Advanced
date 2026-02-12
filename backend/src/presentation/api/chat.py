@@ -16,7 +16,6 @@ Flow:
 Maps from: src/routes/chat.py
 """
 
-import json
 import time
 from typing import Optional, Any
 from fastapi import APIRouter, Depends, HTTPException, status, Request
@@ -33,7 +32,7 @@ from src.application.commands.chat.send_message import (
 )
 from src.domain.value_objects.conversation_id import ConversationId
 from src.presentation.dependencies.auth import AuthUser, get_current_user
-from src.utils.stream_utils import stream_text_smart
+from src.utils.stream_utils import stream_text_smart, sse_event
 from src.observability.metrics import observe_request_latency
 from logging import getLogger
 
@@ -126,9 +125,10 @@ async def chat_agent(
 
     Rate limited: 30/minute, 1000/day (matches Flask)
 
-    Returns a streaming response that:
-    1. Streams the answer text in chunks (mimics LLM streaming)
-    2. Appends context at the end as __CONTEXT__:{json}
+    Returns a streaming SSE response with event types:
+    - "text": answer text chunks
+    - "hitl": HITL interrupt data (if workflow paused)
+    - "context": retrieved context array
 
     Maps from: routes/chat.py chat_agent()
     """
@@ -189,39 +189,35 @@ async def chat_agent(
                 "conversation_id": result.conversation_id.value,
             }
 
-            # Stream partial answer + HITL marker
+            # Stream partial answer + HITL + context as SSE events
             def generate_hitl():
-                # Stream partial answer from completed steps
                 for chunk in stream_text_smart(result.answer):
-                    yield chunk
-                # Append HITL interrupt info
-                yield f"\n__HITL__:{json.dumps(hitl_response)}"
-                # Append context from completed steps
-                yield f"\n__CONTEXT__:{json.dumps(result.contexts)}"
+                    yield sse_event("text", chunk)
+                yield sse_event("hitl", hitl_response)
+                yield sse_event("context", result.contexts)
 
             return StreamingResponse(
                 generate_hitl(),
-                media_type="text/plain",
+                media_type="text/event-stream",
                 headers={
                     "X-Conversation-Id": result.conversation_id.value,
                     "X-HITL-Required": "true",
+                    "Cache-Control": "no-cache",
                 },
             )
 
-        # Normal response - stream the answer
+        # Normal response - stream the answer as SSE events
         def generate():
-            # Stream answer in chunks
             for chunk in stream_text_smart(result.answer):
-                yield chunk
-
-            # Append context at the end
-            yield f"\n__CONTEXT__:{json.dumps(result.contexts)}"
+                yield sse_event("text", chunk)
+            yield sse_event("context", result.contexts)
 
         return StreamingResponse(
             generate(),
-            media_type="text/plain",
+            media_type="text/event-stream",
             headers={
                 "X-Conversation-Id": result.conversation_id.value,
+                "Cache-Control": "no-cache",
             },
         )
 
@@ -387,25 +383,26 @@ async def resume_workflow(
 
             def generate_hitl():
                 for chunk in stream_text_smart(query_result.answer):
-                    yield chunk
-                yield f"\n__HITL__:{json.dumps(hitl_response)}"
-                yield f"\n__CONTEXT__:{json.dumps(query_result.contexts)}"
+                    yield sse_event("text", chunk)
+                yield sse_event("hitl", hitl_response)
+                yield sse_event("context", query_result.contexts)
 
             return StreamingResponse(
                 generate_hitl(),
-                media_type="text/plain",
-                headers={"X-HITL-Required": "true"},
+                media_type="text/event-stream",
+                headers={"X-HITL-Required": "true", "Cache-Control": "no-cache"},
             )
 
         # Normal completion
         def generate():
             for chunk in stream_text_smart(query_result.answer):
-                yield chunk
-            yield f"\n__CONTEXT__:{json.dumps(query_result.contexts)}"
+                yield sse_event("text", chunk)
+            yield sse_event("context", query_result.contexts)
 
         return StreamingResponse(
             generate(),
-            media_type="text/plain",
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache"},
         )
 
     except ValueError as e:

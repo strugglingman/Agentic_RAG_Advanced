@@ -5,6 +5,7 @@ import { useFilters } from './filters-context';
 import { useChat } from './chat-context';
 import ShimmerBubble from './ShimmerBubble';
 import { looksLikeInjection } from '../lib/safety';
+import { consumeSSEStream, parseHitlPayload, parseContextPayload, type SSEAccumulator } from '../lib/sse-parse';
 import { MarkdownRenderer } from './MarkdownRenderer';
 
 type Role = 'user' | 'assistant';
@@ -261,75 +262,19 @@ export default function ChatPage() {
       attachments: attachmentPayloads.length > 0 ? attachmentPayloads : undefined
     };
 
-    let startContext = false;
-    let startHitl = false;
-    let contextStr = '';
-    let hitlStr = '';
+    const appendChunk = (text: string) => {
+      setMessages(curr => {
+        const copy = [...curr];
+        if (!copy.length) return copy;
+        copy[copy.length - 1] = { ...copy[copy.length - 1], content: copy[copy.length - 1].content + text };
+        return copy;
+      });
+    };
+    const acc: SSEAccumulator = { hitlRaw: '', contextRaw: '' };
     try {
       setContexts([]);
       setHitlInterrupt(null);
-      for await (const chunk of streamChat(payload)) {
-        // Check for HITL marker first
-        if (chunk.includes('__HITL__:')) {
-          startHitl = true;
-          const hitlIndex = chunk.indexOf('__HITL__:');
-          const textPart = chunk.substring(0, hitlIndex);
-          const hitlPart = chunk.substring(hitlIndex);
-
-          if (textPart) {
-            setMessages(curr => {
-              const copy = [...curr];
-              if (!copy.length) return copy;
-              copy[copy.length - 1] = {
-                ...copy[copy.length - 1],
-                content: copy[copy.length - 1].content + textPart,
-              };
-              return copy;
-            });
-          }
-          hitlStr += hitlPart;
-        } else if (startHitl && !startContext) {
-          // Check if context marker appears in HITL mode
-          if (chunk.includes('__CONTEXT__:')) {
-            startContext = true;
-            const contextIndex = chunk.indexOf('__CONTEXT__:');
-            hitlStr += chunk.substring(0, contextIndex);
-            contextStr += chunk.substring(contextIndex);
-          } else {
-            hitlStr += chunk;
-          }
-        } else if (chunk.includes('__CONTEXT__:')) {
-          startContext = true;
-          const contextIndex = chunk.indexOf('__CONTEXT__:');
-          const textPart = chunk.substring(0, contextIndex);
-          const contextPart = chunk.substring(contextIndex);
-
-          if (textPart) {
-            setMessages(curr => {
-              const copy = [...curr];
-              if (!copy.length) return copy;
-              copy[copy.length - 1] = {
-                ...copy[copy.length - 1],
-                content: copy[copy.length - 1].content + textPart,
-              };
-              return copy;
-            });
-          }
-          contextStr += contextPart;
-        } else if (startContext) {
-          contextStr += chunk;
-        } else {
-          setMessages(curr => {
-            const copy = [...curr];
-            if (!copy.length) return copy;
-            copy[copy.length - 1] = {
-              ...copy[copy.length - 1],
-              content: copy[copy.length - 1].content + chunk,
-            };
-            return copy;
-          });
-        }
-      }
+      await consumeSSEStream(streamChat(payload), appendChunk, acc);
     } catch (e: any) {
       setMessages(curr => {
         const copy = [...curr];
@@ -338,33 +283,15 @@ export default function ChatPage() {
         return copy;
       });
     } finally {
-      // Parse HITL interrupt if present
-      if (hitlStr) {
-        hitlStr = hitlStr.substring(hitlStr.indexOf('__HITL__:') + '__HITL__:'.length).trim();
-        // Remove any trailing context marker from hitlStr
-        if (hitlStr.includes('__CONTEXT__:')) {
-          hitlStr = hitlStr.substring(0, hitlStr.indexOf('__CONTEXT__:')).trim();
-        }
-        try {
-          const hitlData = JSON.parse(hitlStr) as HITLInterrupt;
-          setHitlInterrupt(hitlData);
-          console.log('[HITL] Interrupt received:', hitlData);
-        } catch (e) {
-          console.error('Failed to parse HITL JSON:', e);
-        }
+      const hitlData = parseHitlPayload(acc.hitlRaw);
+      if (hitlData) {
+        setHitlInterrupt(hitlData as HITLInterrupt);
+        console.log('[HITL] Interrupt received:', hitlData);
       }
 
-      if (contextStr) {
-        contextStr = contextStr.substring(contextStr.indexOf('__CONTEXT__:') + '__CONTEXT__:'.length).trim();
-        try {
-          const contextRaw = JSON.parse(contextStr);
-          const contextArr = Array.isArray(contextRaw) ? contextRaw : [];
-          const isContext = (o: any): o is Context => o && typeof o === 'object' && 'chunk' in o && 'source' in o && 'page' in o;
-          setContexts(contextArr.filter(isContext));
-        } catch (e) {
-          console.error('Failed to parse context JSON:', e);
-        }
-      }
+      const ctxArr = parseContextPayload(acc.contextRaw);
+      const isContext = (o: any): o is Context => o && typeof o === 'object' && 'chunk' in o && 'source' in o && 'page' in o;
+      setContexts(ctxArr.filter(isContext));
 
       if (selectedConversation == null) {
         try {
@@ -415,11 +342,15 @@ export default function ChatPage() {
     const ts = Date.now();
     setMessages(curr => [...curr, { role: 'assistant', content: '', ts }]);
 
-    let startContext = false;
-    let startHitl = false;
-    let contextStr = '';
-    let hitlStr = '';
-
+    const appendChunk = (text: string) => {
+      setMessages(curr => {
+        const copy = [...curr];
+        if (!copy.length) return copy;
+        copy[copy.length - 1] = { ...copy[copy.length - 1], content: copy[copy.length - 1].content + text };
+        return copy;
+      });
+    };
+    const acc: SSEAccumulator = { hitlRaw: '', contextRaw: '' };
     try {
       setContexts([]);
       const resumePayload = {
@@ -427,68 +358,7 @@ export default function ChatPage() {
         confirmed,
         conversation_id: hitlInterrupt.conversation_id || selectedConversation?.id,
       };
-
-      for await (const chunk of streamResume(resumePayload)) {
-        // Check for HITL marker first (in case of chained confirmations)
-        if (chunk.includes('__HITL__:')) {
-          startHitl = true;
-          const hitlIndex = chunk.indexOf('__HITL__:');
-          const textPart = chunk.substring(0, hitlIndex);
-          const hitlPart = chunk.substring(hitlIndex);
-
-          if (textPart) {
-            setMessages(curr => {
-              const copy = [...curr];
-              if (!copy.length) return copy;
-              copy[copy.length - 1] = {
-                ...copy[copy.length - 1],
-                content: copy[copy.length - 1].content + textPart,
-              };
-              return copy;
-            });
-          }
-          hitlStr += hitlPart;
-        } else if (startHitl && !startContext) {
-          if (chunk.includes('__CONTEXT__:')) {
-            startContext = true;
-            const contextIndex = chunk.indexOf('__CONTEXT__:');
-            hitlStr += chunk.substring(0, contextIndex);
-            contextStr += chunk.substring(contextIndex);
-          } else {
-            hitlStr += chunk;
-          }
-        } else if (chunk.includes('__CONTEXT__:')) {
-          startContext = true;
-          const contextIndex = chunk.indexOf('__CONTEXT__:');
-          const textPart = chunk.substring(0, contextIndex);
-          const contextPart = chunk.substring(contextIndex);
-
-          if (textPart) {
-            setMessages(curr => {
-              const copy = [...curr];
-              if (!copy.length) return copy;
-              copy[copy.length - 1] = {
-                ...copy[copy.length - 1],
-                content: copy[copy.length - 1].content + textPart,
-              };
-              return copy;
-            });
-          }
-          contextStr += contextPart;
-        } else if (startContext) {
-          contextStr += chunk;
-        } else {
-          setMessages(curr => {
-            const copy = [...curr];
-            if (!copy.length) return copy;
-            copy[copy.length - 1] = {
-              ...copy[copy.length - 1],
-              content: copy[copy.length - 1].content + chunk,
-            };
-            return copy;
-          });
-        }
-      }
+      await consumeSSEStream(streamResume(resumePayload), appendChunk, acc);
     } catch (e: any) {
       setMessages(curr => {
         const copy = [...curr];
@@ -497,35 +367,17 @@ export default function ChatPage() {
         return copy;
       });
     } finally {
-      // Parse HITL interrupt if present (chained confirmation)
-      if (hitlStr) {
-        hitlStr = hitlStr.substring(hitlStr.indexOf('__HITL__:') + '__HITL__:'.length).trim();
-        if (hitlStr.includes('__CONTEXT__:')) {
-          hitlStr = hitlStr.substring(0, hitlStr.indexOf('__CONTEXT__:')).trim();
-        }
-        try {
-          const hitlData = JSON.parse(hitlStr) as HITLInterrupt;
-          setHitlInterrupt(hitlData);
-          console.log('[HITL] Chained interrupt received:', hitlData);
-        } catch (e) {
-          console.error('Failed to parse HITL JSON:', e);
-          setHitlInterrupt(null);
-        }
+      const hitlData = parseHitlPayload(acc.hitlRaw);
+      if (hitlData) {
+        setHitlInterrupt(hitlData as HITLInterrupt);
+        console.log('[HITL] Chained interrupt received:', hitlData);
       } else {
         setHitlInterrupt(null);
       }
 
-      if (contextStr) {
-        contextStr = contextStr.substring(contextStr.indexOf('__CONTEXT__:') + '__CONTEXT__:'.length).trim();
-        try {
-          const contextRaw = JSON.parse(contextStr);
-          const contextArr = Array.isArray(contextRaw) ? contextRaw : [];
-          const isContext = (o: any): o is Context => o && typeof o === 'object' && 'chunk' in o && 'source' in o && 'page' in o;
-          setContexts(contextArr.filter(isContext));
-        } catch (e) {
-          console.error('Failed to parse context JSON:', e);
-        }
-      }
+      const ctxArr = parseContextPayload(acc.contextRaw);
+      const isContext = (o: any): o is Context => o && typeof o === 'object' && 'chunk' in o && 'source' in o && 'page' in o;
+      setContexts(ctxArr.filter(isContext));
 
       streamingRef.current = false;
       setBusy(false);

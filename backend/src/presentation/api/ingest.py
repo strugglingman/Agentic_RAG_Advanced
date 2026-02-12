@@ -8,7 +8,6 @@ Endpoints:
 """
 
 import asyncio
-import json
 import logging
 import uuid
 from typing import Optional, List
@@ -18,6 +17,7 @@ from dishka.integrations.fastapi import FromDishka, inject
 from pydantic import BaseModel
 
 from src.domain.ports.repositories import FileRegistryRepository
+from src.utils.stream_utils import sse_event
 from src.domain.value_objects.file_id import FileId
 from src.services.ingestion import ingest_file
 from src.services.retrieval import build_bm25
@@ -66,14 +66,6 @@ class ActiveFilesResponse(BaseModel):
 # ==================== ROUTER ====================
 
 router = APIRouter(prefix="/ingest", tags=["ingest"])
-
-
-# ==================== SSE HELPERS ====================
-
-
-def sse_event(event: str, data: dict) -> str:
-    """Format SSE event."""
-    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
 
 # ==================== ENDPOINTS ====================

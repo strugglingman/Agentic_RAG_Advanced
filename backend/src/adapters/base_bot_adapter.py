@@ -3,6 +3,7 @@
 from datetime import datetime, timezone, timedelta
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+import json
 import logging
 import jwt
 import httpx
@@ -196,47 +197,38 @@ class BaseBotAdapter(ABC):
                     response=response,
                 )
 
-            # Resume returns streaming text; read full body and parse
+            # Resume returns SSE stream; read full body and parse events
             raw = response.text
-            answer = raw
+            answer_parts = []
             contexts = []
             hitl = None
 
-            # Parse __HITL__ marker if present
-            if "__HITL__:" in raw:
-                hitl_idx = raw.index("__HITL__:")
-                answer = raw[:hitl_idx].strip()
-                hitl_part = raw[hitl_idx + len("__HITL__:"):]
-                # Separate from __CONTEXT__ if present
-                if "__CONTEXT__:" in hitl_part:
-                    ctx_idx = hitl_part.index("__CONTEXT__:")
-                    hitl_json = hitl_part[:ctx_idx].strip()
-                    ctx_json = hitl_part[ctx_idx + len("__CONTEXT__:"):].strip()
-                else:
-                    hitl_json = hitl_part.strip()
-                    ctx_json = ""
-                try:
-                    import json
-                    hitl = json.loads(hitl_json)
-                except (ValueError, KeyError):
-                    pass
-                if ctx_json:
+            for event_str in raw.split("\n\n"):
+                if not event_str.strip():
+                    continue
+                event_type = "message"
+                data_lines = []
+                for line in event_str.split("\n"):
+                    if line.startswith("event: "):
+                        event_type = line[7:]
+                    elif line.startswith("data: "):
+                        data_lines.append(line[6:])
+                data = "\n".join(data_lines)
+
+                if event_type == "text":
+                    answer_parts.append(data)
+                elif event_type == "hitl":
                     try:
-                        import json
-                        contexts = json.loads(ctx_json)
+                        hitl = json.loads(data)
                     except (ValueError, KeyError):
                         pass
-            elif "__CONTEXT__:" in raw:
-                ctx_idx = raw.index("__CONTEXT__:")
-                answer = raw[:ctx_idx].strip()
-                ctx_json = raw[ctx_idx + len("__CONTEXT__:"):].strip()
-                try:
-                    import json
-                    contexts = json.loads(ctx_json)
-                except (ValueError, KeyError):
-                    pass
+                elif event_type == "context":
+                    try:
+                        contexts = json.loads(data)
+                    except (ValueError, KeyError):
+                        pass
 
-            return answer, contexts, hitl
+            return "".join(answer_parts), contexts, hitl
 
     async def download_file_from_backend(
         self, file_id: str, auth_token: str

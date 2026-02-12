@@ -127,31 +127,37 @@ def generate_test_token(
 
 def parse_streaming_response(response_text: str) -> tuple[str, list[dict]]:
     """
-    Parse streaming response from backend.
+    Parse SSE streaming response from backend.
 
-    Response format:
-        <answer text>
-        __CONTEXT__:<json array of contexts>
+    Response is standard SSE with event types: text, hitl, context.
 
     Returns:
         Tuple of (answer, contexts)
     """
-    answer = ""
+    answer_parts = []
     contexts = []
 
-    if "__CONTEXT__:" in response_text:
-        parts = response_text.split("__CONTEXT__:", 1)
-        answer = parts[0].strip()
-        try:
-            context_json = parts[1].strip()
-            contexts = json.loads(context_json)
-        except json.JSONDecodeError as e:
-            print(f"[WARN] Failed to parse contexts: {e}")
-            contexts = []
-    else:
-        answer = response_text.strip()
+    for event_str in response_text.split("\n\n"):
+        if not event_str.strip():
+            continue
+        event_type = "message"
+        data_lines = []
+        for line in event_str.split("\n"):
+            if line.startswith("event: "):
+                event_type = line[7:]
+            elif line.startswith("data: "):
+                data_lines.append(line[6:])
+        data = "\n".join(data_lines)
 
-    return answer, contexts
+        if event_type == "text":
+            answer_parts.append(data)
+        elif event_type == "context":
+            try:
+                contexts = json.loads(data)
+            except json.JSONDecodeError as e:
+                print(f"[WARN] Failed to parse contexts: {e}")
+
+    return "".join(answer_parts), contexts
 
 
 def send_query(

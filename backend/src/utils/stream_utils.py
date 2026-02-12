@@ -1,7 +1,8 @@
 """Utility functions for streaming text responses"""
 
+import json
 import time
-from typing import Generator, Optional
+from typing import Any, Generator, Union
 
 
 def stream_text(
@@ -140,3 +141,24 @@ def stream_text_smart(text: str, delay_ms: int = 20) -> Generator[str, None, Non
 
         if delay_seconds > 0:
             time.sleep(delay_seconds)
+
+
+def sse_event(event: str, data: Union[str, dict, list, Any]) -> str:
+    """
+    Format a Server-Sent Event.
+
+    Args:
+        event: Event type (e.g., "text", "hitl", "context", "progress")
+        data: Payload — str for text chunks, dict/list will be JSON-serialized.
+              Multiline data is handled per SSE spec (multiple data: lines).
+
+    Returns:
+        SSE-formatted string ending with double newline.
+    """
+    serialized = data if isinstance(data, str) else json.dumps(data)
+    # SSE spec: multiline data needs separate "data:" lines
+    lines = [f"event: {event}"]
+    for line in serialized.split("\n"):
+        lines.append(f"data: {line}")
+    lines.append("")  # blank line terminates event
+    return "\n".join(lines) + "\n"
