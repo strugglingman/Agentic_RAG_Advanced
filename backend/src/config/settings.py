@@ -204,6 +204,18 @@ class Config:
     CHUNKING_STRATEGY = os.getenv(
         "CHUNKING_STRATEGY", "recursive"
     )  # "recursive" or "semantic"
+    CONTEXTUAL_RETRIEVAL_ENABLED = os.getenv(
+        "CONTEXTUAL_RETRIEVAL_ENABLED", "false"
+    ).lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    CONTEXTUAL_RETRIEVAL_MODEL = os.getenv("CONTEXTUAL_RETRIEVAL_MODEL", "gpt-4o-mini")
+    CONTEXTUAL_RETRIEVAL_MAX_WORKERS = int(
+        os.getenv("CONTEXTUAL_RETRIEVAL_MAX_WORKERS", "8")
+    )
     TEXT_MAX = int(os.getenv("TEXT_MAX", "-1"))
 
     # ==============================================================================
