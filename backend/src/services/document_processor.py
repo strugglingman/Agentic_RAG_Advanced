@@ -131,10 +131,18 @@ def read_text(file_path: str, text_max: int = 400000):
 
     # --- Simple formats (no Docling needed) ---
     if ext == ".csv":
-        with open(file_path, "r", encoding="utf-8") as f:
-            reader = csv.reader(f)
-            all_rows = [",".join(row) for row in reader]
-            return [(0, "\n".join(all_rows)[:text_max])]
+        try:
+            import pandas as pd
+
+            df = pd.read_csv(file_path, encoding="utf-8")
+            markdown_table = df.to_markdown(index=False)
+            return [(0, markdown_table[:text_max])]
+        except Exception as e:
+            logger.warning(f"[CSV] pandas failed for {file_path}: {e}, falling back to csv.reader")
+            with open(file_path, "r", encoding="utf-8") as f:
+                reader = csv.reader(f)
+                all_rows = [",".join(row) for row in reader]
+                return [(0, "\n".join(all_rows)[:text_max])]
 
     if ext == ".json":
         with open(file_path, "r", encoding="utf-8") as f:

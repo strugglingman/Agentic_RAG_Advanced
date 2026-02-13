@@ -36,6 +36,7 @@ INTEGRATION STEPS
 """
 
 from __future__ import annotations
+import re
 import logging
 from enum import Enum
 from dataclasses import dataclass
@@ -102,9 +103,20 @@ class LangChainProcessor:
                 breakpoint_threshold_amount=self.config.breakpoint_threshold_amount,
             )
 
+    @staticmethod
+    def _has_markdown_headers(text: str) -> bool:
+        """Detect if text contains Markdown headers (#, ##, ###, etc.)."""
+        return bool(re.search(r"^#{1,6}\s", text, re.MULTILINE))
+
     def process(self, pages_text: list[tuple[int, str]]) -> list[tuple[int, str]]:
         """
         Process pages and return chunks.
+
+        Two-stage pipeline for Markdown content:
+          Stage 1: MarkdownHeaderTextSplitter splits by section boundaries
+          Stage 2: RecursiveCharacterTextSplitter enforces size limits within sections
+
+        For non-Markdown content, uses the configured splitter directly.
 
         Args:
             pages_text: List of (page_num, text) from read_text()
@@ -116,12 +128,80 @@ class LangChainProcessor:
         for page_num, text in pages_text:
             if not text.strip():
                 continue
-            chunks = self._splitter.split_text(text)
+
+            # Two-stage split for Markdown content (Docling output, .md files)
+            if self._has_markdown_headers(text) and self.config.strategy == ChunkingStrategy.RECURSIVE:
+                chunks = self._split_markdown_two_stage(text)
+            else:
+                chunks = self._splitter.split_text(text)
+
             for chunk in chunks:
                 if chunk.strip():
                     all_chunks.append((page_num, chunk.strip()))
 
         return all_chunks
+
+    def _split_markdown_two_stage(self, text: str) -> list[str]:
+        """
+        Stage 1: Split by Markdown headers into semantic sections.
+        Stage 2: Apply RecursiveCharacterTextSplitter for size control.
+
+        When Stage 2 splits a large section into multiple sub-chunks, only the
+        first sub-chunk naturally contains the header text. We fix this by
+        checking each sub-chunk and prepending headers from metadata when the
+        chunk content doesn't already start with them.
+        """
+        from langchain_text_splitters import MarkdownHeaderTextSplitter
+
+        md_splitter = MarkdownHeaderTextSplitter(
+            headers_to_split_on=[
+                ("#", "Header 1"),
+                ("##", "Header 2"),
+                ("###", "Header 3"),
+            ],
+            strip_headers=False,
+        )
+
+        # Stage 1: split by headers → list of Documents with header metadata
+        header_docs = md_splitter.split_text(text)
+
+        if not header_docs:
+            return self._splitter.split_text(text)
+
+        # Stage 2: enforce size limits within each section
+        sized_docs = self._splitter.split_documents(header_docs)
+
+        # Rebuild header prefix from metadata for sub-chunks that lost it.
+        # With strip_headers=False, the first sub-chunk of a section already
+        # contains its OWN header (e.g. "## Costs") but NOT parent headers
+        # (e.g. "# Report"). Continuation sub-chunks have NO headers at all.
+        # We detect which header the content starts with and prepend only
+        # the missing parent headers above it.
+        header_keys = [("Header 1", "#"), ("Header 2", "##"), ("Header 3", "###")]
+        results = []
+        for doc in sized_docs:
+            content = doc.page_content
+            # Build full header hierarchy from metadata
+            prefix_lines = []
+            for meta_key, md_marker in header_keys:
+                if meta_key in doc.metadata:
+                    prefix_lines.append(f"{md_marker} {doc.metadata[meta_key]}")
+
+            if prefix_lines:
+                # Find which header the content already starts with (if any)
+                prepend_lines = prefix_lines  # default: prepend all (continuation chunk)
+                for i, line in enumerate(prefix_lines):
+                    if content.startswith(line):
+                        # Content already has this header; only prepend parents above it
+                        prepend_lines = prefix_lines[:i]
+                        break
+
+                if prepend_lines:
+                    content = "\n".join(prepend_lines) + "\n" + content
+
+            results.append(content)
+
+        return results
 
 
 def make_chunks_langchain(
