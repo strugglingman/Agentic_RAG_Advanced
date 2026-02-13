@@ -156,7 +156,7 @@ class AppProvider(Provider):
         return prisma
 
     # ==================== SERVICES ====================
-    @provide(scope=Scope.REQUEST)
+    @provide(scope=Scope.APP)
     def get_query_supervisor(self, openai_client: AsyncOpenAI) -> QuerySupervisor:
         return QuerySupervisor(openai_client=openai_client)
 
