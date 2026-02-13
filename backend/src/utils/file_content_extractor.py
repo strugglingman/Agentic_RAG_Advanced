@@ -6,9 +6,7 @@ to extract text content from file attachments.
 
 Supported formats:
     - Images: image/png, image/jpeg, image/gif, image/webp (via Vision API)
-    - PDF: application/pdf
-    - DOCX: application/vnd.openxmlformats-officedocument.wordprocessingml.document
-    - Excel: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+    - PDF, DOCX, PPTX, Excel, HTML: via Docling (AI layout + tables + OCR)
     - Text: text/plain, text/markdown, text/csv
 """
 
@@ -115,69 +113,28 @@ async def extract_file_content(
         if mime_type.startswith("image/"):
             return await describe_image_with_vision(file_path, mime_type, openai_client)
 
-        # PDF files
-        elif mime_type == "application/pdf":
+        # Docling-supported formats: PDF, DOCX, PPTX, Excel
+        elif mime_type in (
+            "application/pdf",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "application/vnd.ms-excel",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            "text/html",
+        ):
             try:
-                import PyPDF2
+                from src.services.document_processor import extract_with_docling
 
-                with open(file_path, "rb") as f:
-                    reader = PyPDF2.PdfReader(f)
-                    text_parts = []
-                    for page in reader.pages[:50]:  # Limit to first 50 pages
-                        text_parts.append(page.extract_text())
-                    content = "\n".join(text_parts)
+                content = extract_with_docling(file_path)
+                if content and content.strip():
                     return content[:MAX_CONTENT_CHARS] + (
                         "..." if len(content) > MAX_CONTENT_CHARS else ""
                     )
+                logger.warning(f"Docling returned empty content for {file_path}")
+                return f"[{mime_type} file - no text extracted]"
             except Exception as e:
-                logger.error(f"Failed to extract PDF content: {e}")
-                return f"[PDF file - text extraction failed: {e}]"
-
-        # DOCX files
-        elif (
-            mime_type
-            == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        ):
-            try:
-                import docx
-
-                doc = docx.Document(file_path)
-                text_parts = [paragraph.text for paragraph in doc.paragraphs]
-                content = "\n".join(text_parts)
-                return content[:MAX_CONTENT_CHARS] + (
-                    "..." if len(content) > MAX_CONTENT_CHARS else ""
-                )
-            except Exception as e:
-                logger.error(f"Failed to extract DOCX content: {e}")
-                return f"[DOCX file - text extraction failed]"
-
-        # Excel files
-        elif mime_type in [
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            "application/vnd.ms-excel",
-        ]:
-            try:
-                import openpyxl
-
-                wb = openpyxl.load_workbook(file_path, data_only=True)
-                text_parts = []
-                for sheet in wb.worksheets[:5]:  # Limit to first 5 sheets
-                    text_parts.append(f"Sheet: {sheet.title}")
-                    for row in list(sheet.iter_rows(values_only=True))[
-                        :100
-                    ]:  # Limit to 100 rows
-                        row_text = "\t".join(
-                            str(cell) if cell is not None else "" for cell in row
-                        )
-                        if row_text.strip():
-                            text_parts.append(row_text)
-                content = "\n".join(text_parts)
-                return content[:MAX_CONTENT_CHARS] + (
-                    "..." if len(content) > MAX_CONTENT_CHARS else ""
-                )
-            except Exception as e:
-                logger.error(f"Failed to extract Excel content: {e}")
-                return f"[Excel file - text extraction failed]"
+                logger.error(f"Failed to extract content with Docling: {e}")
+                return f"[{mime_type} file - extraction failed: {e}]"
 
         # Text files (plain text, markdown, CSV, etc.)
         elif mime_type.startswith("text/"):

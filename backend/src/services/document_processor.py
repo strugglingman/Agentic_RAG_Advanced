@@ -1,7 +1,14 @@
 """
 Document processing service.
 
-Supports multilingual document processing including:
+Primary extraction via Docling (IBM) — AI-powered layout analysis, table structure
+(TableFormer), and built-in OCR. Outputs Markdown with headings, tables, bold, lists.
+Supports PDF, DOCX, PPTX, HTML, XLSX natively.
+
+Legacy fallback chain (PyMuPDF → pdfplumber → pypdf) retained for environments
+where Docling is not installed.
+
+Also supports multilingual document processing including:
 - Space-separated languages: English, Swedish, Finnish, Spanish, German, French
 - CJK languages: Chinese, Japanese (proper sentence splitting)
 """
@@ -11,74 +18,225 @@ import re
 import csv
 import json
 import logging
-from docx import Document
+import threading
 from src.utils.multilingual import split_sentences as multilingual_split_sentences
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Docling singleton converter (avoids reloading ~1-2 GB AI models per file)
+# ---------------------------------------------------------------------------
+_converter = None
+_converter_lock = threading.Lock()
 
-def _clean_pdf_text(text: str) -> str:
+# Formats that Docling handles natively
+DOCLING_EXTENSIONS = {".pdf", ".docx", ".pptx", ".html", ".htm", ".xlsx"}
+
+
+def _get_converter():
+    """
+    Return a singleton DocumentConverter instance.
+
+    Thread-safe via lock. Lazy-imports docling so the module loads
+    even when docling is not installed (legacy fallback still works).
+    """
+    global _converter
+    if _converter is not None:
+        return _converter
+
+    with _converter_lock:
+        # Double-check after acquiring lock
+        if _converter is not None:
+            return _converter
+
+        from docling.document_converter import DocumentConverter, PdfFormatOption
+        from docling.datamodel.base_models import InputFormat
+        from docling.datamodel.pipeline_options import PdfPipelineOptions
+
+        pipeline_options = PdfPipelineOptions(
+            do_ocr=True,
+            do_table_structure=True,
+        )
+        _converter = DocumentConverter(
+            format_options={
+                InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)
+            }
+        )
+        logger.info("[Docling] DocumentConverter initialized (OCR + table structure enabled)")
+        return _converter
+
+
+def extract_with_docling(file_path: str) -> str:
+    """
+    Extract document content as Markdown using Docling.
+
+    Handles PDF (with OCR + table structure), DOCX, PPTX, HTML, XLSX.
+    Returns Markdown string with ``# headings``, ``| table |`` formatting,
+    ``**bold**``, bullet lists, etc.
+
+    Raises:
+        Exception: If Docling conversion fails.
+    """
+    converter = _get_converter()
+    result = converter.convert(file_path)
+    return result.document.export_to_markdown()
+
+
+# ---------------------------------------------------------------------------
+# Main entry point — read_text()
+# ---------------------------------------------------------------------------
+
+def read_text(file_path: str, text_max: int = 400000):
+    """
+    Read text from various file formats.
+
+    Returns list of (page_num, text) tuples. For Docling-processed formats,
+    always returns [(0, markdown_text)] since Docling outputs the full document
+    as one Markdown string. Downstream callers (ingestion.py) concatenate all
+    pages into full_text anyway.
+
+    Extraction strategy:
+    - PDF/DOCX/PPTX/HTML/XLSX: Docling (AI layout + tables + OCR), with
+      legacy PyMuPDF/pdfplumber/pypdf fallback for PDF if Docling fails.
+    - CSV: csv.reader (simple, correct as-is)
+    - JSON: json.load with pretty-print (simple, correct as-is)
+    - Plaintext/Markdown: direct read (simple, correct as-is)
+    """
+    ext = os.path.splitext(file_path)[1].lower()
+
+    # --- Docling-supported formats ---
+    if ext in DOCLING_EXTENSIONS:
+        try:
+            markdown_text = extract_with_docling(file_path)
+            if markdown_text and markdown_text.strip():
+                logger.info(
+                    f"[Docling] Extracted {len(markdown_text)} chars from {os.path.basename(file_path)}"
+                )
+                return [(0, markdown_text[:text_max])]
+            logger.warning(
+                f"[Docling] Empty output for {file_path}, trying legacy fallback"
+            )
+        except Exception as e:
+            logger.warning(f"[Docling] Failed for {file_path}: {e}, trying legacy fallback")
+
+        # Legacy fallback — only PDF has legacy extractors
+        if ext == ".pdf":
+            return _legacy_extract_pdf_with_fallback(file_path)
+        # For DOCX, try python-docx legacy
+        if ext == ".docx":
+            return _legacy_extract_docx(file_path, text_max)
+        # No legacy fallback for PPTX/HTML/XLSX — return empty
+        logger.warning(f"[Docling] No legacy fallback available for {ext}: {file_path}")
+        return []
+
+    # --- Simple formats (no Docling needed) ---
+    if ext == ".csv":
+        with open(file_path, "r", encoding="utf-8") as f:
+            reader = csv.reader(f)
+            all_rows = [",".join(row) for row in reader]
+            return [(0, "\n".join(all_rows)[:text_max])]
+
+    if ext == ".json":
+        with open(file_path, "r", encoding="utf-8") as f:
+            try:
+                data = json.load(f)
+                return [(0, json.dumps(data, indent=2)[:text_max])]
+            except Exception:
+                f.seek(0)
+                return [(0, f.read()[:text_max])]
+
+    # Plaintext fallback (.txt, .md, .log, etc.)
+    with open(file_path, "r", encoding="utf-8") as f:
+        return [(0, f.read()[:text_max])]
+
+
+# ---------------------------------------------------------------------------
+# Legacy DOCX extraction (fallback when Docling unavailable)
+# ---------------------------------------------------------------------------
+
+def _legacy_extract_docx(file_path: str, text_max: int = 400000) -> list:
+    """Extract DOCX using python-docx. Legacy fallback for when Docling is unavailable."""
+    try:
+        from docx import Document
+
+        doc = Document(file_path)
+        text_parts = []
+        for element in doc.element.body:
+            if element.tag.endswith("p"):
+                for para in doc.paragraphs:
+                    if para._element is element and para.text.strip():
+                        text_parts.append(para.text)
+                        break
+            elif element.tag.endswith("tbl"):
+                for table in doc.tables:
+                    if table._element is element:
+                        table_rows = []
+                        for row in table.rows:
+                            row_text = " | ".join(
+                                cell.text.strip() for cell in row.cells
+                            )
+                            if row_text.strip():
+                                table_rows.append(row_text)
+                        if table_rows:
+                            text_parts.append("[TABLE]\n" + "\n".join(table_rows))
+                        break
+        return [(0, "\n\n".join(text_parts)[:text_max])]
+    except Exception as e:
+        logger.warning(f"[Legacy DOCX] Failed for {file_path}: {e}")
+        return []
+
+
+# ---------------------------------------------------------------------------
+# Legacy PDF extraction functions (fallback when Docling unavailable)
+# ---------------------------------------------------------------------------
+
+def _legacy_clean_pdf_text(text: str) -> str:
     """Clean extracted PDF text by removing artifacts and normalizing whitespace."""
     if not text:
         return ""
-    # Remove multiple spaces
     text = re.sub(r" {2,}", " ", text)
-    # Remove multiple newlines (keep max 2)
     text = re.sub(r"\n{3,}", "\n\n", text)
-    # Remove hyphenation at line breaks (e.g., "docu-\nment" -> "document")
     text = re.sub(r"(\w)-\n(\w)", r"\1\2", text)
-    # Strip leading/trailing whitespace per line
     lines = [line.strip() for line in text.split("\n")]
     text = "\n".join(lines)
     return text.strip()
 
 
-def _extract_with_pymupdf(file_path: str) -> list:
-    """Extract text using PyMuPDF (fitz) - fast and reliable."""
+def _legacy_extract_with_pymupdf(file_path: str) -> list:
+    """Extract text using PyMuPDF (fitz) — legacy fallback."""
     try:
-        import fitz  # pymupdf
+        import fitz
 
         doc = fitz.open(file_path)
         pages_text = []
         for page_num, page in enumerate(doc, start=1):
             text = page.get_text("text")
-            text = _clean_pdf_text(text)
+            text = _legacy_clean_pdf_text(text)
             if text:
                 pages_text.append((page_num, text))
         doc.close()
         if pages_text:
-            logger.debug(
-                f"[PDF] PyMuPDF extracted {len(pages_text)} pages from {file_path}"
-            )
+            logger.debug(f"[Legacy PDF] PyMuPDF extracted {len(pages_text)} pages from {file_path}")
         return pages_text
     except Exception as e:
-        logger.debug(f"[PDF] PyMuPDF failed for {file_path}: {e}")
+        logger.debug(f"[Legacy PDF] PyMuPDF failed for {file_path}: {e}")
         return []
 
 
-def _extract_with_pdfplumber(file_path: str) -> list:
-    """
-    Extract text using pdfplumber - better for tables and complex layouts.
-
-    Strategy: Extract text outside table areas, then append formatted tables.
-    This avoids duplicating table content.
-    """
+def _legacy_extract_with_pdfplumber(file_path: str) -> list:
+    """Extract text using pdfplumber — legacy fallback for tables/complex layouts."""
     try:
         import pdfplumber
 
         pages_text = []
         with pdfplumber.open(file_path) as pdf:
             for page_num, page in enumerate(pdf.pages, start=1):
-                # Find all tables on the page
                 tables = page.find_tables()
 
                 if tables:
-                    # Get bounding boxes of all tables
                     table_bboxes = [table.bbox for table in tables]
 
-                    # Filter out characters that are inside table areas
                     def not_in_table(obj):
-                        """Check if object is outside all table bounding boxes."""
                         obj_x = (obj["x0"] + obj["x1"]) / 2
                         obj_y = (obj["top"] + obj["bottom"]) / 2
                         for bbox in table_bboxes:
@@ -87,11 +245,9 @@ def _extract_with_pdfplumber(file_path: str) -> list:
                                 return False
                         return True
 
-                    # Extract text excluding table areas
                     filtered_page = page.filter(not_in_table)
                     text = filtered_page.extract_text() or ""
 
-                    # Extract tables as formatted text
                     table_texts = []
                     for table in tables:
                         extracted = table.extract()
@@ -107,31 +263,25 @@ def _extract_with_pdfplumber(file_path: str) -> list:
                             if rows:
                                 table_texts.append("\n".join(rows))
 
-                    # Combine text and tables
                     if table_texts:
-                        text = (
-                            text + "\n\n[TABLE]\n" + "\n\n[TABLE]\n".join(table_texts)
-                        )
+                        text = text + "\n\n[TABLE]\n" + "\n\n[TABLE]\n".join(table_texts)
                 else:
-                    # No tables - just extract text normally
                     text = page.extract_text() or ""
 
-                text = _clean_pdf_text(text)
+                text = _legacy_clean_pdf_text(text)
                 if text:
                     pages_text.append((page_num, text))
 
         if pages_text:
-            logger.debug(
-                f"[PDF] pdfplumber extracted {len(pages_text)} pages from {file_path}"
-            )
+            logger.debug(f"[Legacy PDF] pdfplumber extracted {len(pages_text)} pages from {file_path}")
         return pages_text
     except Exception as e:
-        logger.debug(f"[PDF] pdfplumber failed for {file_path}: {e}")
+        logger.debug(f"[Legacy PDF] pdfplumber failed for {file_path}: {e}")
         return []
 
 
-def _extract_with_pypdf(file_path: str) -> list:
-    """Extract text using pypdf - fallback option."""
+def _legacy_extract_with_pypdf(file_path: str) -> list:
+    """Extract text using pypdf — legacy fallback."""
     try:
         from pypdf import PdfReader
 
@@ -139,100 +289,43 @@ def _extract_with_pypdf(file_path: str) -> list:
         pages_text = []
         for page_num, page in enumerate(reader.pages, start=1):
             text = page.extract_text() or ""
-            text = _clean_pdf_text(text)
+            text = _legacy_clean_pdf_text(text)
             if text:
                 pages_text.append((page_num, text))
         if pages_text:
-            logger.debug(
-                f"[PDF] pypdf extracted {len(pages_text)} pages from {file_path}"
-            )
+            logger.debug(f"[Legacy PDF] pypdf extracted {len(pages_text)} pages from {file_path}")
         return pages_text
     except Exception as e:
-        logger.debug(f"[PDF] pypdf failed for {file_path}: {e}")
+        logger.debug(f"[Legacy PDF] pypdf failed for {file_path}: {e}")
         return []
 
 
-def _extract_pdf_with_fallback(file_path: str) -> list:
+def _legacy_extract_pdf_with_fallback(file_path: str) -> list:
     """
-    Extract text from PDF using fallback chain:
-    1. PyMuPDF (fitz) - fastest, good general extraction
-    2. pdfplumber - better for tables and complex layouts
-    3. pypdf - fallback
-
-    Returns the result from the first method that extracts meaningful content.
+    Legacy PDF extraction fallback chain:
+    1. PyMuPDF (fitz) — fastest, good general extraction
+    2. pdfplumber — better for tables and complex layouts
+    3. pypdf — last resort
     """
-    # Try PyMuPDF first (fastest)
-    result = _extract_with_pymupdf(file_path)
+    result = _legacy_extract_with_pymupdf(file_path)
     if result:
         return result
 
-    # Try pdfplumber (better for tables)
-    result = _extract_with_pdfplumber(file_path)
+    result = _legacy_extract_with_pdfplumber(file_path)
     if result:
         return result
 
-    # Fallback to pypdf
-    result = _extract_with_pypdf(file_path)
+    result = _legacy_extract_with_pypdf(file_path)
     if result:
         return result
 
-    logger.warning(f"[PDF] All extraction methods failed for {file_path}")
+    logger.warning(f"[Legacy PDF] All extraction methods failed for {file_path}")
     return []
 
 
-def read_text(file_path: str, text_max: int = 400000):
-    """Read text from various file formats"""
-    ext = os.path.splitext(file_path)[1].lower()
-
-    if ext == ".pdf":
-        return _extract_pdf_with_fallback(file_path)
-
-    if ext == ".csv":
-        with open(file_path, "r", encoding="utf-8") as f:
-            reader = csv.reader(f)
-            all_rows = [",".join(row) for row in reader]
-            return [(0, "\n".join(all_rows)[:text_max])]
-
-    if ext == ".json":
-        with open(file_path, "r", encoding="utf-8") as f:
-            try:
-                data = json.load(f)
-                return [(0, json.dumps(data, indent=2)[:text_max])]
-            except Exception:
-                return [(0, f.read()[:text_max])]
-
-    if ext == ".docx":
-        doc = Document(file_path)
-        # Iterate through document body in order (preserves paragraph/table sequence)
-        text_parts = []
-        for element in doc.element.body:
-            # Check if element is a paragraph
-            if element.tag.endswith("p"):
-                # Find corresponding paragraph object
-                for para in doc.paragraphs:
-                    if para._element is element and para.text.strip():
-                        text_parts.append(para.text)
-                        break
-            # Check if element is a table
-            elif element.tag.endswith("tbl"):
-                # Find corresponding table object
-                for table in doc.tables:
-                    if table._element is element:
-                        table_rows = []
-                        for row in table.rows:
-                            row_text = " | ".join(
-                                cell.text.strip() for cell in row.cells
-                            )
-                            if row_text.strip():
-                                table_rows.append(row_text)
-                        if table_rows:
-                            text_parts.append("[TABLE]\n" + "\n".join(table_rows))
-                        break
-        return [(0, "\n\n".join(text_parts)[:text_max])]
-
-    with open(file_path, "r", encoding="utf-8") as f:
-        return [(0, f.read()[:text_max])]
-
+# ---------------------------------------------------------------------------
+# Sentence splitting & chunking (used by batch_ingest.py)
+# ---------------------------------------------------------------------------
 
 def sentence_split(text: str) -> list[str]:
     """
