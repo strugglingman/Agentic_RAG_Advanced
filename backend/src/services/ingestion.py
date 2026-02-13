@@ -122,24 +122,44 @@ def ingest_file(
             error="No text content extracted from file",
         )
 
-    # Chunking - returns list of (page_num, chunk_text) tuples
+    # Concatenate all pages into full document text for full-document chunking.
+    # Per-page chunking destroys cross-page context (up to 9% recall gap).
+    full_text = "\n\n".join(text for _, text in pages_text if text.strip())
+
+    # Chunking - chunk the full document as one unit
     chunks_with_pages = make_chunks_langchain(
-        pages_text,
+        [(0, full_text)],
         chunk_size=Config.CHUNK_SIZE,
         chunk_overlap=Config.CHUNK_OVERLAP,
         strategy=Config.CHUNKING_STRATEGY,
     )
 
+    # Contextual Retrieval: enrich chunks with LLM-generated document context
+    # When enabled, each chunk gets a context preamble prepended before embedding.
+    # The original chunk text is preserved in metadata for display.
+    use_contextual = Config.CONTEXTUAL_RETRIEVAL_ENABLED and chunks_with_pages
+    if use_contextual:
+        from src.services.contextual_retrieval import contextualize_chunks
+
+        contextualized = contextualize_chunks(full_text, chunks_with_pages, filename)
+        logger.info(
+            f"[INGESTION] Contextual retrieval: {len(contextualized)} chunks contextualized for {filename}"
+        )
+    else:
+        # No contextual retrieval: convert to same 3-tuple format (page, chunk, chunk)
+        contextualized = [(pg, chunk, chunk) for pg, chunk in chunks_with_pages]
+
     # Build chunk IDs, documents, and metadata for ChromaDB
     ids, docs, metas = [], [], []
     seen = set()
 
-    for page_num, chunk in chunks_with_pages:
-        # Generate unique chunk ID incorporating page number
+    for page_num, doc_text, original_text in contextualized:
+        # Chunk IDs use ORIGINAL text so re-indexing with/without contextual
+        # retrieval doesn't create duplicates
         if file_for_user:
-            seed = f"{file_dept_id}|{file_user_email}|{filename}|p{page_num}|{chunk}"
+            seed = f"{file_dept_id}|{file_user_email}|{filename}|p{page_num}|{original_text}"
         else:
-            seed = f"{file_dept_id}|{filename}|p{page_num}|{chunk}"
+            seed = f"{file_dept_id}|{filename}|p{page_num}|{original_text}"
 
         chunk_id = make_id(seed)
 
@@ -152,23 +172,25 @@ def ingest_file(
 
         seen.add(chunk_id)
         ids.append(chunk_id)
-        docs.append(chunk)
-        metas.append(
-            {
-                "dept_id": file_dept_id,
-                "user_id": file_user_email,
-                "file_for_user": file_for_user,
-                "chunk_id": chunk_id,
-                "source": filename,
-                "ext": filename.split(".")[-1].lower() if "." in filename else "",
-                "file_id": file_id,  # This is now the FileRegistry.id (cuid)
-                "size_kb": size_kb,
-                "tags": tags.lower() if tags else "",
-                "upload_at": created_at,
-                "uploaded_at_ts": created_at_ts,
-                "page": page_num,
-            }
-        )
+        docs.append(doc_text)  # Contextualized text for embedding + BM25
+        meta = {
+            "dept_id": file_dept_id,
+            "user_id": file_user_email,
+            "file_for_user": file_for_user,
+            "chunk_id": chunk_id,
+            "source": filename,
+            "ext": filename.split(".")[-1].lower() if "." in filename else "",
+            "file_id": file_id,  # This is now the FileRegistry.id (cuid)
+            "size_kb": size_kb,
+            "tags": tags.lower() if tags else "",
+            "upload_at": created_at,
+            "uploaded_at_ts": created_at_ts,
+            "page": page_num,
+        }
+        # Store original text in metadata when contextual retrieval is active
+        if use_contextual:
+            meta["original_text"] = original_text
+        metas.append(meta)
 
     # Upsert to ChromaDB
     if docs:

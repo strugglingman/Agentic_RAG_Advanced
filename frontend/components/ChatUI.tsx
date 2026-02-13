@@ -882,7 +882,7 @@ function ContextCard({ context, index }: { context: Context; index: number }) {
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-xs font-semibold px-1.5 py-0.5 rounded bg-neutral-900 text-white">{index + 1}</span>
             <span className="text-sm font-medium truncate max-w-[240px]" title={context.source}>{context.source}</span>
-            <span className="text-xs text-neutral-500">p{context.page}</span>
+            {context.page > 0 && <span className="text-xs text-neutral-500">p{context.page}</span>}
             {scoreLine && <span className="text-xs text-neutral-400">{scoreLine}</span>}
           </div>
           <div className="mt-1 text-xs text-neutral-600 line-clamp-4">
