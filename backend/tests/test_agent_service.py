@@ -2,7 +2,7 @@
 Test script for the Agent service (ReAct pattern).
 
 This script tests:
-1. Calculator tool (simple tool call)
+1. Direct math (LLM handles natively)
 2. Document search tool (integration with RAG)
 3. Multi-step reasoning (chained tool calls)
 4. Error handling
@@ -122,8 +122,8 @@ def get_collection():
 
 
 def test_calculator():
-    """Test 1: Simple calculator tool"""
-    print_test("Calculator Tool - Basic Math")
+    """Test 1: Simple math (LLM handles directly)"""
+    print_test("Direct Math - Basic Math")
 
     # Initialize OpenAI client
     client = OpenAI(api_key=Config.OPENAI_KEY)
@@ -140,7 +140,7 @@ def test_calculator():
 
         # Check if answer contains expected result
         if "30" in answer:
-            print_success("Calculator tool executed successfully!")
+            print_success("Math answered successfully!")
         else:
             print_error(f"Expected '30' in answer, got: {answer}")
 
@@ -152,8 +152,8 @@ def test_calculator():
 
 
 def test_calculator_complex():
-    """Test 2: Complex calculator operations"""
-    print_test("Calculator Tool - Complex Math")
+    """Test 2: Complex math operations (LLM handles directly)"""
+    print_test("Direct Math - Complex Math")
 
     client = OpenAI(api_key=Config.OPENAI_KEY)
     agent = AgentService(openai_client=client, max_iterations=5)
@@ -244,7 +244,7 @@ def test_multi_step():
     agent = AgentService(openai_client=client, max_iterations=5)
 
     try:
-        # This should trigger both search AND calculator
+        # This should trigger both search AND direct math/code_execution
         collection = get_collection()
 
         if collection.count() == 0:
@@ -353,8 +353,8 @@ def main():
 
     # Run tests
     tests = [
-        ("Calculator - Basic", test_calculator),
-        ("Calculator - Complex", test_calculator_complex),
+        ("Direct Math - Basic", test_calculator),
+        ("Direct Math - Complex", test_calculator_complex),
         ("Document Search", test_document_search),
         ("Multi-Step Reasoning", test_multi_step),
         ("No Tool Needed", test_no_tool_needed),

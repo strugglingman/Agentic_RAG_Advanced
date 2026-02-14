@@ -1,34 +1,10 @@
 """
-Tool calling prompts for calculator, web search, code execution, and other tools.
+Tool calling prompts for web search, code execution, and other tools.
 """
 
 
 class ToolPrompts:
     """Prompts for LLM function calling with tools."""
-
-    @staticmethod
-    def calculator_prompt(task: str, is_detour: bool = False) -> str:
-        """
-        Generate prompt for calculator tool calling.
-
-        Args:
-            task: The calculation task description
-            is_detour: Whether this is an ad-hoc call (True) or planned (False)
-
-        Returns:
-            Prompt string for calculator function calling
-        """
-        context_note = ""
-        if is_detour:
-            context_note = "\n\nNote: This is a supplementary calculation based on previous results."
-
-        return f"""You need to call the calculator tool for this specific task.
-
-Task: {task}
-
-IMPORTANT: Extract the calculation request ONLY from the task description above. Do NOT use unrelated parts from other tasks.{context_note}
-
-Call the calculator tool with the appropriate expression."""
 
     @staticmethod
     def web_search_prompt(task: str, is_detour: bool = False) -> str:
@@ -278,14 +254,12 @@ Call the code_execution tool with your Python code."""
 
         Args:
             query: User's original query
-            tool_type: Type of tool ("calculator", "web_search", "download_file", "send_email", "create_documents", "code_execution")
+            tool_type: Type of tool ("web_search", "download_file", "send_email", "create_documents", "code_execution")
 
         Returns:
             Generic tool calling prompt
         """
-        if tool_type == "calculator":
-            return f"Based on the user's query, call the appropriate calculator tool.\n\nUser Query: {query}"
-        elif tool_type == "web_search":
+        if tool_type == "web_search":
             return f"Based on the user's query, search the web for relevant information.\n\nUser Query: {query}"
         elif tool_type == "download_file":
             return f"Based on the user's query, download the requested files.\n\nUser Query: {query}"

@@ -85,10 +85,10 @@ CRITICAL - ANSWER COMPLETENESS:
 
 RULES FOR TOOL RESULTS:
 1. Use the tool execution results below to answer the question
-2. Include the tool name in your answer (e.g., "According to the calculator...")
-3. Be direct and clear about what the tool calculated/found
+2. Include the tool name in your answer (e.g., "According to the web search...")
+3. Be direct and clear about what the tool found/computed
 4. If the tool result doesn't fully answer the question, explain what information is available
-5. At the end, mention the tool used (e.g., "Tool: calculator")"""
+5. At the end, mention the tool used (e.g., "Tool: web_search")"""
 
     @staticmethod
     def get_system_prompt(context_type: ContextType) -> str:

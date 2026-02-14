@@ -358,7 +358,7 @@ class AgentService:
         Key behavior:
         - First producer tool in turn: CLEAR old state, then add new files
         - Subsequent producer tools in same turn: APPEND to state
-        - Non-producer tools (send_email, calculator): state unchanged
+        - Non-producer tools (send_email): state unchanged
 
         This ensures:
         - "Download X and email it" → uses NEW files only
@@ -508,8 +508,7 @@ class AgentService:
                 "- For questions about INTERNAL company documents or policies (NOT attached files): Use search_documents tool\n"
                 "  After using search_documents, ALWAYS check the 'Available Files' section below and include the download link if the source file is listed there\n"
                 "- For questions about CURRENT/EXTERNAL information (weather, news, stock prices, real-time data): Use web_search tool\n"
-                "- For mathematical calculations or numerical operations: Use calculator tool\n"
-                "- For simple factual questions that don't require internal documents: Answer directly\n"
+                "- For simple math or factual questions that don't require internal documents: Answer directly\n"
                 "- For file downloads: Use download_file tool with URLs. This works for BOTH direct file links AND web page URLs from web_search results. Collect all URLs, then call download_file once.\n"
                 "- For sending emails: Use send_email tool ONLY after explicit user confirmation of all details, you MUST follow the instruction of Email sending policy (CRITICAL) part.\n"
                 "- For create/generate documents (writing content, reports, summaries): Use create_documents tool DIRECTLY\n"
@@ -828,8 +827,8 @@ def format_tool_call_for_logging(tool_call) -> str:
         Human-readable string
 
     Example output:
-        "calculator(expression='2+2')"
         "search_documents(query='revenue Q1')"
+        "web_search(query='Beijing weather')"
     """
     name = tool_call.function.name
     args = json.loads(tool_call.function.arguments)

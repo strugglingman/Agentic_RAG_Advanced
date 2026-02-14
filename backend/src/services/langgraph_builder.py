@@ -18,7 +18,6 @@ from src.services.langgraph_nodes import (
     create_generate_node,
     create_verify_node,
     error_handler_node,
-    create_tool_calculator_node,
     create_tool_web_search_node,
     create_tool_download_file_node,
     create_tool_create_documents_node,
@@ -90,7 +89,6 @@ def build_langgraph_agent(
     graph.add_node("refine", create_refine_node(runtime))
     graph.add_node("generate", create_generate_node(runtime))
     graph.add_node("verify", create_verify_node(runtime))
-    graph.add_node("tool_calculator", create_tool_calculator_node(runtime))
     graph.add_node("tool_web_search", create_tool_web_search_node(runtime))
     graph.add_node("tool_download_file", create_tool_download_file_node(runtime))
     graph.add_node("tool_create_documents", create_tool_create_documents_node(runtime))
@@ -112,7 +110,6 @@ def build_langgraph_agent(
         {
             "direct_answer": "direct_answer",
             "retrieve": "retrieve",
-            "tool_calculator": "tool_calculator",
             "tool_web_search": "tool_web_search",
             "tool_download_file": "tool_download_file",
             "tool_create_documents": "tool_create_documents",
@@ -145,7 +142,6 @@ def build_langgraph_agent(
     graph.add_edge("generate", "verify")
 
     # After tool execution, generate answer with tool results
-    graph.add_edge("tool_calculator", "generate")
     graph.add_edge("tool_web_search", "generate")
     graph.add_edge("tool_code_execution", "generate")
 

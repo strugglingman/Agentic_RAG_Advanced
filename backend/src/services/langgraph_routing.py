@@ -128,20 +128,6 @@ def _init_semantic_router():
             ],
         )
 
-        calculator_route = Route(
-            name="calculator",
-            utterances=[
-                "calculate 15 + 27",
-                "what is 100 divided by 5",
-                "compute the sum of",
-                "multiply 12 by 8",
-                "percentage of",
-                "convert celsius to fahrenheit",
-                "square root of 144",
-                "calculate compound interest",
-            ],
-        )
-
         # Create the semantic router
         # auto_sync="local" builds the index immediately from route utterances
         _semantic_router = SemanticRouter(
@@ -150,12 +136,11 @@ def _init_semantic_router():
                 web_search_route,
                 retrieve_route,
                 direct_answer_route,
-                calculator_route,
             ],
             auto_sync="local",
         )
 
-        logger.info("[SEMANTIC_ROUTER] Initialized successfully with 4 routes")
+        logger.info("[SEMANTIC_ROUTER] Initialized successfully with 3 routes")
         return _semantic_router
 
     except ImportError as e:
@@ -222,7 +207,7 @@ def route_after_planning(state: AgentState) -> str:
         state: Current agent state
 
     Returns:
-        Next node name: "retrieve", "tool_calculator", "tool_web_search",
+        Next node name: "retrieve", "tool_web_search",
         "tool_download_file", "tool_send_email", "tool_create_documents",
         "tool_code_execution", "generate", or "error"
     """
@@ -263,7 +248,6 @@ def route_after_planning(state: AgentState) -> str:
     tool_to_node = {
         "direct_answer": "direct_answer",
         "retrieve": "retrieve",
-        "calculator": "tool_calculator",
         "web_search": "tool_web_search",
         "download_file": "tool_download_file",
         "send_email": "tool_send_email",

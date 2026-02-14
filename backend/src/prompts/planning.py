@@ -231,9 +231,8 @@ You are a planning assistant. Create a plan to answer this query using available
 {query}
 
 ## Available Tools (use ONLY these exact tool names):
-- direct_answer: Answer using LLM's built-in knowledge (for general knowledge, travel routes, cultural info, how-to guides, explanations)
+- direct_answer: Answer using LLM's built-in knowledge (for general knowledge, travel routes, cultural info, how-to guides, explanations, simple math)
 - retrieve: Search internal COMPANY documents and uploaded files ONLY
-- calculator: Perform mathematical calculations
 - web_search: Search the web for CURRENT/real-time information (weather, news, stock prices, recent events)
 - download_file: Download a file from a URL and save to user's storage (returns file_id for chaining)
 - send_email: Send an email with optional file attachments (use file_id from available files or from download_file/create_documents output)
@@ -316,7 +315,6 @@ You are a planning assistant. Create a plan to answer this query using available
 **Use MULTI-STEP plans when steps have TRUE DEPENDENCIES (step 2 needs output from step 1):**
 - ✅ download_file → send_email (must download before attaching)
 - ✅ create_documents → send_email (must create before attaching)
-- ✅ retrieve → calculator (get data, then compute on it)
 - ✅ retrieve → code_execution (get data, then do complex analysis/statistics)
 - ✅ code_execution → create_documents (analyze data, then format as document)
 - ✅ web_search → create_documents (search info, then create report)

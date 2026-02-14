@@ -6,7 +6,7 @@ This module provides a single source of truth for all LLM prompts used across:
 - Generation (answer creation)
 - Evaluation (quality assessment)
 - Refinement (query improvement)
-- Tool calling (calculator, web_search)
+- Tool calling (web_search, code_execution, etc.)
 """
 
 from src.prompts.planning import PlanningPrompts

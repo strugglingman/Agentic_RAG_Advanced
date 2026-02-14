@@ -451,124 +451,7 @@ async def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]
 
 
 # ============================================================================
-# TOOL 2: CALCULATOR
-# ============================================================================
-
-CALCULATOR_SCHEMA = {
-    "type": "function",
-    "function": {
-        "name": "calculator",
-        "description": (
-            "Perform mathematical calculations. "
-            "Use this for arithmetic operations, percentages, or any numerical computation. "
-            "Supports basic operations (+, -, *, /), percentages, and more."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "expression": {
-                    "type": "string",
-                    "description": (
-                        "Mathematical expression to evaluate. "
-                        "Examples: '2+2', '15% of 100', '(100-80)/80 * 100', '1000 * 1.15'"
-                    ),
-                },
-            },
-            "required": ["expression"],
-        },
-    },
-}
-
-
-@traceable
-def execute_calculator(args: Dict[str, Any], context: Dict[str, Any]) -> str:
-    """
-    Execute the calculator tool.
-
-    Args:
-        args: Arguments from LLM containing:
-            - expression (str): Mathematical expression to evaluate
-
-        context: System context (not used for calculator)
-
-    Returns:
-        String result of the calculation
-    """
-    expression = args.get("expression", "").strip()
-
-    if not expression:
-        return "Error: No expression provided"
-
-    try:
-        # Handle percentage expressions
-        # "15% of 100" -> "0.15 * 100"
-        # "20%" -> "0.20"
-        processed = _handle_percentage(expression)
-
-        # Safely evaluate the expression
-        result = _safe_eval(processed)
-
-        # Format result nicely
-        if isinstance(result, float):
-            # Remove unnecessary decimals for whole numbers
-            if result.is_integer():
-                return str(int(result))
-            else:
-                return f"{result:.6f}".rstrip("0").rstrip(".")
-        return str(result)
-
-    except ZeroDivisionError:
-        return "Error: Division by zero"
-    except Exception as e:
-        return f"Error: Invalid mathematical expression - {str(e)}"
-
-
-def _handle_percentage(expr: str) -> str:
-    """
-    Convert percentage expressions to Python math.
-
-    Examples:
-        "15% of 100" -> "0.15 * 100"
-        "20%" -> "0.20"
-        "increase by 10%" -> handled in context
-    """
-    # Pattern: "X% of Y" -> "X/100 * Y"
-    expr = re.sub(
-        r"(\d+(?:\.\d+)?)\s*%\s+of\s+(\d+(?:\.\d+)?)",
-        r"(\1/100) * \2",
-        expr,
-        flags=re.IGNORECASE,
-    )
-
-    # Pattern: "X%" -> "X/100"
-    expr = re.sub(r"(\d+(?:\.\d+)?)\s*%", r"(\1/100)", expr)
-
-    return expr
-
-
-def _safe_eval(expr: str) -> float:
-    """
-    Safely evaluate a mathematical expression.
-
-    Security: Only allows numbers and basic math operators.
-    """
-    # Whitelist: only allow numbers, operators, parentheses, dots, spaces
-    if not re.match(r"^[\d\s\+\-\*\/\(\)\.\%]+$", expr):
-        raise ValueError("Expression contains invalid characters")
-
-    # Additional safety: limit length
-    if len(expr) > 200:
-        raise ValueError("Expression too long")
-
-    # Evaluate using Python's eval (safe because we validated input)
-    # Note: In production, consider using numexpr or ast-based parser
-    result = eval(expr, {"__builtins__": {}}, {})
-
-    return float(result)
-
-
-# ============================================================================
-# TOOL 3: WEB SEARCH
+# TOOL 2: WEB SEARCH
 # ============================================================================
 WEB_SEARCH_SCHEMA = {
     "type": "function",
@@ -602,7 +485,7 @@ WEB_SEARCH_SCHEMA = {
 }
 
 # ============================================================================
-# TOOL 4: DOWNLOAD FILE
+# TOOL 3: DOWNLOAD FILE
 # ============================================================================
 DOWNLOAD_FILE_SCHEMA = {
     "type": "function",
@@ -650,7 +533,7 @@ DOWNLOAD_FILE_SCHEMA = {
 }
 
 # ============================================================================
-# TOOL 5: SEND EMAIL
+# TOOL 4: SEND EMAIL
 # ============================================================================
 SEND_EMAIL_SCHEMA = {
     "type": "function",
@@ -684,7 +567,7 @@ SEND_EMAIL_SCHEMA = {
 }
 
 # ============================================================================
-# TOOL 6: CREATE DOCUMENTS
+# TOOL 5: CREATE DOCUMENTS
 # ============================================================================
 
 CREATE_DOCUMENTS_SCHEMA = {
@@ -1735,7 +1618,7 @@ async def execute_create_documents(
 
 
 # ============================================================================
-# TOOL 7: CODE EXECUTION (E2B Sandbox)
+# TOOL 6: CODE EXECUTION (E2B Sandbox)
 # ============================================================================
 
 CODE_EXECUTION_SCHEMA = {
@@ -1848,7 +1731,6 @@ def _run_code_in_sandbox(code: str) -> str:
 TOOL_REGISTRY = {
     "search_documents": execute_search_documents,
     "web_search": execute_web_search,
-    "calculator": execute_calculator,
     "download_file": execute_download_file,
     "send_email": execute_send_email,
     "create_documents": execute_create_documents,
@@ -1866,7 +1748,6 @@ When LLM calls a tool, we lookup the function here and execute it.
 
 ALL_TOOLS = [
     SEARCH_DOCUMENTS_SCHEMA,
-    CALCULATOR_SCHEMA,
     WEB_SEARCH_SCHEMA,
     DOWNLOAD_FILE_SCHEMA,
     SEND_EMAIL_SCHEMA,
@@ -1885,7 +1766,6 @@ This tells the LLM what tools are available.
 # LangGraph chat_completion_with_tools expects a list of tool schemas.
 # These are the canonical definitions - import these in langgraph_nodes.py.
 
-TOOL_CALCULATOR = [CALCULATOR_SCHEMA]
 TOOL_WEB_SEARCH = [WEB_SEARCH_SCHEMA]
 TOOL_DOWNLOAD_FILE = [DOWNLOAD_FILE_SCHEMA]
 TOOL_CREATE_DOCUMENTS = [CREATE_DOCUMENTS_SCHEMA]
@@ -1909,8 +1789,8 @@ def get_tool_executor(tool_name: str):
         Execution function or None if tool not found
 
     Example:
-        executor = get_tool_executor("calculator")
-        result = executor({"expression": "2+2"}, {})
+        executor = get_tool_executor("web_search")
+        result = executor({"query": "latest news"}, {})
     """
     return TOOL_REGISTRY.get(tool_name)
 

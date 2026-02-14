@@ -20,7 +20,6 @@ from src.services.retrieval import build_where
 from src.services.retrieval_decomposition import retrieve_with_decomposition
 from src.services.agent_tools import (
     execute_tool_call,
-    TOOL_CALCULATOR,
     TOOL_WEB_SEARCH,
     TOOL_DOWNLOAD_FILE,
     TOOL_CREATE_DOCUMENTS,
@@ -449,8 +448,6 @@ def create_plan_node(
                 plans = [f"retrieve: {query}"]
             elif semantic_route == "direct_answer":
                 plans = [f"direct_answer: {query}"]
-            elif semantic_route == "calculator":
-                plans = [f"calculator: {query}"]
             else:
                 plans = [f"{semantic_route}: {query}"]
 
@@ -525,10 +522,10 @@ def create_plan_node(
                                                 "retrieve",
                                                 "web_search",
                                                 "direct_answer",
-                                                "calculator",
                                                 "download_file",
                                                 "send_email",
                                                 "create_documents",
+                                                "code_execution",
                                             ],
                                             "description": "The tool to use for this step",
                                         },
@@ -889,214 +886,6 @@ def create_reflect_node(
 
 
 # ==================== TOOL EXECUTOR NODE ====================
-
-
-def create_tool_calculator_node(
-    runtime: RuntimeContext,
-) -> Callable[[AgentState], Coroutine[Any, Any, Dict[str, Any]]]:
-    """
-    Factory function to create tool_calculator_node with runtime context bound.
-
-    Args:
-        runtime: RuntimeContext with openai_client, vector_db, dept_id, user_id
-
-    Returns:
-        Async tool_calculator_node function
-    """
-
-    async def tool_calculator_node(state: AgentState) -> Dict[str, Any]:
-        """
-        Execute non-retrieval tools (calculator) using LLM function calling.
-
-        This node uses OpenAI function calling to let the LLM decide tool arguments,
-        similar to agent_service.py approach.
-
-        This node can be called in two ways:
-        1. PLANNED: From route_after_planning (part of the original plan) → increments current_step
-        2. DETOUR: From route_after_reflection (ad-hoc tool call) → does NOT increment current_step
-
-        Args:
-            state: Current agent state
-
-        Returns:
-            Updated state with tool results
-        """
-        increment_query_routing("calculator")
-        try:
-            plan = state.get("plan", [])
-            current_step = state.get("current_step", 0)
-            query = state.get("query", "")
-
-            # Get OpenAI client from runtime
-            client = runtime.get("openai_client")
-            if not client:
-                return {
-                    "tools_used": state.get("tools_used", []),
-                    "tool_results": state.get("tool_results", {}),
-                    "current_step": current_step,  # Don't increment on error
-                    "iteration_count": state.get("iteration_count", 0) + 1,
-                    "error": "OpenAI client required for tool execution",
-                }
-
-            # Determine if this is a DETOUR call BEFORE building prompt
-            is_detour = state.get("evaluation_result") is not None
-
-            # Build prompt for LLM tool calling
-            # For planned calls: use plan[current_step]
-            # For detour calls: prefer refined_query (specific to current step), else plan[current_step]
-            if plan and current_step < len(plan) and not is_detour:
-                # PLANNED call - use current step
-                action_step = plan[current_step]
-                # Extract clean query (remove tool name prefix)
-                clean_query = (
-                    action_step.split(":", 1)[1].strip()
-                    if ":" in action_step
-                    else action_step
-                )
-                prompt = ToolPrompts.calculator_prompt(clean_query, is_detour=False)
-            elif is_detour:
-                # DETOUR call - prefer refined_query (from refine_node), else current step
-                refined_query = state.get("refined_query")
-                if refined_query:
-                    # refined_query is specific to the step we're supplementing
-                    task_query = refined_query
-                elif plan and current_step < len(plan):
-                    # Fallback to current step
-                    task_query = plan[current_step]
-                else:
-                    # Final fallback
-                    task_query = query
-                prompt = ToolPrompts.calculator_prompt(task_query, is_detour=True)
-            else:
-                # True fallback - no plan, no detour
-                prompt = ToolPrompts.fallback_prompt(query, "calculator")
-
-            response = await chat_completion_with_tools(
-                client=client,
-                model=Config.OPENAI_MODEL,
-                messages=[{"role": "user", "content": prompt}],
-                tools=TOOL_CALCULATOR,
-                tool_choice="auto",
-                temperature=0.1,
-            )
-
-            # Check if LLM called a tool
-            if not response.choices[0].message.tool_calls:
-                # Save step_contexts so verify_node doesn't throw and can combine all step_answers
-                step_contexts = state.get("step_contexts", {})
-                if current_step not in step_contexts:
-                    step_contexts[current_step] = []
-                step_contexts[current_step].append(
-                    {
-                        "type": "tool",
-                        "tool_name": "calculator",
-                        "result": "Calculator not called - no calculation performed",
-                        "args": {},
-                        "plan_step": (
-                            plan[current_step]
-                            if plan and current_step < len(plan)
-                            else ""
-                        ),
-                    }
-                )
-                return {
-                    "tools_used": state.get("tools_used", []),
-                    "tool_results": state.get("tool_results", {}),
-                    "step_contexts": step_contexts,
-                    "current_step": current_step,
-                    "iteration_count": state.get("iteration_count", 0) + 1,
-                    "draft_answer": "Calculator was not called.",
-                    "messages": state.get("messages", [])
-                    + [AIMessage(content="No tool was called by the LLM.")],
-                }
-
-            # Execute the tool call (same pattern as agent_service.py)
-            tool_call = response.choices[0].message.tool_calls[0]
-            tool_name = tool_call.function.name
-            tool_args = json.loads(tool_call.function.arguments)
-
-            # Build context for tool execution from runtime
-            context = {
-                "vector_db": runtime.get("vector_db"),
-                "dept_id": runtime.get("dept_id"),
-                "user_id": runtime.get("user_id"),
-                "openai_client": client,
-                "request_data": runtime.get("request_data") or {},
-                "file_service": runtime.get("file_service"),
-            }
-
-            # Execute the tool (async)
-            result = await execute_tool_call(tool_name, tool_args, context)
-
-            # Update tool results
-            tool_results = state.get("tool_results", {})
-            tool_key = f"{tool_name}_step_{current_step}"
-            if tool_key not in tool_results:
-                tool_results[tool_key] = []
-            tool_results[tool_key].append(
-                {
-                    "step": current_step,
-                    "args": tool_args,
-                    "result": result,
-                    "query": query,
-                }
-            )
-
-            # Store tool result PER STEP to avoid mixing contexts
-            # Replace old calculator context if exists (from refinement loop), keep only latest
-            step_contexts = state.get("step_contexts", {})
-            if current_step not in step_contexts:
-                step_contexts[current_step] = []
-
-            # Remove any existing calculator context (from previous refinement attempt)
-            step_contexts[current_step] = [
-                ctx
-                for ctx in step_contexts[current_step]
-                if not (
-                    ctx.get("type") == "tool" and ctx.get("tool_name") == "calculator"
-                )
-            ]
-
-            # Add new calculator context
-            step_contexts[current_step].append(
-                {
-                    "type": "tool",
-                    "tool_name": tool_name,
-                    "result": result,
-                    "args": tool_args,
-                    "plan_step": (
-                        plan[current_step] if plan and current_step < len(plan) else ""
-                    ),
-                }
-            )
-
-            return {
-                "tools_used": state.get("tools_used", []) + [tool_name],
-                "tool_results": tool_results,
-                "step_contexts": step_contexts,
-                "current_step": current_step,
-                "iteration_count": state.get("iteration_count", 0) + 1,
-                "messages": state.get("messages", [])
-                + [
-                    AIMessage(
-                        content=f"Executed {tool_name} with result: {result[:200]}..."
-                    )
-                ],
-            }
-
-        except Exception as e:
-            # On error, keep current_step constant
-            return {
-                "tools_used": state.get("tools_used", []),
-                "tool_results": state.get("tool_results", {}),
-                "current_step": current_step,
-                "iteration_count": state.get("iteration_count", 0) + 1,
-                "error": f"Tool execution failed: {str(e)}",
-                "messages": state.get("messages", [])
-                + [AIMessage(content=f"Tool execution failed: {str(e)}")],
-            }
-
-    return tool_calculator_node
 
 
 def create_tool_web_search_node(
@@ -2511,7 +2300,7 @@ def create_generate_node(
                 for ctx in step_ctx_list
             )
 
-            # Build numbered context from ALL contexts in this step (handles retrieve + web_search + calculator)
+            # Build numbered context from ALL contexts in this step (handles retrieve + web_search + code_execution)
             contexts = []
             context_num = 1
 
@@ -2855,10 +2644,10 @@ def create_verify_node(
             # Tools that skip citation enforcement (direct results, not RAG)
             skip_citation_tools = {
                 "web_search",
-                "calculator",
                 "download_file",
                 "create_documents",
                 "send_email",
+                "code_execution",
             }
             is_skip_citation_tool = bool(set(tool_names) & skip_citation_tools)
 
