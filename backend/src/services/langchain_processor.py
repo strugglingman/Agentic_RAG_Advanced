@@ -56,6 +56,9 @@ class ChunkingConfig:
     strategy: ChunkingStrategy = ChunkingStrategy.RECURSIVE
     chunk_size: int = Config.CHUNK_SIZE
     chunk_overlap: int = Config.CHUNK_OVERLAP
+    # Token-based measurement encoding (cl100k_base for OpenAI text-embedding-3-*,
+    # o200k_base for GPT-4o). Only used when strategy=recursive.
+    tiktoken_encoding: str = Config.TIKTOKEN_ENCODING
     # Semantic settings
     breakpoint_threshold_type: Literal[
         "percentile", "standard_deviation", "interquartile", "gradient"
@@ -83,7 +86,13 @@ class LangChainProcessor:
         if self.config.strategy == ChunkingStrategy.RECURSIVE:
             from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-            self._splitter = RecursiveCharacterTextSplitter(
+            # Token-based measurement: chunk_size/chunk_overlap are in tokens,
+            # but splitting still uses recursive separators for structural awareness.
+            # This aligns chunk sizes with embedding model token limits and gives
+            # more predictable, language-agnostic results than character counting.
+            # See: Chroma Research, Microsoft Azure AI Search, Firecrawl 2025 best practices.
+            self._splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(
+                encoding_name=self.config.tiktoken_encoding,
                 chunk_size=self.config.chunk_size,
                 chunk_overlap=self.config.chunk_overlap,
                 separators=["\n\n", "\n", ". ", "! ", "? ", "; ", ", ", " ", ""],

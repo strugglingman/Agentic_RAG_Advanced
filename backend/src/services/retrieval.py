@@ -31,9 +31,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
 @dataclass
 class _BM25Entry:
     """Cached BM25 index for one (dept_id, user_id) pair."""
+
     bm25: BM25Okapi
     ids: list
     docs: list
@@ -45,9 +47,10 @@ class _BM25Entry:
 _bm25_cache: dict[tuple[str, str], _BM25Entry] = {}
 _bm25_lock = threading.Lock()
 _BM25_TTL_SECONDS = 300  # 5 minutes
-_BM25_MAX_ENTRIES = 50   # Evict oldest when exceeded
+_BM25_MAX_ENTRIES = 50  # Evict oldest when exceeded
 
 _reranker = None
+_cohere_client = None
 
 
 def norm(xs):
@@ -79,6 +82,55 @@ def sigmoid_normalize(scores):
     """
     scores_arr = np.array(scores)
     return 1 / (1 + np.exp(-scores_arr))
+
+
+def rrf_fuse(sem_items: list, bm25_items: list, k: int = 60) -> list:
+    """
+    Reciprocal Rank Fusion (RRF) — rank-based fusion immune to score distribution mismatch.
+
+    Formula: score(d) = Σ 1/(k + rank_i(d))
+    where rank_i(d) is the 1-based rank of document d in retrieval system i.
+
+    Args:
+        sem_items: Semantic search results sorted by sem_sim descending
+        bm25_items: BM25 search results sorted by bm25 score descending
+        k: Smoothing constant (default 60, from original RRF paper)
+
+    Returns:
+        Merged list of items with 'hybrid' score set to RRF score, sorted descending.
+    """
+    rrf_scores: dict[str, float] = {}
+    item_map: dict[str, dict] = {}
+
+    # Semantic rankings
+    for rank, item in enumerate(sem_items, start=1):
+        cid = item["chunk_id"]
+        rrf_scores[cid] = rrf_scores.get(cid, 0.0) + 1.0 / (k + rank)
+        if cid not in item_map:
+            item_map[cid] = item
+
+    # BM25 rankings
+    for rank, item in enumerate(bm25_items, start=1):
+        cid = item["chunk_id"]
+        rrf_scores[cid] = rrf_scores.get(cid, 0.0) + 1.0 / (k + rank)
+        if cid not in item_map:
+            item_map[cid] = item
+        else:
+            # Merge BM25 score into existing item
+            item_map[cid]["bm25"] = item["bm25"]
+
+    # Normalize RRF scores to [0, 1] for compatibility with threshold checks
+    rrf_values = list(rrf_scores.values())
+    rrf_norm = norm(rrf_values) if rrf_values else []
+    norm_map = dict(zip(rrf_scores.keys(), rrf_norm))
+
+    result = []
+    for cid, item in item_map.items():
+        item["hybrid"] = norm_map.get(cid, 0.0)
+        result.append(item)
+
+    result.sort(key=lambda x: x["hybrid"], reverse=True)
+    return result
 
 
 def unique_snippet(ctx, prefix=150):
@@ -213,7 +265,7 @@ def log_chunk_scores(query: str, chunks: list, use_hybrid: bool, use_reranker: b
 
 
 def get_reranker():
-    """Get or initialize the reranker model."""
+    """Get or initialize the reranker model (local CrossEncoder)."""
     global _reranker
     if _reranker is None:
         try:
@@ -224,6 +276,52 @@ def get_reranker():
             )
             return None
     return _reranker
+
+
+def get_cohere_client():
+    """Get or initialize the Cohere client for API-based reranking."""
+    global _cohere_client
+    if _cohere_client is None:
+        if not Config.COHERE_API_KEY:
+            logging.warning("COHERE_API_KEY not set, cannot use Cohere reranker")
+            return None
+        try:
+            import cohere
+
+            _cohere_client = cohere.ClientV2(api_key=Config.COHERE_API_KEY)
+        except Exception as exc:
+            logging.warning("Failed to initialize Cohere client: %s", exc)
+            return None
+    return _cohere_client
+
+
+def rerank_with_cohere(
+    query: str, documents: list[str], top_n: int
+) -> list[tuple[int, float]]:
+    """
+    Rerank documents using Cohere Rerank API.
+
+    Args:
+        query: The search query
+        documents: List of document texts to rerank
+        top_n: Number of top results to return
+
+    Returns:
+        List of (original_index, relevance_score) tuples, sorted by score descending.
+        Scores are already in [0, 1] range (Cohere returns relevance_score in [0, 1]).
+    """
+    client = get_cohere_client()
+    if not client:
+        raise RuntimeError("Cohere client not available")
+
+    response = client.rerank(
+        model=Config.COHERE_RERANK_MODEL,
+        query=query,
+        documents=documents,
+        top_n=top_n,
+    )
+
+    return [(r.index, r.relevance_score) for r in response.results]
 
 
 def build_bm25(vector_db: VectorDB, dept_id: str, user_id: str):
@@ -264,9 +362,7 @@ def build_bm25(vector_db: VectorDB, dept_id: str, user_id: str):
 
         # Use multilingual tokenization instead of simple split()
         tokenized = [multilingual_tokenize(d) for d in docs]
-        entry = _BM25Entry(
-            bm25=BM25Okapi(tokenized), ids=ids, docs=docs, metas=metas
-        )
+        entry = _BM25Entry(bm25=BM25Okapi(tokenized), ids=ids, docs=docs, metas=metas)
 
         with _bm25_lock:
             # Evict oldest if cache is full
@@ -274,14 +370,16 @@ def build_bm25(vector_db: VectorDB, dept_id: str, user_id: str):
                 len(_bm25_cache) >= _BM25_MAX_ENTRIES
                 and (dept_id, user_id) not in _bm25_cache
             ):
-                oldest_key = min(
-                    _bm25_cache, key=lambda k: _bm25_cache[k].created_at
-                )
+                oldest_key = min(_bm25_cache, key=lambda k: _bm25_cache[k].created_at)
                 del _bm25_cache[oldest_key]
             _bm25_cache[(dept_id, user_id)] = entry
 
-        logging.debug("[BM25] Built index with %d documents for dept=%s, user=%s",
-                      len(docs), dept_id, user_id)
+        logging.debug(
+            "[BM25] Built index with %d documents for dept=%s, user=%s",
+            len(docs),
+            dept_id,
+            user_id,
+        )
     except Exception as e:
         logging.warning("[BM25] Failed to build index: %s", e)
         with _bm25_lock:
@@ -480,7 +578,9 @@ def retrieve(
                     {
                         "dept_id": bm25_entry.metas[idx].get("dept_id", ""),
                         "user_id": bm25_entry.metas[idx].get("user_id", ""),
-                        "file_for_user": bm25_entry.metas[idx].get("file_for_user", False),
+                        "file_for_user": bm25_entry.metas[idx].get(
+                            "file_for_user", False
+                        ),
                         "chunk_id": bm25_entry.metas[idx].get("chunk_id", ""),
                         "chunk": bm25_entry.docs[idx],
                         "file_id": bm25_entry.metas[idx].get("file_id", ""),
@@ -489,7 +589,9 @@ def retrieve(
                         "tags": bm25_entry.metas[idx].get("tags", ""),
                         "size_kb": bm25_entry.metas[idx].get("size_kb", 0),
                         "upload_at": bm25_entry.metas[idx].get("upload_at", ""),
-                        "uploaded_at_ts": bm25_entry.metas[idx].get("uploaded_at_ts", 0),
+                        "uploaded_at_ts": bm25_entry.metas[idx].get(
+                            "uploaded_at_ts", 0
+                        ),
                         "page": bm25_entry.metas[idx].get("page", 0),
                         "sem_sim": 0.0,
                         "bm25": float(score),  # Already normalized within BM25 top-N
@@ -500,29 +602,42 @@ def retrieve(
                 ]
                 ctx_bm25 = unique_snippet(ctx_bm25, prefix=150)
 
-                # Union both result sets
-                ctx_unioned = {}
-                for bm25_item in ctx_bm25:
-                    key = bm25_item["chunk_id"]
-                    ctx_unioned[key] = bm25_item
+                # Fuse semantic and BM25 results
+                if Config.FUSION_METHOD == "rrf":
+                    # RRF: rank-based fusion, immune to score distribution mismatch
+                    sem_sorted = sorted(
+                        ctx_original, key=lambda x: x["sem_sim"], reverse=True
+                    )
+                    bm25_sorted = sorted(
+                        ctx_bm25, key=lambda x: x["bm25"], reverse=True
+                    )
+                    ctx_candidates = rrf_fuse(sem_sorted, bm25_sorted, k=Config.RRF_K)
+                else:
+                    # Union both result sets
+                    ctx_unioned = {}
+                    for bm25_item in ctx_bm25:
+                        key = bm25_item["chunk_id"]
+                        ctx_unioned[key] = bm25_item
 
-                for sem_item in ctx_original:
-                    key = sem_item["chunk_id"]
-                    if key in ctx_unioned:
-                        # Merge: preserve BM25 score, take sem_sim from semantic result
-                        existing = ctx_unioned[key]
-                        ctx_unioned[key] = {**existing, "sem_sim": sem_item["sem_sim"]}
-                    else:
-                        # Semantic-only chunks: sem_sim is normalized, bm25=0
-                        ctx_unioned[key] = sem_item
+                    for sem_item in ctx_original:
+                        key = sem_item["chunk_id"]
+                        if key in ctx_unioned:
+                            # Merge: preserve BM25 score, take sem_sim from semantic result
+                            existing = ctx_unioned[key]
+                            ctx_unioned[key] = {
+                                **existing,
+                                "sem_sim": sem_item["sem_sim"],
+                            }
+                        else:
+                            # Semantic-only chunks: sem_sim is normalized, bm25=0
+                            ctx_unioned[key] = sem_item
 
-                ctx_candidates = list(ctx_unioned.values())
-
-                # Calculate hybrid with normalized scores (both already in [0,1])
-                for item in ctx_candidates:
-                    item["hybrid"] = Config.FUSE_ALPHA * item.get("bm25", 0.0) + (
-                        1 - Config.FUSE_ALPHA
-                    ) * item.get("sem_sim", 0.0)
+                    # Linear fusion: weighted combination of normalized scores
+                    ctx_candidates = list(ctx_unioned.values())
+                    for item in ctx_candidates:
+                        item["hybrid"] = Config.FUSE_ALPHA * item.get("bm25", 0.0) + (
+                            1 - Config.FUSE_ALPHA
+                        ) * item.get("sem_sim", 0.0)
 
                 # Confidence gate on hybrid using raw scores check
                 # Professional approach: Check raw scores independently using OR logic
@@ -591,6 +706,32 @@ def retrieve(
                 ctx_candidates = sorted(
                     ctx_candidates, key=lambda x: x.get("hybrid", 0), reverse=True
                 )
+            else:
+                # BM25 has no data — fall back to semantic-only within hybrid path
+                logger.warning(
+                    "[Retrieval] Hybrid requested but BM25 has no data, falling back to semantic-only"
+                )
+                ctx_candidates = [item for item in ctx_original]
+                if max_raw_sim < raw_sem_threshold:
+                    return (
+                        [],
+                        "No relevant documents found after applying semantic confidence threshold.",
+                    )
+                if not use_reranker:
+                    covered = coverage_ok(
+                        sims_raw,
+                        topk=min(len(ctx_candidates), top_k),
+                        score_avg=Config.AVG_SEM_SIM,
+                        score_min=Config.MIN_SEM_SIM,
+                    )
+                    if not covered:
+                        return (
+                            [],
+                            "No relevant documents found after applying semantic coverage check.",
+                        )
+                ctx_candidates = sorted(
+                    ctx_candidates, key=lambda x: x.get("sem_sim", 0), reverse=True
+                )
         else:
             # Confidence gate on semantic-only (already normalized in ctx_original)
             ctx_candidates = [item for item in ctx_original]
@@ -619,32 +760,68 @@ def retrieve(
                 ctx_candidates, key=lambda x: x.get("sem_sim", 0), reverse=True
             )
 
-        # Rerank top candidates if reranker is available
+        # Rerank top candidates using configured provider
         if use_reranker:
-            reranker = get_reranker()
-            if not reranker:
-                return [], "Rerank failed."
             if not ctx_candidates:
                 return [], "No candidates to rerank."
 
             try:
                 count = min(len(ctx_candidates), Config.CANDIDATES)
                 ctx_for_rerank = ctx_candidates[:count]
-                rerank_inputs = [(query, item["chunk"]) for item in ctx_for_rerank]
-                rerank_scores_raw = reranker.predict(rerank_inputs)
 
-                # Normalize raw reranker scores to [0, 1] using sigmoid
-                # BGE reranker outputs unbounded scores; sigmoid maps them to probabilities
-                rerank_scores = sigmoid_normalize(rerank_scores_raw)
+                if Config.RERANKER_PROVIDER == "cohere":
+                    # Cohere API reranker — scores already in [0, 1]
+                    documents = [item["chunk"] for item in ctx_for_rerank]
+                    cohere_results = rerank_with_cohere(query, documents, top_n=count)
 
-                if Config.SHOW_SCORES:
-                    logger.debug(
-                        f"Reranker raw scores: min={min(rerank_scores_raw):.3f}, "
-                        f"max={max(rerank_scores_raw):.3f} -> "
-                        f"normalized: min={min(rerank_scores):.3f}, max={max(rerank_scores):.3f}"
+                    if Config.SHOW_SCORES:
+                        scores_list = [s for _, s in cohere_results]
+                        logger.debug(
+                            f"Cohere reranker scores: min={min(scores_list):.3f}, "
+                            f"max={max(scores_list):.3f} (already normalized)"
+                        )
+
+                    rerank_scores = np.array([score for _, score in cohere_results])
+                    ctx_reranked = []
+                    for orig_idx, score in cohere_results:
+                        ctx_reranked.append(
+                            {**ctx_for_rerank[orig_idx], "rerank": float(score)}
+                        )
+                    ctx_for_rerank = ctx_reranked
+
+                else:
+                    # Local CrossEncoder reranker
+                    reranker = get_reranker()
+                    if not reranker:
+                        return [], "Rerank failed."
+
+                    rerank_inputs = [(query, item["chunk"]) for item in ctx_for_rerank]
+                    rerank_scores_raw = reranker.predict(rerank_inputs)
+
+                    # Normalize raw reranker scores to [0, 1] using sigmoid
+                    # BGE reranker outputs unbounded scores; sigmoid maps them to probabilities
+                    rerank_scores = sigmoid_normalize(rerank_scores_raw)
+
+                    if Config.SHOW_SCORES:
+                        logger.debug(
+                            f"Reranker raw scores: min={min(rerank_scores_raw):.3f}, "
+                            f"max={max(rerank_scores_raw):.3f} -> "
+                            f"normalized: min={min(rerank_scores):.3f}, max={max(rerank_scores):.3f}"
+                        )
+
+                    ranked_pair = sorted(
+                        zip(rerank_scores, ctx_for_rerank),
+                        key=lambda pair: pair[0],
+                        reverse=True,
+                    )
+                    ctx_for_rerank = [
+                        {**item, "rerank": float(score)} for score, item in ranked_pair
+                    ]
+                    rerank_scores = np.array(
+                        [item["rerank"] for item in ctx_for_rerank]
                     )
 
-                # Apply confidence gating on normalized rerank scores
+                # Apply confidence gating on normalized rerank scores (both providers)
                 max_rerank_score = (
                     float(max(rerank_scores))
                     if rerank_scores is not None and len(rerank_scores) > 0
@@ -670,14 +847,7 @@ def retrieve(
                         "No relevant documents found after applying rerank coverage check.",
                     )
 
-                ranked_pair = sorted(
-                    zip(rerank_scores, ctx_for_rerank),
-                    key=lambda pair: pair[0],
-                    reverse=True,
-                )
-                ctx_candidates = [
-                    {**item, "rerank": float(score)} for score, item in ranked_pair
-                ]
+                ctx_candidates = ctx_for_rerank
             except Exception as e:
                 logger.error(f"Rerank error: {e}")
                 increment_error(MetricsErrorType.RERANK_FAILED)

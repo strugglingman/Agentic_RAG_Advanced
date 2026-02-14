@@ -92,11 +92,17 @@ class Config:
     OPENAI_EMBEDDING_MODEL = os.getenv(
         "OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"
     )
+    # Reranker provider: "local" (sentence-transformers CrossEncoder) or "cohere" (Cohere API)
+    # Local: Free, runs on your GPU/CPU, ~500ms latency. Models: BAAI/bge-reranker-v2-m3
+    # Cohere: API-based, ~200ms latency, ELO 1451 (vs BGE 1327). Requires COHERE_API_KEY, Data sent to Cohere, and has associated costs.
+    RERANKER_PROVIDER = os.getenv("RERANKER_PROVIDER", "local")
     RERANKER_MODEL_NAME = os.getenv(
         # cross-encoder/ms-marco-MiniLM-L-6-v2, BAAI/bge-reranker-base, BAAI/bge-reranker-v2-m3
         "RERANKER_MODEL_NAME",
         "BAAI/bge-reranker-v2-m3",
     )
+    COHERE_API_KEY = os.getenv("COHERE_API_KEY", "")
+    COHERE_RERANK_MODEL = os.getenv("COHERE_RERANK_MODEL", "rerank-v3.5")
 
     # ==============================================================================
     # Vector Database (ChromaDB)
@@ -156,8 +162,14 @@ class Config:
         "yes",
         "on",
     }
+    # Fusion method for hybrid search: "rrf" (Reciprocal Rank Fusion) or "linear"
+    # RRF is rank-based, immune to score distribution mismatch between BM25 and semantic.
+    # Linear uses FUSE_ALPHA to weight BM25 vs semantic scores directly.
+    FUSION_METHOD = os.getenv("FUSION_METHOD", "rrf")
     # Lower this in multilingual settings (e.g., 0.3)
     FUSE_ALPHA = float(os.getenv("FUSE_ALPHA", "0.5"))
+    # RRF constant k (default 60, standard value from the original RRF paper)
+    RRF_K = int(os.getenv("RRF_K", "60"))
 
     # Quality thresholds for hybrid search and reranking
     # Note: These thresholds assume normalized scores in [0,1] range
@@ -199,11 +211,19 @@ class Config:
     # ==============================================================================
     # Document Processing & Chunking
     # ==============================================================================
+    # Note: CHUNK_SIZE and CHUNK_OVERLAP are in TOKENS (not characters) when
+    # using recursive strategy. Token-based measurement aligns with embedding
+    # model limits and gives language-agnostic results.
+    # Recommended range: 256-512 tokens (Chroma Research, Firecrawl 2025).
     CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "600"))
     CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "120"))
     CHUNKING_STRATEGY = os.getenv(
         "CHUNKING_STRATEGY", "recursive"
     )  # "recursive" or "semantic"
+    # Tiktoken encoding for token-based chunk measurement.
+    # cl100k_base: GPT-4, text-embedding-3-small/large
+    # o200k_base: GPT-4o
+    TIKTOKEN_ENCODING = os.getenv("TIKTOKEN_ENCODING", "cl100k_base")
     CONTEXTUAL_RETRIEVAL_ENABLED = os.getenv(
         "CONTEXTUAL_RETRIEVAL_ENABLED", "false"
     ).lower() in {
