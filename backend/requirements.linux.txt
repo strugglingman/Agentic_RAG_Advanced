@@ -1,6 +1,4 @@
 python-dotenv>=1.0.0
-requests>=2.31.0
-httpx>=0.25.0
 jieba>=0.42.1  # Chinese word segmentation for multilingual BM25/search
 pypdf>=3.15.0
 pdfplumber>=0.10.0
@@ -12,6 +10,8 @@ numpy>=1.24.0
 rank-bm25>=0.2.2
 chromadb>=0.4.0
 openai>=1.0.0
+tiktoken>=0.7.0
+cohere>=5.0.0
 werkzeug>=2.3.0
 torch>=2.0.0
 PyJWT>=2.10.0
@@ -42,10 +42,12 @@ pypdf2>=3.0.0
 openpyxl>=3.0.0
 reportlab>=4.4.0
 markdown2>=2.4.0
+pydantic>=2.0.0
+requests>=2.31.0
+httpx>=0.25.0
 fastapi>=0.95.0
 uvicorn[standard]>=0.20.0
 python-multipart>=0.0.6
-pydantic>=2.0.0
 dishka>=0.8.0
 slowapi>=0.1.9
 sse-starlette>=1.6.0
@@ -57,5 +59,6 @@ browser-use>=0.1.40
 playwright>=1.40.0
 # Semantic Router for deterministic query routing
 semantic-router>=0.1.0
-# Prometheus metrics endpoint
 prometheus-client>=0.24.1
+# E2B Code Interpreter for secure code execution
+e2b-code-interpreter>=2.4.0
