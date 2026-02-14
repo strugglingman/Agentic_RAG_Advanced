@@ -24,6 +24,13 @@ class Config:
     DEBUG = os.getenv("DEBUG", "false").lower() in {"1", "true", "yes", "on"}
     MAX_CONTENT_LENGTH = int(float(os.getenv("MAX_UPLOAD_MB", "25")) * 1024 * 1024)
 
+    # CORS: comma-separated origins, e.g. "http://localhost:3000,https://app.company.com"
+    CORS_ORIGINS: list[str] = [
+        o.strip()
+        for o in os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
+        if o.strip()
+    ]
+
     # ==============================================================================
     # OpenAI API Settings
     # ==============================================================================
