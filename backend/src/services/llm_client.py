@@ -90,11 +90,21 @@ class AsyncCircuitBreaker:
             self._state = "closed"
 
     async def record_failure(self, error: Exception) -> None:
-        if not isinstance(error, _RETRYABLE):
-            return
         async with self._lock:
+            # Any failure during HALF_OPEN probe → back to OPEN immediately,
+            # regardless of error type, to avoid getting stuck in HALF_OPEN.
+            if self._state == "half_open":
+                self._state = "open"
+                self._opened_at = time.monotonic()
+                logger.warning(
+                    "[CircuitBreaker] HALF_OPEN → OPEN (probe failed: %s)",
+                    type(error).__name__,
+                )
+                return
+            if not isinstance(error, _RETRYABLE):
+                return
             self._failures += 1
-            if self._state == "half_open" or self._failures >= self._threshold:
+            if self._failures >= self._threshold:
                 self._state = "open"
                 self._opened_at = time.monotonic()
                 logger.warning("[CircuitBreaker] → OPEN (%d failures)", self._failures)
