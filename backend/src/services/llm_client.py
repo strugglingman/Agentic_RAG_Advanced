@@ -75,9 +75,12 @@ class AsyncCircuitBreaker:
             if self._state == "open":
                 if time.monotonic() - self._opened_at >= self._recovery:
                     self._state = "half_open"
-                    logger.info("[CircuitBreaker] OPEN → HALF_OPEN")
+                    logger.info("[CircuitBreaker] OPEN → HALF_OPEN (allowing one test request)")
                     return
                 raise CircuitOpenError(f"LLM circuit open ({self._failures} failures)")
+            # half_open: only one test request allowed; block the rest
+            if self._state == "half_open":
+                raise CircuitOpenError("LLM circuit half-open, test request in progress")
 
     async def record_success(self) -> None:
         async with self._lock:
@@ -141,7 +144,7 @@ def _get_fallback_client() -> Optional[tuple[AsyncOpenAI, str]]:
 
 
 async def _try_fallback(
-    primary_model: str, error: Exception, cb: AsyncCircuitBreaker, create_kwargs: dict
+    primary_model: str, error: Exception, create_kwargs: dict
 ) -> Any:
     """Retry once with fallback provider if primary fails with retryable error or circuit open."""
     if not isinstance(error, (*_RETRYABLE, CircuitOpenError)):
@@ -164,9 +167,14 @@ async def _try_fallback(
         if hasattr(response, "usage") and response.usage:
             observe_llm_tokens("input", fb_model, response.usage.prompt_tokens)
             observe_llm_tokens("output", fb_model, response.usage.completion_tokens)
-        await cb.record_success()
         return response
-    except Exception:
+    except Exception as fb_err:
+        logger.warning(
+            "[LLM] Fallback also failed (%s → %s): %s",
+            primary_model,
+            fb_model,
+            fb_err,
+        )
         return None
 
 
@@ -215,7 +223,7 @@ async def chat_completion(
     except Exception as e:
         if not isinstance(e, CircuitOpenError):
             await cb.record_failure(e)
-        fallback_resp = await _try_fallback(model, e, cb, create_kwargs)
+        fallback_resp = await _try_fallback(model, e, create_kwargs)
         if fallback_resp is not None:
             return fallback_resp
         increment_error(MetricsErrorType.LLM_FAILED)
@@ -276,7 +284,7 @@ async def chat_completion_with_tools(
     except Exception as e:
         if not isinstance(e, CircuitOpenError):
             await cb.record_failure(e)
-        fallback_resp = await _try_fallback(model, e, cb, create_kwargs)
+        fallback_resp = await _try_fallback(model, e, create_kwargs)
         if fallback_resp is not None:
             return fallback_resp
         increment_error(MetricsErrorType.LLM_FAILED)
@@ -326,7 +334,7 @@ async def chat_completion_json(
     except Exception as e:
         if not isinstance(e, CircuitOpenError):
             await cb.record_failure(e)
-        fallback_resp = await _try_fallback(model, e, cb, create_kwargs)
+        fallback_resp = await _try_fallback(model, e, create_kwargs)
         if fallback_resp is not None:
             return fallback_resp
         increment_error(MetricsErrorType.LLM_FAILED)
@@ -379,7 +387,7 @@ async def chat_completion_structured(
     except Exception as e:
         if not isinstance(e, CircuitOpenError):
             await cb.record_failure(e)
-        fallback_resp = await _try_fallback(model, e, cb, create_kwargs)
+        fallback_resp = await _try_fallback(model, e, create_kwargs)
         if fallback_resp is not None:
             return fallback_resp
         increment_error(MetricsErrorType.LLM_FAILED)
@@ -424,7 +432,7 @@ async def chat_completion_stream(
     except Exception as e:
         if not isinstance(e, CircuitOpenError):
             await cb.record_failure(e)
-        fallback_resp = await _try_fallback(model, e, cb, create_kwargs)
+        fallback_resp = await _try_fallback(model, e, create_kwargs)
         if fallback_resp is not None:
             return fallback_resp
         increment_error(MetricsErrorType.LLM_FAILED)
