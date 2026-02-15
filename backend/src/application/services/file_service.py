@@ -18,7 +18,9 @@ from datetime import datetime, timezone
 from typing import Optional, Dict, List, Any
 
 from src.infrastructure.storage import FileStorageService
-from src.domain.ports.repositories.file_registry_repository import FileRegistryRepository
+from src.domain.ports.repositories.file_registry_repository import (
+    FileRegistryRepository,
+)
 from src.domain.entities.file_registry import FileRegistry
 from src.domain.value_objects.file_id import FileId
 from src.domain.value_objects.user_email import UserEmail
@@ -116,7 +118,9 @@ class FileService:
             mime_type=mime_type,
             size_bytes=len(content),
             source_tool="chat_upload",
-            conversation_id=ConversationId(conversation_id) if conversation_id else None,
+            conversation_id=(
+                ConversationId(conversation_id) if conversation_id else None
+            ),
             metadata={"file_for_user": True},  # Chat attachments are private
         )
 
@@ -180,7 +184,9 @@ class FileService:
             size_bytes=len(content),
             source_tool="download_file",
             source_url=source_url,
-            conversation_id=ConversationId(conversation_id) if conversation_id else None,
+            conversation_id=(
+                ConversationId(conversation_id) if conversation_id else None
+            ),
             metadata={"file_for_user": True},
         )
 
@@ -297,6 +303,7 @@ class FileService:
             if len(parts) == 2:
                 user_id, filename = parts
                 import urllib.parse
+
                 filename = urllib.parse.unquote(filename)
                 file_path = os.path.join(Config.DOWNLOAD_BASE, user_id, filename)
                 if os.path.exists(file_path):
@@ -306,6 +313,7 @@ class FileService:
         # Check if file_ref looks like a cuid (file ID) or a filename
         # CUID pattern: starts with 'c', 25 chars total, alphanumeric
         import re
+
         is_cuid = bool(re.match(r"^c[a-z0-9]{24}$", file_ref))
 
         # Try to get by file ID only if it looks like a cuid
@@ -324,7 +332,9 @@ class FileService:
                     logger.error(
                         f"[FileService] File in DB but missing on disk: {file_entity.storage_path.value}"
                     )
-                    raise FileNotFoundError(f"File registered but not found on disk: {file_ref}")
+                    raise FileNotFoundError(
+                        f"File registered but not found on disk: {file_ref}"
+                    )
 
         # Try to find by filename (for non-cuid refs or when cuid lookup failed)
         file_entity = await self._repository.find_by_name(
@@ -395,7 +405,9 @@ class FileService:
             files = await self._repository.get_by_user(
                 user_email=UserEmail(user_email),
                 category=category,
-                conversation_id=ConversationId(conversation_id) if conversation_id else None,
+                conversation_id=(
+                    ConversationId(conversation_id) if conversation_id else None
+                ),
                 limit=limit,
             )
 
@@ -445,7 +457,9 @@ class FileService:
             )
 
         # Delete from disk (off event loop — blocking I/O)
-        await asyncio.to_thread(self._storage.delete_file, file_entity.storage_path.value)
+        await asyncio.to_thread(
+            self._storage.delete_file, file_entity.storage_path.value
+        )
 
         # Delete from database
         await self._repository.delete(FileId(file_id))
@@ -505,7 +519,9 @@ class FileService:
             size_bytes=size_bytes,
             source_tool=source_tool,
             source_url=source_url,
-            conversation_id=ConversationId(conversation_id) if conversation_id else None,
+            conversation_id=(
+                ConversationId(conversation_id) if conversation_id else None
+            ),
             indexed_in_chromadb=indexed_in_chromadb,
             metadata=metadata or {},
         )

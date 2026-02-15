@@ -325,7 +325,12 @@ async def main():
 
     # Initialize clients
     print("Initializing OpenAI client and VectorDB...")
-    client = AsyncOpenAI(api_key=Config.OPENAI_KEY)
+    from httpx import Timeout
+    client = AsyncOpenAI(
+        api_key=Config.OPENAI_KEY,
+        max_retries=Config.LLM_MAX_RETRIES,
+        timeout=Timeout(Config.LLM_TIMEOUT, connect=Config.LLM_CONNECT_TIMEOUT),
+    )
     vector_db = VectorDB(path="chroma_db", embedding_provider="openai")
 
     # Load test data

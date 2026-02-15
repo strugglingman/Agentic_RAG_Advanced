@@ -410,7 +410,12 @@ if __name__ == "__main__":
         print("=" * 70)
 
         # Create refiner
-        client = AsyncOpenAI(api_key=Config.OPENAI_KEY)
+        from httpx import Timeout
+        client = AsyncOpenAI(
+            api_key=Config.OPENAI_KEY,
+            max_retries=Config.LLM_MAX_RETRIES,
+            timeout=Timeout(Config.LLM_TIMEOUT, connect=Config.LLM_CONNECT_TIMEOUT),
+        )
         refiner = QueryRefiner(openai_client=client)
         print("[OK] QueryRefiner created")
 

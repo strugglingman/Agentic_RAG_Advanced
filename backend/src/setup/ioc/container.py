@@ -29,6 +29,7 @@ import logging
 from typing import Optional
 from dishka import Provider, Scope, make_async_container, provide, AsyncContainer
 from prisma import Prisma
+from httpx import Timeout
 from openai import AsyncOpenAI
 from redis.asyncio import Redis
 from src.services.vector_db import VectorDB
@@ -96,7 +97,11 @@ class AppProvider(Provider):
     # ==================== OPENAI CLIENT ====================
     @provide(scope=Scope.APP)
     def get_openai_client(self) -> AsyncOpenAI:
-        return AsyncOpenAI(api_key=Config.OPENAI_KEY)
+        return AsyncOpenAI(
+            api_key=Config.OPENAI_KEY,
+            max_retries=Config.LLM_MAX_RETRIES,
+            timeout=Timeout(Config.LLM_TIMEOUT, connect=Config.LLM_CONNECT_TIMEOUT),
+        )
 
     # ==================== REDIS CACHE ====================
 

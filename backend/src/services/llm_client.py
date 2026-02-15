@@ -23,14 +23,151 @@ Usage:
     )
 """
 
+import asyncio
+import logging
+import time
 from typing import Any, Optional
+
 from httpx import Timeout
 from langsmith import traceable
-from src.observability.metrics import observe_llm_tokens, increment_error, MetricsErrorType
+from openai import (
+    AsyncOpenAI,
+    APIConnectionError,
+    APITimeoutError,
+    InternalServerError,
+    RateLimitError,
+)
 
+from src.observability.metrics import (
+    observe_llm_tokens,
+    increment_error,
+    MetricsErrorType,
+)
 
-# Default timeout: 120 seconds for LLM requests (can be slow for complex queries)
+logger = logging.getLogger(__name__)
+
 DEFAULT_TIMEOUT = Timeout(120.0, connect=10.0)
+
+_RETRYABLE = (APIConnectionError, APITimeoutError, InternalServerError, RateLimitError)
+
+
+class CircuitOpenError(Exception):
+    """LLM provider is down — fail-fast."""
+
+    pass
+
+
+class AsyncCircuitBreaker:
+    """CLOSED → (N failures) → OPEN → (cooldown) → HALF_OPEN → (1 test) → CLOSED."""
+
+    def __init__(self, threshold: int = 5, recovery: int = 30):
+        self._threshold = threshold
+        self._recovery = recovery
+        self._failures = 0
+        self._opened_at: float = 0.0
+        self._state = "closed"
+        self._lock = asyncio.Lock()
+
+    async def check(self) -> None:
+        async with self._lock:
+            if self._state == "closed":
+                return
+            if self._state == "open":
+                if time.monotonic() - self._opened_at >= self._recovery:
+                    self._state = "half_open"
+                    logger.info("[CircuitBreaker] OPEN → HALF_OPEN")
+                    return
+                raise CircuitOpenError(f"LLM circuit open ({self._failures} failures)")
+
+    async def record_success(self) -> None:
+        async with self._lock:
+            if self._state == "half_open":
+                logger.info("[CircuitBreaker] HALF_OPEN → CLOSED")
+            self._failures = 0
+            self._state = "closed"
+
+    async def record_failure(self, error: Exception) -> None:
+        if not isinstance(error, _RETRYABLE):
+            return
+        async with self._lock:
+            self._failures += 1
+            if self._state == "half_open" or self._failures >= self._threshold:
+                self._state = "open"
+                self._opened_at = time.monotonic()
+                logger.warning("[CircuitBreaker] → OPEN (%d failures)", self._failures)
+
+
+_cb: Optional[AsyncCircuitBreaker] = None
+
+
+def _get_cb() -> AsyncCircuitBreaker:
+    global _cb
+    if _cb is None:
+        from src.config.settings import Config
+
+        _cb = AsyncCircuitBreaker(
+            Config.LLM_CB_FAILURE_THRESHOLD, Config.LLM_CB_RECOVERY_TIMEOUT
+        )
+    return _cb
+
+
+_fallback_client: Optional[AsyncOpenAI] = None
+
+
+def _get_fallback_client() -> Optional[tuple[AsyncOpenAI, str]]:
+    """Lazy-init cross-provider fallback client. Returns (client, model) or None."""
+    global _fallback_client
+    from src.config.settings import Config
+
+    if not (
+        Config.LLM_FALLBACK_BASE_URL
+        and Config.LLM_FALLBACK_API_KEY
+        and Config.LLM_FALLBACK_MODEL
+    ):
+        return None
+    if _fallback_client is None:
+        _fallback_client = AsyncOpenAI(
+            api_key=Config.LLM_FALLBACK_API_KEY,
+            base_url=Config.LLM_FALLBACK_BASE_URL,
+            max_retries=Config.LLM_MAX_RETRIES,
+            timeout=Timeout(Config.LLM_TIMEOUT, connect=Config.LLM_CONNECT_TIMEOUT),
+        )
+        logger.info(
+            "[LLM] Fallback client ready → %s (%s)",
+            Config.LLM_FALLBACK_MODEL,
+            Config.LLM_FALLBACK_BASE_URL,
+        )
+    return (_fallback_client, Config.LLM_FALLBACK_MODEL)
+
+
+async def _try_fallback(
+    primary_model: str, error: Exception, cb: AsyncCircuitBreaker, create_kwargs: dict
+) -> Any:
+    """Retry once with fallback provider if primary fails with retryable error or circuit open."""
+    if not isinstance(error, (*_RETRYABLE, CircuitOpenError)):
+        return None
+    fallback = _get_fallback_client()
+    if fallback is None:
+        return None
+    fb_client, fb_model = fallback
+    logger.warning(
+        "[LLM] %s on %s → fallback to %s @ %s",
+        type(error).__name__,
+        primary_model,
+        fb_model,
+        fb_client.base_url,
+    )
+    try:
+        response = await fb_client.chat.completions.create(
+            model=fb_model, **create_kwargs
+        )
+        if hasattr(response, "usage") and response.usage:
+            observe_llm_tokens("input", fb_model, response.usage.prompt_tokens)
+            observe_llm_tokens("output", fb_model, response.usage.completion_tokens)
+        await cb.record_success()
+        return response
+    except Exception:
+        return None
 
 
 @traceable(run_type="llm", name="chat_completion")
@@ -57,22 +194,30 @@ async def chat_completion(
     Returns:
         OpenAI ChatCompletion response
     """
+    cb = _get_cb()
+    create_kwargs = dict(
+        messages=messages,
+        temperature=temperature,
+        max_completion_tokens=max_tokens,
+        stop=stop,
+        timeout=timeout or DEFAULT_TIMEOUT,
+    )
     try:
-        response = await client.chat.completions.create(
-            model=model,
-            messages=messages,
-            temperature=temperature,
-            max_completion_tokens=max_tokens,
-            stop=stop,
-            timeout=timeout or DEFAULT_TIMEOUT,
-        )
+        await cb.check()
+        response = await client.chat.completions.create(model=model, **create_kwargs)
 
         if response.usage:
             observe_llm_tokens("input", model, response.usage.prompt_tokens)
             observe_llm_tokens("output", model, response.usage.completion_tokens)
 
+        await cb.record_success()
         return response
-    except Exception:
+    except Exception as e:
+        if not isinstance(e, CircuitOpenError):
+            await cb.record_failure(e)
+        fallback_resp = await _try_fallback(model, e, cb, create_kwargs)
+        if fallback_resp is not None:
+            return fallback_resp
         increment_error(MetricsErrorType.LLM_FAILED)
         raise
 
@@ -107,25 +252,33 @@ async def chat_completion_with_tools(
     Returns:
         OpenAI ChatCompletion response
     """
+    cb = _get_cb()
+    create_kwargs = dict(
+        messages=messages,
+        tools=tools,
+        tool_choice=tool_choice,
+        temperature=temperature,
+        max_completion_tokens=max_tokens,
+        stop=stop,
+        parallel_tool_calls=parallel_tool_calls,
+        timeout=timeout or DEFAULT_TIMEOUT,
+    )
     try:
-        response = await client.chat.completions.create(
-            model=model,
-            messages=messages,
-            tools=tools,
-            tool_choice=tool_choice,
-            temperature=temperature,
-            max_completion_tokens=max_tokens,
-            stop=stop,
-            parallel_tool_calls=parallel_tool_calls,
-            timeout=timeout or DEFAULT_TIMEOUT,
-        )
+        await cb.check()
+        response = await client.chat.completions.create(model=model, **create_kwargs)
 
         if response.usage:
             observe_llm_tokens("input", model, response.usage.prompt_tokens)
             observe_llm_tokens("output", model, response.usage.completion_tokens)
 
+        await cb.record_success()
         return response
-    except Exception:
+    except Exception as e:
+        if not isinstance(e, CircuitOpenError):
+            await cb.record_failure(e)
+        fallback_resp = await _try_fallback(model, e, cb, create_kwargs)
+        if fallback_resp is not None:
+            return fallback_resp
         increment_error(MetricsErrorType.LLM_FAILED)
         raise
 
@@ -152,22 +305,30 @@ async def chat_completion_json(
     Returns:
         OpenAI ChatCompletion response with JSON content
     """
+    cb = _get_cb()
+    create_kwargs = dict(
+        messages=messages,
+        temperature=temperature,
+        max_completion_tokens=max_tokens,
+        response_format={"type": "json_object"},
+        timeout=timeout or DEFAULT_TIMEOUT,
+    )
     try:
-        response = await client.chat.completions.create(
-            model=model,
-            messages=messages,
-            temperature=temperature,
-            max_completion_tokens=max_tokens,
-            response_format={"type": "json_object"},
-            timeout=timeout or DEFAULT_TIMEOUT,
-        )
+        await cb.check()
+        response = await client.chat.completions.create(model=model, **create_kwargs)
 
         if response.usage:
             observe_llm_tokens("input", model, response.usage.prompt_tokens)
             observe_llm_tokens("output", model, response.usage.completion_tokens)
 
+        await cb.record_success()
         return response
-    except Exception:
+    except Exception as e:
+        if not isinstance(e, CircuitOpenError):
+            await cb.record_failure(e)
+        fallback_resp = await _try_fallback(model, e, cb, create_kwargs)
+        if fallback_resp is not None:
+            return fallback_resp
         increment_error(MetricsErrorType.LLM_FAILED)
         raise
 
@@ -197,22 +358,30 @@ async def chat_completion_structured(
     Returns:
         OpenAI ChatCompletion response matching schema
     """
+    cb = _get_cb()
+    create_kwargs = dict(
+        messages=messages,
+        temperature=temperature,
+        max_completion_tokens=max_tokens,
+        response_format=schema,
+        timeout=timeout or DEFAULT_TIMEOUT,
+    )
     try:
-        response = await client.chat.completions.create(
-            model=model,
-            messages=messages,
-            temperature=temperature,
-            max_completion_tokens=max_tokens,
-            response_format=schema,
-            timeout=timeout or DEFAULT_TIMEOUT,
-        )
+        await cb.check()
+        response = await client.chat.completions.create(model=model, **create_kwargs)
 
         if response.usage:
             observe_llm_tokens("input", model, response.usage.prompt_tokens)
             observe_llm_tokens("output", model, response.usage.completion_tokens)
 
+        await cb.record_success()
         return response
-    except Exception:
+    except Exception as e:
+        if not isinstance(e, CircuitOpenError):
+            await cb.record_failure(e)
+        fallback_resp = await _try_fallback(model, e, cb, create_kwargs)
+        if fallback_resp is not None:
+            return fallback_resp
         increment_error(MetricsErrorType.LLM_FAILED)
         raise
 
@@ -239,16 +408,25 @@ async def chat_completion_stream(
     Returns:
         OpenAI async streaming response iterator
     """
+    cb = _get_cb()
+    create_kwargs = dict(
+        messages=messages,
+        temperature=temperature,
+        max_completion_tokens=max_tokens,
+        stream=True,
+        timeout=timeout or DEFAULT_TIMEOUT,
+    )
     try:
-        return await client.chat.completions.create(
-            model=model,
-            messages=messages,
-            temperature=temperature,
-            max_completion_tokens=max_tokens,
-            stream=True,
-            timeout=timeout or DEFAULT_TIMEOUT,
-        )
-    except Exception:
+        await cb.check()
+        stream = await client.chat.completions.create(model=model, **create_kwargs)
+        await cb.record_success()
+        return stream
+    except Exception as e:
+        if not isinstance(e, CircuitOpenError):
+            await cb.record_failure(e)
+        fallback_resp = await _try_fallback(model, e, cb, create_kwargs)
+        if fallback_resp is not None:
+            return fallback_resp
         increment_error(MetricsErrorType.LLM_FAILED)
         raise
 

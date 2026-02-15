@@ -43,6 +43,18 @@ class Config:
     )  # Vision-capable model for image analysis.
     OPENAI_TEMPERATURE = float(os.getenv("OPENAI_TEMPERATURE", "0.1"))
     OPENAI_KEY = os.getenv("OPENAI_API_KEY", "")
+    # OpenAI SDK built-in retry (exponential backoff for 429/500/503/408/409)
+    LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "3"))
+    LLM_TIMEOUT = int(os.getenv("LLM_TIMEOUT", "120"))
+    LLM_CONNECT_TIMEOUT = int(os.getenv("LLM_CONNECT_TIMEOUT", "10"))
+    # Cross-provider fallback via OpenAI-compatible endpoint
+    # Set all three to enable (e.g., Gemini: base_url="https://generativelanguage.googleapis.com/v1beta/openai/")
+    LLM_FALLBACK_BASE_URL = os.getenv("LLM_FALLBACK_BASE_URL", "")
+    LLM_FALLBACK_API_KEY = os.getenv("LLM_FALLBACK_API_KEY", "")
+    LLM_FALLBACK_MODEL = os.getenv("LLM_FALLBACK_MODEL", "")
+    # Circuit breaker: fail-fast when OpenAI is consistently down
+    LLM_CB_FAILURE_THRESHOLD = int(os.getenv("LLM_CB_FAILURE_THRESHOLD", "5"))
+    LLM_CB_RECOVERY_TIMEOUT = int(os.getenv("LLM_CB_RECOVERY_TIMEOUT", "30"))
     AGENT_MAX_ITERATIONS = int(os.getenv("AGENT_MAX_ITERATIONS", "20"))
 
     # ==============================================================================
@@ -222,8 +234,8 @@ class Config:
     # using recursive strategy. Token-based measurement aligns with embedding
     # model limits and gives language-agnostic results.
     # Recommended range: 256-512 tokens (Chroma Research, Firecrawl 2025).
-    CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "600"))
-    CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "120"))
+    CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "400"))
+    CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "80"))
     CHUNKING_STRATEGY = os.getenv(
         "CHUNKING_STRATEGY", "recursive"
     )  # "recursive" or "semantic"
