@@ -74,15 +74,20 @@ def get_user_identifier(request: Request) -> str:
     Get rate limit key from auth header or IP address.
     Matches Flask behavior: dept_id-user_id if authenticated, else IP.
     """
-    # Try to get user info from auth header (JWT)
+    # Try to get user info from auth header (JWT) with full signature verification
     auth_header = request.headers.get("Authorization", "")
     if auth_header.startswith("Bearer "):
         try:
             import jwt
 
             token = auth_header[7:]
-            # Decode without verification just to get claims for rate limiting
-            payload = jwt.decode(token, options={"verify_signature": False})
+            payload = jwt.decode(
+                token,
+                Config.SERVICE_AUTH_SECRET,
+                algorithms=["HS256"],
+                audience=Config.SERVICE_AUTH_AUDIENCE,
+                issuer=Config.SERVICE_AUTH_ISSUER,
+            )
             dept_id = payload.get("dept", "")
             user_id = payload.get("email", "")
             if dept_id and user_id:
