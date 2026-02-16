@@ -47,8 +47,11 @@ from dishka.integrations.fastapi import setup_dishka
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
+import logging
 
 from src.config.logging_config import setup_logging, correlation_id_var
+
+logger = logging.getLogger(__name__)
 from src.config.settings import Config
 from src.setup.ioc.container import AppProvider
 from src.presentation.api import (
@@ -242,11 +245,13 @@ def create_fastapi_app() -> FastAPI:
     async def global_exception_handler(request: Request, exc: Exception):
         import traceback
 
-        print(f"[GLOBAL ERROR] {type(exc).__name__}: {exc}")  # Log to console
-        print(f"[GLOBAL ERROR TRACEBACK]\n{traceback.format_exc()}")
+        # Log full details server-side only
+        logger.error("[GLOBAL ERROR] %s: %s", type(exc).__name__, exc)
+        logger.error("[GLOBAL ERROR TRACEBACK]\n%s", traceback.format_exc())
+        # Return generic message to client (no internal details)
         return JSONResponse(
             status_code=500,
-            content={"error": f"Internal server error: {str(exc)}"},
+            content={"error": "Internal server error"},
         )
 
     # Health check routes
