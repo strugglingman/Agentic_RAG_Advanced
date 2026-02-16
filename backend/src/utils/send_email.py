@@ -2,7 +2,6 @@ import logging
 import smtplib
 from email.message import EmailMessage
 from pathlib import Path
-import os
 from src.config.settings import Config
 
 # Sample SMTP configuration
@@ -28,11 +27,26 @@ def send_email(to_addresses: list, subject: str, body: str, attachments: list = 
 
     attachments = attachments or []
 
+    # Allowed base directories for attachments
+    allowed_bases = [
+        Path(Config.DOWNLOAD_BASE).resolve(),
+        Path(Config.UPLOAD_BASE).resolve(),
+    ]
+
     try:
         for file_path in attachments:
-            path = Path(file_path)
+            path = Path(file_path).resolve()
+
+            # Path traversal protection: attachment must be inside allowed dirs
+            if not any(
+                path.is_relative_to(base) for base in allowed_bases
+            ):
+                raise PermissionError(
+                    f"Attachment path outside allowed directories"
+                )
+
             if not path.exists():
-                raise FileNotFoundError(f"Attachment not found: {file_path}")
+                raise FileNotFoundError(f"Attachment not found: {path.name}")
 
             with open(path, "rb") as f:
                 file_data = f.read()
