@@ -46,7 +46,7 @@ from src.observability.metrics import (
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_TIMEOUT = Timeout(120.0, connect=10.0)
+DEFAULT_TIMEOUT = Timeout(40.0, connect=10.0)
 
 _RETRYABLE = (APIConnectionError, APITimeoutError, InternalServerError, RateLimitError)
 

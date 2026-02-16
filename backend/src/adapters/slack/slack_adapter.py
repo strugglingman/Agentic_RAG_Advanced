@@ -356,7 +356,12 @@ class SlackBotAdapter(BaseBotAdapter):
         try:
             from openai import AsyncOpenAI
 
-            openai_client = AsyncOpenAI(api_key=Config.OPENAI_KEY) if Config.OPENAI_KEY else None
+            from httpx import Timeout
+            openai_client = AsyncOpenAI(
+                api_key=Config.OPENAI_KEY,
+                max_retries=Config.LLM_MAX_RETRIES,
+                timeout=Timeout(Config.LLM_TIMEOUT, connect=Config.LLM_CONNECT_TIMEOUT),
+            ) if Config.OPENAI_KEY else None
         except ImportError:
             openai_client = None
 

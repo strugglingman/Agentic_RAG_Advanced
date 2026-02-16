@@ -45,7 +45,7 @@ class Config:
     OPENAI_KEY = os.getenv("OPENAI_API_KEY", "")
     # OpenAI SDK built-in retry (exponential backoff for 429/500/503/408/409)
     LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "3"))
-    LLM_TIMEOUT = int(os.getenv("LLM_TIMEOUT", "120"))
+    LLM_TIMEOUT = int(os.getenv("LLM_TIMEOUT", "40"))
     LLM_CONNECT_TIMEOUT = int(os.getenv("LLM_CONNECT_TIMEOUT", "10"))
     # Cross-provider fallback via OpenAI-compatible endpoint
     # Set all three to enable (e.g., Gemini: base_url="https://generativelanguage.googleapis.com/v1beta/openai/")
@@ -475,7 +475,9 @@ class Config:
     # ==============================================================================
     # Backend API Settings
     # ==============================================================================
-    BACKEND_API_TIMEOUT = int(os.getenv("BACKEND_API_TIMEOUT", "120"))
+    # Must be > AGENT_TIMEOUT (300s) so the Slack/bot HTTP client waits
+    # for the backend to finish agent execution before timing out.
+    BACKEND_API_TIMEOUT = int(os.getenv("BACKEND_API_TIMEOUT", "330"))
 
     # ==============================================================================
     # Bot General Configuration
