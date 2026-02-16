@@ -16,6 +16,7 @@ Usage:
 from enum import Enum
 from typing import Tuple, List, Dict, Any, Optional
 from dataclasses import dataclass
+import asyncio
 import json
 import logging
 import re
@@ -34,6 +35,8 @@ from src.services.llm_client import chat_completion_json
 from src.observability.metrics import (
     increment_active_queries,
     decrement_active_queries,
+    increment_error,
+    MetricsErrorType,
 )
 
 logger = logging.getLogger(__name__)
@@ -150,24 +153,31 @@ class QuerySupervisor:
             return
 
         try:
-            async with await psycopg.AsyncConnection.connect(
-                self._checkpoint_conn_string
-            ) as conn:
-                async with conn.cursor() as cur:
-                    # Delete from checkpoint tables for this thread_id
-                    await cur.execute(
-                        "DELETE FROM checkpoint_writes WHERE thread_id = %s",
-                        (thread_id,),
-                    )
-                    await cur.execute(
-                        "DELETE FROM checkpoint_blobs WHERE thread_id = %s",
-                        (thread_id,),
-                    )
-                    await cur.execute(
-                        "DELETE FROM checkpoints WHERE thread_id = %s", (thread_id,)
-                    )
-                await conn.commit()
-                logger.debug(f"[CHECKPOINT] Cleared old data for thread_id={thread_id}")
+            async with asyncio.timeout(Config.LLM_CONNECT_TIMEOUT):
+                async with await psycopg.AsyncConnection.connect(
+                    self._checkpoint_conn_string
+                ) as conn:
+                    async with conn.cursor() as cur:
+                        # Delete from checkpoint tables for this thread_id
+                        await cur.execute(
+                            "DELETE FROM checkpoint_writes WHERE thread_id = %s",
+                            (thread_id,),
+                        )
+                        await cur.execute(
+                            "DELETE FROM checkpoint_blobs WHERE thread_id = %s",
+                            (thread_id,),
+                        )
+                        await cur.execute(
+                            "DELETE FROM checkpoints WHERE thread_id = %s", (thread_id,)
+                        )
+                    await conn.commit()
+                    logger.debug(f"[CHECKPOINT] Cleared old data for thread_id={thread_id}")
+        except TimeoutError:
+            logger.warning(
+                "[CHECKPOINT] Clear timed out after %ds for thread_id=%s",
+                Config.LLM_CONNECT_TIMEOUT, thread_id,
+            )
+            increment_error(MetricsErrorType.TIMEOUT)
         except Exception as e:
             logger.warning(
                 f"[CHECKPOINT] Failed to clear for thread_id={thread_id}: {e}"
@@ -272,10 +282,11 @@ class QuerySupervisor:
             # Resume from checkpoint using astream - pass None to continue from saved state
             logger.info(f"[HITL] Resuming workflow with thread_id: {thread_id}")
             final_state = None
-            async for event in langgraph_agent.astream(
-                None, config=config, stream_mode="values"
-            ):
-                final_state = event
+            async with asyncio.timeout(Config.AGENT_TIMEOUT):
+                async for event in langgraph_agent.astream(
+                    None, config=config, stream_mode="values"
+                ):
+                    final_state = event
 
             logger.info("[HITL] Resume stream completed, checking for interrupt...")
 
@@ -302,6 +313,25 @@ class QuerySupervisor:
             answer, contexts = self._extract_langgraph_results(final_state)
             return QueryResult(answer=answer, contexts=contexts)
 
+        except TimeoutError:
+            logger.warning(
+                "[HITL] Resume timed out after %ds for thread_id=%s",
+                Config.AGENT_TIMEOUT,
+                thread_id,
+            )
+            increment_error(MetricsErrorType.TIMEOUT)
+            if final_state:
+                answer, contexts = self._extract_langgraph_results(final_state)
+                return QueryResult(
+                    answer=f"{answer}\n\n(Response timed out after {Config.AGENT_TIMEOUT}s. "
+                    f"This is a partial result.)",
+                    contexts=contexts,
+                )
+            return QueryResult(
+                answer=f"The request timed out after {Config.AGENT_TIMEOUT} seconds. "
+                f"Please try a simpler question or try again later.",
+                contexts=[],
+            )
         except Exception as e:
             logger.error(f"[HITL] Error resuming workflow: {e}")
             raise
@@ -385,13 +415,23 @@ class QuerySupervisor:
             ExecutionRoute enum value
         """
         prompt = self._get_classification_prompt(query)
-        response = await chat_completion_json(
-            client=self.openai_client,
-            messages=[{"role": "user", "content": prompt}],
-            model=Config.OPENAI_MODEL,
-            temperature=0,
-            max_tokens=150,
-        )
+        try:
+            async with asyncio.timeout(Config.AGENT_TOOL_TIMEOUT):
+                response = await chat_completion_json(
+                    client=self.openai_client,
+                    messages=[{"role": "user", "content": prompt}],
+                    model=Config.OPENAI_MODEL,
+                    temperature=0,
+                    max_tokens=150,
+                )
+        except TimeoutError:
+            logger.warning(
+                "[CLASSIFIER] LLM classification timed out after %ds, defaulting to AGENT_SERVICE",
+                Config.AGENT_TOOL_TIMEOUT,
+            )
+            increment_error(MetricsErrorType.NODE_TIMEOUT)
+            return ExecutionRoute.AGENT_SERVICE
+
         if not response.choices or len(response.choices) == 0:
             raise ValueError("LLM classification returned no choices")
 
@@ -476,9 +516,23 @@ class QuerySupervisor:
             Tuple of (answer, contexts)
         """
         # Use pre-loaded history from context (loaded in chat.py, avoids async issues)
-        final_answer, retrieved_contexts = await self.agent_service.run(query, context)
-
-        return final_answer, retrieved_contexts
+        try:
+            async with asyncio.timeout(Config.AGENT_TIMEOUT):
+                final_answer, retrieved_contexts = await self.agent_service.run(
+                    query, context
+                )
+            return final_answer, retrieved_contexts
+        except TimeoutError:
+            logger.warning(
+                "[AgentService] Execution timed out after %ds",
+                Config.AGENT_TIMEOUT,
+            )
+            increment_error(MetricsErrorType.TIMEOUT)
+            return (
+                f"The request timed out after {Config.AGENT_TIMEOUT} seconds. "
+                f"Please try a simpler question or try again later.",
+                [],
+            )
 
     async def _execute_langgraph(
         self, query: str, context: Dict[str, Any]
@@ -566,10 +620,11 @@ class QuerySupervisor:
             # ainvoke() can hang when interrupt_before is triggered
             logger.info(f"[HITL] Starting graph execution with thread_id: {thread_id}")
             final_state = None
-            async for event in langgraph_agent.astream(
-                agent_state, config=config, stream_mode="values"
-            ):
-                final_state = event
+            async with asyncio.timeout(Config.AGENT_TIMEOUT):
+                async for event in langgraph_agent.astream(
+                    agent_state, config=config, stream_mode="values"
+                ):
+                    final_state = event
 
             logger.info("[HITL] Graph stream completed, checking for interrupt...")
 
@@ -597,6 +652,28 @@ class QuerySupervisor:
             if final_state is None:
                 final_state = snapshot.values
             return self._extract_langgraph_results(final_state) + (None,)
+
+        except TimeoutError:
+            logger.warning(
+                "[LangGraph] Execution timed out after %ds for thread_id=%s",
+                Config.AGENT_TIMEOUT,
+                thread_id,
+            )
+            increment_error(MetricsErrorType.TIMEOUT)
+            if final_state:
+                answer, contexts = self._extract_langgraph_results(final_state)
+                return (
+                    f"{answer}\n\n(Response timed out after {Config.AGENT_TIMEOUT}s. "
+                    f"This is a partial result.)",
+                    contexts,
+                    None,
+                )
+            return (
+                f"The request timed out after {Config.AGENT_TIMEOUT} seconds. "
+                f"Please try a simpler question or try again later.",
+                [],
+                None,
+            )
 
         except Exception as e:
             # Auto-recovery for stale/corrupted checkpoints
@@ -633,10 +710,32 @@ class QuerySupervisor:
 
                 # Retry with fresh state
                 final_state = None
-                async for event in langgraph_agent.astream(
-                    agent_state, config=new_config, stream_mode="values"
-                ):
-                    final_state = event
+                try:
+                    async with asyncio.timeout(Config.AGENT_TIMEOUT):
+                        async for event in langgraph_agent.astream(
+                            agent_state, config=new_config, stream_mode="values"
+                        ):
+                            final_state = event
+                except TimeoutError:
+                    logger.warning(
+                        "[CHECKPOINT_RECOVERY] Recovery timed out after %ds for thread_id=%s",
+                        Config.AGENT_TIMEOUT, new_thread_id,
+                    )
+                    increment_error(MetricsErrorType.TIMEOUT)
+                    if final_state:
+                        answer, contexts = self._extract_langgraph_results(final_state)
+                        return (
+                            f"{answer}\n\n(Recovery timed out after {Config.AGENT_TIMEOUT}s. "
+                            f"This is a partial result.)",
+                            contexts,
+                            None,
+                        )
+                    return (
+                        f"The request timed out after {Config.AGENT_TIMEOUT} seconds during recovery. "
+                        f"Please try again later.",
+                        [],
+                        None,
+                    )
 
                 # Check for HITL after recovery
                 snapshot = await langgraph_agent.aget_state(new_config)

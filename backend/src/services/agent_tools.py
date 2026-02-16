@@ -1825,14 +1825,27 @@ async def execute_tool_call(
     executor_args = tool_args if tool_args else {}
 
     try:
-        # Execute the tool (await if async, call if sync)
-        if inspect.iscoroutinefunction(executor):
-            result = await executor(executor_args, context)
-        else:
-            result = await asyncio.to_thread(executor, executor_args, context)
+        # Per-tool wall-clock timeout. Caps entire tool execution regardless
+        # of internal SDK timeouts (e.g. OpenAI 120s httpx inside search_documents).
+        # asyncio.timeout cancels at the next await point, so inner timeouts
+        # never fire if the outer budget is smaller.
+        async with asyncio.timeout(Config.AGENT_TOOL_TIMEOUT):
+            if inspect.iscoroutinefunction(executor):
+                result = await executor(executor_args, context)
+            else:
+                result = await asyncio.to_thread(executor, executor_args, context)
         return result
+    except TimeoutError:
+        logger.warning(
+            "[TOOL_TIMEOUT] Tool '%s' timed out after %ds",
+            tool_name, Config.AGENT_TOOL_TIMEOUT,
+        )
+        increment_error(MetricsErrorType.TIMEOUT)
+        return (
+            f"Tool '{tool_name}' timed out after {Config.AGENT_TOOL_TIMEOUT} seconds. "
+            f"The operation took too long to complete."
+        )
     except Exception as e:
-        # Log error and return error message
         error_msg = f"Error executing tool '{tool_name}': {str(e)}"
-        print(error_msg)  # For debugging
+        print(error_msg)
         return error_msg

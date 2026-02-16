@@ -13,6 +13,7 @@ All nodes are ASYNC to support async tool execution and file operations.
 from typing import Dict, Any, Callable, Coroutine
 from dataclasses import dataclass
 import json
+import asyncio
 import logging
 from langchain_core.messages import AIMessage
 from src.services.langgraph_state import AgentState, RuntimeContext
@@ -52,7 +53,7 @@ from src.utils.file_content_extractor import extract_file_content as _extract_at
 from src.config.settings import Config
 from src.prompts import PlanningPrompts, GenerationPrompts, ToolPrompts
 from src.prompts.generation import ContextType
-from src.observability.metrics import increment_query_routing
+from src.observability.metrics import increment_query_routing, increment_error, MetricsErrorType
 
 logger = logging.getLogger(__name__)
 
@@ -496,83 +497,88 @@ def create_plan_node(
             attachment_file_ids=attachment_file_ids,
         )
         try:
-            client = runtime.get("openai_client")
-            if not client:
-                raise ValueError("OpenAI client is required for planning node.")
+            async with asyncio.timeout(Config.AGENT_TOOL_TIMEOUT):
+                client = runtime.get("openai_client")
+                if not client:
+                    raise ValueError("OpenAI client is required for planning node.")
 
-            # Use OpenAI Structured Outputs with strict schema for reliable planning
-            # This guarantees 100% schema compliance - LLM cannot generate invalid plans
-            plan_schema = {
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "execution_plan",
-                    "strict": True,
-                    "schema": {
-                        "type": "object",
-                        "properties": {
-                            "steps": {
-                                "type": "array",
-                                "description": "List of execution steps. Use multiple steps when user requests chained actions (e.g., 'search and download', 'create and email').",
-                                "items": {
-                                    "type": "object",
-                                    "properties": {
-                                        "tool": {
-                                            "type": "string",
-                                            "enum": [
-                                                "retrieve",
-                                                "web_search",
-                                                "direct_answer",
-                                                "download_file",
-                                                "send_email",
-                                                "create_documents",
-                                                "code_execution",
-                                            ],
-                                            "description": "The tool to use for this step",
+                # Use OpenAI Structured Outputs with strict schema for reliable planning
+                # This guarantees 100% schema compliance - LLM cannot generate invalid plans
+                plan_schema = {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "execution_plan",
+                        "strict": True,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "steps": {
+                                    "type": "array",
+                                    "description": "List of execution steps. Use multiple steps when user requests chained actions (e.g., 'search and download', 'create and email').",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "tool": {
+                                                "type": "string",
+                                                "enum": [
+                                                    "retrieve",
+                                                    "web_search",
+                                                    "direct_answer",
+                                                    "download_file",
+                                                    "send_email",
+                                                    "create_documents",
+                                                    "code_execution",
+                                                ],
+                                                "description": "The tool to use for this step",
+                                            },
+                                            "query": {
+                                                "type": "string",
+                                                "description": "The query or instruction for this tool",
+                                            },
                                         },
-                                        "query": {
-                                            "type": "string",
-                                            "description": "The query or instruction for this tool",
-                                        },
+                                        "required": ["tool", "query"],
+                                        "additionalProperties": False,
                                     },
-                                    "required": ["tool", "query"],
-                                    "additionalProperties": False,
+                                    "minItems": 1,
+                                    "maxItems": 3,  # Prevent redundant multi-step plans
                                 },
-                                "minItems": 1,
-                                "maxItems": 3,  # Prevent redundant multi-step plans
                             },
+                            "required": ["steps"],
+                            "additionalProperties": False,
                         },
-                        "required": ["steps"],
-                        "additionalProperties": False,
                     },
-                },
-            }
+                }
 
-            response = await chat_completion_structured(
-                client=client,
-                messages=[{"role": "user", "content": planning_prompt}],
-                schema=plan_schema,
-                model=Config.OPENAI_MODEL,
-                temperature=Config.OPENAI_TEMPERATURE,
-            )
+                response = await chat_completion_structured(
+                    client=client,
+                    messages=[{"role": "user", "content": planning_prompt}],
+                    schema=plan_schema,
+                    model=Config.OPENAI_MODEL,
+                    temperature=Config.OPENAI_TEMPERATURE,
+                )
 
-            plan_data = {}
-            if response.choices and response.choices[0].message:
-                plan_data = json.loads(response.choices[0].message.content)
+                plan_data = {}
+                if response.choices and response.choices[0].message:
+                    plan_data = json.loads(response.choices[0].message.content)
 
-            plans = []
-            if plan_data and "steps" in plan_data:
-                # Convert structured format to string format for routing
-                # e.g., {"tool": "retrieve", "query": "..."} -> "retrieve: ..."
-                for step in plan_data["steps"]:
-                    tool = step.get("tool", "retrieve")
-                    step_query = step.get("query", query)
-                    plans.append(f"{tool}: {step_query}")
+                plans = []
+                if plan_data and "steps" in plan_data:
+                    # Convert structured format to string format for routing
+                    # e.g., {"tool": "retrieve", "query": "..."} -> "retrieve: ..."
+                    for step in plan_data["steps"]:
+                        tool = step.get("tool", "retrieve")
+                        step_query = step.get("query", query)
+                        plans.append(f"{tool}: {step_query}")
 
-            if not plans:
-                plans = [f"retrieve: {query}"]  # Default fallback
+                if not plans:
+                    plans = [f"retrieve: {query}"]  # Default fallback
 
-            logger.info(f"[PLAN] Structured plan created: {plans}")
+                logger.info(f"[PLAN] Structured plan created: {plans}")
 
+        except TimeoutError:
+            logger.warning("[PLAN] Node timed out after %ds", Config.AGENT_TOOL_TIMEOUT)
+            increment_error(MetricsErrorType.NODE_TIMEOUT)
+            plans = [f"retrieve: {query}"]
         except Exception as e:
             logger.warning(f"[PLAN] Structured output failed, using fallback: {e}")
             plans = [
@@ -686,86 +692,97 @@ def create_retrieve_node(
             }
 
         try:
-            # Extract query from current plan step
-            # Format: "retrieve: search for information about X" or just the action text
-            current_plan_step = plan[current_step]
+            async with asyncio.timeout(Config.AGENT_TOOL_TIMEOUT):
+                # Extract query from current plan step
+                # Format: "retrieve: search for information about X" or just the action text
+                current_plan_step = plan[current_step]
 
-            # Try to extract query after colon (e.g., "retrieve: query text")
-            if ":" in current_plan_step:
-                step_query = current_plan_step.split(":", 1)[1].strip()
-            else:
-                # Fallback: use the step text as-is, removing action keywords
-                step_query = current_plan_step
-                for keyword in ["retrieve", "search", "find", "document", "documents"]:
-                    step_query = step_query.replace(keyword, "").strip()
+                # Try to extract query after colon (e.g., "retrieve: query text")
+                if ":" in current_plan_step:
+                    step_query = current_plan_step.split(":", 1)[1].strip()
+                else:
+                    # Fallback: use the step text as-is, removing action keywords
+                    step_query = current_plan_step
+                    for keyword in ["retrieve", "search", "find", "document", "documents"]:
+                        step_query = step_query.replace(keyword, "").strip()
 
-            # Use refined query if available (from refinement loop), otherwise optimize step query
-            openai_client = runtime.get("openai_client")
-            if state.get("refined_query"):
-                # Already in semantic refinement loop - use refined_query directly
-                query = state.get("refined_query")
-                logger.info(
-                    f"[RETRIEVE] Using refined_query (semantic refinement): '{query}'"
+                # Use refined query if available (from refinement loop), otherwise optimize step query
+                openai_client = runtime.get("openai_client")
+                if state.get("refined_query"):
+                    # Already in semantic refinement loop - use refined_query directly
+                    query = state.get("refined_query")
+                    logger.info(
+                        f"[RETRIEVE] Using refined_query (semantic refinement): '{query}'"
+                    )
+                else:
+                    # First call - optimize verbose planner query for retrieval
+                    logger.info(f"[RETRIEVE] Optimizing step_query: '{step_query}'")
+                    query = await _optimize_step_query(
+                        step_query, "retrieve", openai_client
+                    ) or state.get("query")
+                    logger.info(f"[RETRIEVE] Optimized query: '{query}'")
+
+                where = build_where(request_data, dept_id, user_id)
+                ctx, _ = await retrieve_with_decomposition(
+                    vector_db=vector_db,
+                    openai_client=openai_client,
+                    query=query,
+                    dept_id=dept_id,
+                    user_id=user_id,
+                    top_k=Config.TOP_K,
+                    where=where,
+                    use_hybrid=Config.USE_HYBRID,
+                    use_reranker=Config.USE_RERANKER,
                 )
-            else:
-                # First call - optimize verbose planner query for retrieval
-                logger.info(f"[RETRIEVE] Optimizing step_query: '{step_query}'")
-                query = await _optimize_step_query(
-                    step_query, "retrieve", openai_client
-                ) or state.get("query")
-                logger.info(f"[RETRIEVE] Optimized query: '{query}'")
+                if not ctx:
+                    return {
+                        "retrieved_docs": [],
+                        "current_step": current_step,
+                        "iteration_count": state.get("iteration_count", 0) + 1,
+                        "messages": state.get("messages", [])
+                        + [AIMessage(content="No relevant documents found.")],
+                    }
 
-            where = build_where(request_data, dept_id, user_id)
-            ctx, _ = await retrieve_with_decomposition(
-                vector_db=vector_db,
-                openai_client=openai_client,
-                query=query,
-                dept_id=dept_id,
-                user_id=user_id,
-                top_k=Config.TOP_K,
-                where=where,
-                use_hybrid=Config.USE_HYBRID,
-                use_reranker=Config.USE_RERANKER,
-            )
-            if not ctx:
+                # Store retrieved docs PER STEP to avoid mixing contexts from different questions
+                # Replace old retrieval context if exists (from refinement loop), keep only latest
+                step_contexts = state.get("step_contexts", {})
+                if current_step not in step_contexts:
+                    step_contexts[current_step] = []
+
+                # Remove any existing retrieval context (from previous refinement attempt)
+                step_contexts[current_step] = [
+                    ctx
+                    for ctx in step_contexts[current_step]
+                    if ctx.get("type") != "retrieval"
+                ]
+
+                # Add new retrieval context
+                step_contexts[current_step].append(
+                    {
+                        "type": "retrieval",
+                        "docs": ctx,
+                        "plan_step": plan[current_step] if current_step < len(plan) else "",
+                    }
+                )
+
                 return {
-                    "retrieved_docs": [],
+                    "retrieved_docs": ctx,  # Keep for backward compatibility with reflection
+                    "step_contexts": step_contexts,
+                    "tools_used": state.get("tools_used", []) + ["search_documents"],
                     "current_step": current_step,
                     "iteration_count": state.get("iteration_count", 0) + 1,
                     "messages": state.get("messages", [])
-                    + [AIMessage(content="No relevant documents found.")],
+                    + [AIMessage(content=f"Retrieved {len(ctx)} documents.")],
                 }
-
-            # Store retrieved docs PER STEP to avoid mixing contexts from different questions
-            # Replace old retrieval context if exists (from refinement loop), keep only latest
-            step_contexts = state.get("step_contexts", {})
-            if current_step not in step_contexts:
-                step_contexts[current_step] = []
-
-            # Remove any existing retrieval context (from previous refinement attempt)
-            step_contexts[current_step] = [
-                ctx
-                for ctx in step_contexts[current_step]
-                if ctx.get("type") != "retrieval"
-            ]
-
-            # Add new retrieval context
-            step_contexts[current_step].append(
-                {
-                    "type": "retrieval",
-                    "docs": ctx,
-                    "plan_step": plan[current_step] if current_step < len(plan) else "",
-                }
-            )
-
+        except TimeoutError:
+            logger.warning("[RETRIEVE] Node timed out after %ds", Config.AGENT_TOOL_TIMEOUT)
+            increment_error(MetricsErrorType.NODE_TIMEOUT)
             return {
-                "retrieved_docs": ctx,  # Keep for backward compatibility with reflection
-                "step_contexts": step_contexts,
-                "tools_used": state.get("tools_used", []) + ["search_documents"],
+                "retrieved_docs": [],
                 "current_step": current_step,
                 "iteration_count": state.get("iteration_count", 0) + 1,
                 "messages": state.get("messages", [])
-                + [AIMessage(content=f"Retrieved {len(ctx)} documents.")],
+                + [AIMessage(content=f"Retrieval timed out after {Config.AGENT_TOOL_TIMEOUT}s.")],
             }
         except Exception as e:
             return {
@@ -806,61 +823,78 @@ def create_reflect_node(
             Updated state with quality assessment (evaluation_result as dict)
         """
         try:
-            # Use step-specific query from plan, not full original query
-            plan = state.get("plan", [])
-            current_step = state.get("current_step", 0)
+            async with asyncio.timeout(Config.AGENT_TOOL_TIMEOUT):
+                # Use step-specific query from plan, not full original query
+                plan = state.get("plan", [])
+                current_step = state.get("current_step", 0)
 
-            # Extract step-specific query from plan (current_step points directly to executing step)
-            step_query = state.get("query", "")  # Default to full query
-            if plan and current_step < len(plan):
-                current_plan_step = plan[current_step]
-                # Extract query after colon (e.g., "retrieve: The Man Called Ove" → "The Man Called Ove")
-                if ":" in current_plan_step:
-                    step_query = current_plan_step.split(":", 1)[1].strip()
-                else:
-                    # Fallback: use the step text as-is, removing action keywords
-                    step_query = current_plan_step
-                    for keyword in [
-                        "retrieve",
-                        "search",
-                        "find",
-                        "document",
-                        "documents",
-                    ]:
-                        step_query = step_query.replace(keyword, "").strip()
+                # Extract step-specific query from plan (current_step points directly to executing step)
+                step_query = state.get("query", "")  # Default to full query
+                if plan and current_step < len(plan):
+                    current_plan_step = plan[current_step]
+                    # Extract query after colon (e.g., "retrieve: The Man Called Ove" → "The Man Called Ove")
+                    if ":" in current_plan_step:
+                        step_query = current_plan_step.split(":", 1)[1].strip()
+                    else:
+                        # Fallback: use the step text as-is, removing action keywords
+                        step_query = current_plan_step
+                        for keyword in [
+                            "retrieve",
+                            "search",
+                            "find",
+                            "document",
+                            "documents",
+                        ]:
+                            step_query = step_query.replace(keyword, "").strip()
 
-            # Use refined query if available (from refinement loop), otherwise use step-specific query
-            query = state.get("refined_query") or step_query
-            retrieved_docs = state.get("retrieved_docs", [])
+                # Use refined query if available (from refinement loop), otherwise use step-specific query
+                query = state.get("refined_query") or step_query
+                retrieved_docs = state.get("retrieved_docs", [])
 
-            # Create evaluation criteria
-            evaluator_criteria = EvaluationCriteria(
-                query=query,
-                contexts=retrieved_docs,
-                mode=ReflectionMode.BALANCED,
+                # Create evaluation criteria
+                evaluator_criteria = EvaluationCriteria(
+                    query=query,
+                    contexts=retrieved_docs,
+                    mode=ReflectionMode.BALANCED,
+                )
+                reflection_config = ReflectionConfig.from_settings(Config)
+                openai_client = runtime.get("openai_client")
+
+                if not openai_client:
+                    raise ValueError("OpenAI client is required for reflection node.")
+
+                evaluator = RetrievalEvaluator(
+                    config=reflection_config,
+                    openai_client=openai_client,
+                )
+                evaluation_result = await evaluator.evaluate(evaluator_criteria)
+
+                # Convert EvaluationResult to dict for serialization
+                return {
+                    "evaluation_result": evaluation_result_to_dict(evaluation_result),
+                    "iteration_count": state.get("iteration_count", 0) + 1,
+                    "messages": state.get("messages", [])
+                    + [
+                        AIMessage(
+                            content=f"Retrieval quality: {evaluation_result.quality.value} (confidence: {evaluation_result.confidence:.2f}). Recommendation: {evaluation_result.recommendation.value}."
+                        )
+                    ],
+                }
+        except TimeoutError:
+            logger.warning("[REFLECT] Node timed out after %ds", Config.AGENT_TOOL_TIMEOUT)
+            increment_error(MetricsErrorType.NODE_TIMEOUT)
+            fallback_result = EvaluationResult(
+                quality=QualityLevel.PARTIAL,
+                confidence=0.5,
+                coverage=0.5,
+                recommendation=RecommendationAction.ANSWER,
+                reasoning="Reflection timed out, proceeding with default assessment.",
             )
-            reflection_config = ReflectionConfig.from_settings(Config)
-            openai_client = runtime.get("openai_client")
-
-            if not openai_client:
-                raise ValueError("OpenAI client is required for reflection node.")
-
-            evaluator = RetrievalEvaluator(
-                config=reflection_config,
-                openai_client=openai_client,
-            )
-            evaluation_result = await evaluator.evaluate(evaluator_criteria)
-
-            # Convert EvaluationResult to dict for serialization
             return {
-                "evaluation_result": evaluation_result_to_dict(evaluation_result),
+                "evaluation_result": evaluation_result_to_dict(fallback_result),
                 "iteration_count": state.get("iteration_count", 0) + 1,
                 "messages": state.get("messages", [])
-                + [
-                    AIMessage(
-                        content=f"Retrieval quality: {evaluation_result.quality.value} (confidence: {evaluation_result.confidence:.2f}). Recommendation: {evaluation_result.recommendation.value}."
-                    )
-                ],
+                + [AIMessage(content=f"Reflection timed out after {Config.AGENT_TOOL_TIMEOUT}s.")],
             }
         except Exception as e:
             # Fallback to default values (as dict)
@@ -917,167 +951,180 @@ def create_tool_web_search_node(
         """
         increment_query_routing("web_search")
         try:
-            plan = state.get("plan", [])
-            current_step = state.get("current_step", 0)
-            query = state.get("query", "")
+            async with asyncio.timeout(Config.AGENT_TOOL_TIMEOUT):
+                plan = state.get("plan", [])
+                current_step = state.get("current_step", 0)
+                query = state.get("query", "")
 
-            # Get OpenAI client from runtime
-            client = runtime.get("openai_client")
-            if not client:
-                return {
-                    "tools_used": state.get("tools_used", []),
-                    "tool_results": state.get("tool_results", {}),
-                    "current_step": current_step,
-                    "iteration_count": state.get("iteration_count", 0) + 1,
-                    "error": "OpenAI client required for tool execution",
+                # Get OpenAI client from runtime
+                client = runtime.get("openai_client")
+                if not client:
+                    return {
+                        "tools_used": state.get("tools_used", []),
+                        "tool_results": state.get("tool_results", {}),
+                        "current_step": current_step,
+                        "iteration_count": state.get("iteration_count", 0) + 1,
+                        "error": "OpenAI client required for tool execution",
+                    }
+
+                # Determine if this is a DETOUR call BEFORE building prompt
+                is_detour = state.get("evaluation_result") is not None
+
+                # Build prompt for LLM tool calling
+                if plan and current_step < len(plan) and not is_detour:
+                    action_step = plan[current_step]
+                    # Extract clean query (remove tool name prefix)
+                    clean_query = (
+                        action_step.split(":", 1)[1].strip()
+                        if ":" in action_step
+                        else action_step
+                    )
+                    # Optimize verbose planner query for web search (stay under Tavily 400 char limit)
+                    logger.info(f"[WEB_SEARCH] Optimizing step_query: '{clean_query}'")
+                    clean_query = await _optimize_step_query(clean_query, "web_search", client)
+                    logger.info(f"[WEB_SEARCH] Optimized query: '{clean_query}'")
+                    prompt = ToolPrompts.web_search_prompt(clean_query, is_detour=False)
+                elif is_detour:
+                    refined_query = state.get("refined_query")
+                    if refined_query:
+                        task_query = refined_query
+                        logger.info(
+                            f"[WEB_SEARCH] Using refined_query (detour): '{task_query}'"
+                        )
+                    elif plan and current_step < len(plan):
+                        task_query = plan[current_step]
+                        logger.info(
+                            f"[WEB_SEARCH] Using plan step (detour): '{task_query}'"
+                        )
+                    else:
+                        task_query = query
+                        logger.info(
+                            f"[WEB_SEARCH] Using original query (detour): '{task_query}'"
+                        )
+                    prompt = ToolPrompts.web_search_prompt(task_query, is_detour=True)
+                else:
+                    prompt = ToolPrompts.fallback_prompt(query, "web_search")
+
+                response = await chat_completion_with_tools(
+                    client=client,
+                    model=Config.OPENAI_MODEL,
+                    messages=[{"role": "user", "content": prompt}],
+                    tools=TOOL_WEB_SEARCH,
+                    tool_choice="auto",
+                    temperature=0.1,
+                )
+
+                if not response.choices[0].message.tool_calls:
+                    # Save step_contexts so verify_node doesn't throw and can combine all step_answers
+                    step_contexts = state.get("step_contexts", {})
+                    if current_step not in step_contexts:
+                        step_contexts[current_step] = []
+                    step_contexts[current_step].append(
+                        {
+                            "type": "tool",
+                            "tool_name": "web_search",
+                            "result": "Web search not called - no results",
+                            "args": {},
+                            "plan_step": (
+                                plan[current_step]
+                                if plan and current_step < len(plan)
+                                else ""
+                            ),
+                        }
+                    )
+                    return {
+                        "tools_used": state.get("tools_used", []),
+                        "tool_results": state.get("tool_results", {}),
+                        "step_contexts": step_contexts,
+                        "current_step": current_step,
+                        "iteration_count": state.get("iteration_count", 0) + 1,
+                        "draft_answer": "Web search was not performed.",
+                        "messages": state.get("messages", [])
+                        + [AIMessage(content="No tool was called by the LLM.")],
+                    }
+
+                tool_call = response.choices[0].message.tool_calls[0]
+                tool_name = tool_call.function.name
+                tool_args = json.loads(tool_call.function.arguments)
+
+                # Build context for tool execution from runtime
+                context = {
+                    "vector_db": runtime.get("vector_db"),
+                    "dept_id": runtime.get("dept_id"),
+                    "user_id": runtime.get("user_id"),
+                    "openai_client": client,
+                    "request_data": runtime.get("request_data") or {},
+                    "file_service": runtime.get("file_service"),
                 }
 
-            # Determine if this is a DETOUR call BEFORE building prompt
-            is_detour = state.get("evaluation_result") is not None
+                result = await execute_tool_call(tool_name, tool_args, context)
 
-            # Build prompt for LLM tool calling
-            if plan and current_step < len(plan) and not is_detour:
-                action_step = plan[current_step]
-                # Extract clean query (remove tool name prefix)
-                clean_query = (
-                    action_step.split(":", 1)[1].strip()
-                    if ":" in action_step
-                    else action_step
+                tool_results = state.get("tool_results", {})
+                tool_key = f"{tool_name}_step_{current_step}"
+                if tool_key not in tool_results:
+                    tool_results[tool_key] = []
+                tool_results[tool_key].append(
+                    {
+                        "step": current_step,
+                        "args": tool_args,
+                        "result": result,
+                        "query": query,
+                    }
                 )
-                # Optimize verbose planner query for web search (stay under Tavily 400 char limit)
-                logger.info(f"[WEB_SEARCH] Optimizing step_query: '{clean_query}'")
-                clean_query = await _optimize_step_query(clean_query, "web_search", client)
-                logger.info(f"[WEB_SEARCH] Optimized query: '{clean_query}'")
-                prompt = ToolPrompts.web_search_prompt(clean_query, is_detour=False)
-            elif is_detour:
-                refined_query = state.get("refined_query")
-                if refined_query:
-                    task_query = refined_query
-                    logger.info(
-                        f"[WEB_SEARCH] Using refined_query (detour): '{task_query}'"
-                    )
-                elif plan and current_step < len(plan):
-                    task_query = plan[current_step]
-                    logger.info(
-                        f"[WEB_SEARCH] Using plan step (detour): '{task_query}'"
-                    )
-                else:
-                    task_query = query
-                    logger.info(
-                        f"[WEB_SEARCH] Using original query (detour): '{task_query}'"
-                    )
-                prompt = ToolPrompts.web_search_prompt(task_query, is_detour=True)
-            else:
-                prompt = ToolPrompts.fallback_prompt(query, "web_search")
 
-            response = await chat_completion_with_tools(
-                client=client,
-                model=Config.OPENAI_MODEL,
-                messages=[{"role": "user", "content": prompt}],
-                tools=TOOL_WEB_SEARCH,
-                tool_choice="auto",
-                temperature=0.1,
-            )
-
-            if not response.choices[0].message.tool_calls:
-                # Save step_contexts so verify_node doesn't throw and can combine all step_answers
+                # Replace old web_search context if exists (from refinement loop), keep only latest
                 step_contexts = state.get("step_contexts", {})
                 if current_step not in step_contexts:
                     step_contexts[current_step] = []
+
+                # Remove any existing web_search context (from previous refinement attempt)
+                step_contexts[current_step] = [
+                    ctx
+                    for ctx in step_contexts[current_step]
+                    if not (
+                        ctx.get("type") == "tool" and ctx.get("tool_name") == "web_search"
+                    )
+                ]
+
+                # Add new web_search context
                 step_contexts[current_step].append(
                     {
                         "type": "tool",
-                        "tool_name": "web_search",
-                        "result": "Web search not called - no results",
-                        "args": {},
+                        "tool_name": tool_name,
+                        "result": result,
+                        "args": tool_args,
                         "plan_step": (
-                            plan[current_step]
-                            if plan and current_step < len(plan)
-                            else ""
+                            plan[current_step] if plan and current_step < len(plan) else ""
                         ),
                     }
                 )
+
                 return {
-                    "tools_used": state.get("tools_used", []),
-                    "tool_results": state.get("tool_results", {}),
+                    "tools_used": state.get("tools_used", []) + [tool_name],
+                    "tool_results": tool_results,
                     "step_contexts": step_contexts,
                     "current_step": current_step,
                     "iteration_count": state.get("iteration_count", 0) + 1,
-                    "draft_answer": "Web search was not performed.",
                     "messages": state.get("messages", [])
-                    + [AIMessage(content="No tool was called by the LLM.")],
+                    + [
+                        AIMessage(
+                            content=f"Executed {tool_name} with result: {result[:200]}..."
+                        )
+                    ],
                 }
 
-            tool_call = response.choices[0].message.tool_calls[0]
-            tool_name = tool_call.function.name
-            tool_args = json.loads(tool_call.function.arguments)
-
-            # Build context for tool execution from runtime
-            context = {
-                "vector_db": runtime.get("vector_db"),
-                "dept_id": runtime.get("dept_id"),
-                "user_id": runtime.get("user_id"),
-                "openai_client": client,
-                "request_data": runtime.get("request_data") or {},
-                "file_service": runtime.get("file_service"),
-            }
-
-            result = await execute_tool_call(tool_name, tool_args, context)
-
-            tool_results = state.get("tool_results", {})
-            tool_key = f"{tool_name}_step_{current_step}"
-            if tool_key not in tool_results:
-                tool_results[tool_key] = []
-            tool_results[tool_key].append(
-                {
-                    "step": current_step,
-                    "args": tool_args,
-                    "result": result,
-                    "query": query,
-                }
-            )
-
-            # Replace old web_search context if exists (from refinement loop), keep only latest
-            step_contexts = state.get("step_contexts", {})
-            if current_step not in step_contexts:
-                step_contexts[current_step] = []
-
-            # Remove any existing web_search context (from previous refinement attempt)
-            step_contexts[current_step] = [
-                ctx
-                for ctx in step_contexts[current_step]
-                if not (
-                    ctx.get("type") == "tool" and ctx.get("tool_name") == "web_search"
-                )
-            ]
-
-            # Add new web_search context
-            step_contexts[current_step].append(
-                {
-                    "type": "tool",
-                    "tool_name": tool_name,
-                    "result": result,
-                    "args": tool_args,
-                    "plan_step": (
-                        plan[current_step] if plan and current_step < len(plan) else ""
-                    ),
-                }
-            )
-
+        except TimeoutError:
+            logger.warning("[WEB_SEARCH] Node timed out after %ds", Config.AGENT_TOOL_TIMEOUT)
+            increment_error(MetricsErrorType.NODE_TIMEOUT)
             return {
-                "tools_used": state.get("tools_used", []) + [tool_name],
-                "tool_results": tool_results,
-                "step_contexts": step_contexts,
+                "tools_used": state.get("tools_used", []),
+                "tool_results": state.get("tool_results", {}),
                 "current_step": current_step,
                 "iteration_count": state.get("iteration_count", 0) + 1,
+                "error": f"Web search timed out after {Config.AGENT_TOOL_TIMEOUT}s",
                 "messages": state.get("messages", [])
-                + [
-                    AIMessage(
-                        content=f"Executed {tool_name} with result: {result[:200]}..."
-                    )
-                ],
+                + [AIMessage(content=f"Web search timed out after {Config.AGENT_TOOL_TIMEOUT}s.")],
             }
-
         except Exception as e:
             return {
                 "tools_used": state.get("tools_used", []),
@@ -1123,167 +1170,181 @@ def create_tool_download_file_node(
         """
         increment_query_routing("download_file")
         try:
-            plan = state.get("plan", [])
-            current_step = state.get("current_step", 0)
-            query = state.get("query", "")
+            async with asyncio.timeout(Config.AGENT_TOOL_TIMEOUT):
+                plan = state.get("plan", [])
+                current_step = state.get("current_step", 0)
+                query = state.get("query", "")
 
-            # Get OpenAI client from runtime
-            client = runtime.get("openai_client")
-            if not client:
-                return {
-                    "tools_used": state.get("tools_used", []),
-                    "tool_results": state.get("tool_results", {}),
-                    "current_step": current_step,
-                    "iteration_count": state.get("iteration_count", 0) + 1,
-                    "error": "OpenAI client required for tool execution",
+                # Get OpenAI client from runtime
+                client = runtime.get("openai_client")
+                if not client:
+                    return {
+                        "tools_used": state.get("tools_used", []),
+                        "tool_results": state.get("tool_results", {}),
+                        "current_step": current_step,
+                        "iteration_count": state.get("iteration_count", 0) + 1,
+                        "error": "OpenAI client required for tool execution",
+                    }
+
+                # Use unified helper to get all previous step context
+                prev_ctx = build_previous_step_context(state, current_step)
+                logger.info(
+                    f"[DOWNLOAD_FILE_NODE] prev_ctx: urls={len(prev_ctx.urls)}, "
+                    f"file_ids={len(prev_ctx.file_ids)}, text_len={len(prev_ctx.text)}"
+                )
+
+                # Build prompt for LLM tool calling
+                if plan and current_step < len(plan):
+                    action_step = plan[current_step]
+                    # Extract URLs from plan step
+                    clean_query = (
+                        action_step.split(":", 1)[1].strip()
+                        if ":" in action_step
+                        else action_step
+                    )
+                    prompt = ToolPrompts.download_file_prompt(
+                        clean_query, previous_step_context=prev_ctx.text
+                    )
+                else:
+                    prompt = ToolPrompts.fallback_prompt(query, "download_file")
+
+                response = await chat_completion_with_tools(
+                    client=client,
+                    model=Config.OPENAI_MODEL,
+                    messages=[{"role": "user", "content": prompt}],
+                    tools=TOOL_DOWNLOAD_FILE,
+                    tool_choice="auto",
+                    temperature=0.1,
+                )
+
+                if not response.choices[0].message.tool_calls:
+                    # Save step_contexts so verify_node doesn't throw and can combine all step_answers
+                    step_contexts = state.get("step_contexts", {})
+                    if current_step not in step_contexts:
+                        step_contexts[current_step] = []
+                    step_contexts[current_step].append(
+                        {
+                            "type": "tool",
+                            "tool_name": "download_file",
+                            "result": "Download not performed - no files downloaded",
+                            "args": {},
+                            "plan_step": (
+                                plan[current_step]
+                                if plan and current_step < len(plan)
+                                else ""
+                            ),
+                        }
+                    )
+                    return {
+                        "tools_used": state.get("tools_used", []),
+                        "tool_results": state.get("tool_results", {}),
+                        "step_contexts": step_contexts,
+                        "current_step": current_step,
+                        "iteration_count": state.get("iteration_count", 0) + 1,
+                        "draft_answer": "Download was not performed.",
+                        "messages": state.get("messages", [])
+                        + [
+                            AIMessage(content="No tool was called by the LLM for download.")
+                        ],
+                    }
+
+                tool_call = response.choices[0].message.tool_calls[0]
+                tool_name = tool_call.function.name
+                tool_args = json.loads(tool_call.function.arguments)
+
+                # Build context for tool execution from runtime
+                context = {
+                    "vector_db": runtime.get("vector_db"),
+                    "dept_id": runtime.get("dept_id"),
+                    "user_id": runtime.get("user_id"),
+                    "openai_client": client,
+                    "request_data": runtime.get("request_data") or {},
+                    "file_service": runtime.get("file_service"),
+                    "conversation_id": runtime.get("conversation_id"),
                 }
 
-            # Use unified helper to get all previous step context
-            prev_ctx = build_previous_step_context(state, current_step)
-            logger.info(
-                f"[DOWNLOAD_FILE_NODE] prev_ctx: urls={len(prev_ctx.urls)}, "
-                f"file_ids={len(prev_ctx.file_ids)}, text_len={len(prev_ctx.text)}"
-            )
+                result = await execute_tool_call(tool_name, tool_args, context)
 
-            # Build prompt for LLM tool calling
-            if plan and current_step < len(plan):
-                action_step = plan[current_step]
-                # Extract URLs from plan step
-                clean_query = (
-                    action_step.split(":", 1)[1].strip()
-                    if ":" in action_step
-                    else action_step
+                tool_results = state.get("tool_results", {})
+                tool_key = f"{tool_name}_step_{current_step}"
+                if tool_key not in tool_results:
+                    tool_results[tool_key] = []
+                tool_results[tool_key].append(
+                    {
+                        "step": current_step,
+                        "args": tool_args,
+                        "result": result,
+                        "query": query,
+                    }
                 )
-                prompt = ToolPrompts.download_file_prompt(
-                    clean_query, previous_step_context=prev_ctx.text
-                )
-            else:
-                prompt = ToolPrompts.fallback_prompt(query, "download_file")
 
-            response = await chat_completion_with_tools(
-                client=client,
-                model=Config.OPENAI_MODEL,
-                messages=[{"role": "user", "content": prompt}],
-                tools=TOOL_DOWNLOAD_FILE,
-                tool_choice="auto",
-                temperature=0.1,
-            )
+                # Extract file_ids from result for chaining to subsequent tools
+                # Format from execute_download_file: "File ID: {file_id}\n..."
+                files_created = []
+                for line in result.split("\n"):
+                    if "File ID:" in line:
+                        file_id = line.split("File ID:")[1].strip()
+                        files_created.append(
+                            {"file_id": file_id, "source": "download_file"}
+                        )
 
-            if not response.choices[0].message.tool_calls:
-                # Save step_contexts so verify_node doesn't throw and can combine all step_answers
+                # Store tool result with files_created for chaining
                 step_contexts = state.get("step_contexts", {})
                 if current_step not in step_contexts:
                     step_contexts[current_step] = []
+
+                # Remove any existing download_file context
+                step_contexts[current_step] = [
+                    ctx
+                    for ctx in step_contexts[current_step]
+                    if not (
+                        ctx.get("type") == "tool"
+                        and ctx.get("tool_name") == "download_file"
+                    )
+                ]
+
+                # Add new download_file context with files_created for chaining
                 step_contexts[current_step].append(
                     {
                         "type": "tool",
-                        "tool_name": "download_file",
-                        "result": "Download not performed - no files downloaded",
-                        "args": {},
+                        "tool_name": tool_name,
+                        "result": result,
+                        "args": tool_args,
+                        "files_created": files_created,  # For chaining to send_email
                         "plan_step": (
-                            plan[current_step]
-                            if plan and current_step < len(plan)
-                            else ""
+                            plan[current_step] if plan and current_step < len(plan) else ""
                         ),
                     }
                 )
+
                 return {
-                    "tools_used": state.get("tools_used", []),
-                    "tool_results": state.get("tool_results", {}),
+                    "tools_used": state.get("tools_used", []) + [tool_name],
+                    "tool_results": tool_results,
                     "step_contexts": step_contexts,
+                    "draft_answer": result,  # Set draft_answer for verify_node
                     "current_step": current_step,
                     "iteration_count": state.get("iteration_count", 0) + 1,
-                    "draft_answer": "Download was not performed.",
                     "messages": state.get("messages", [])
                     + [
-                        AIMessage(content="No tool was called by the LLM for download.")
+                        AIMessage(
+                            content=f"Downloaded files: {len(files_created)} file(s) created"
+                        )
                     ],
                 }
 
-            tool_call = response.choices[0].message.tool_calls[0]
-            tool_name = tool_call.function.name
-            tool_args = json.loads(tool_call.function.arguments)
-
-            # Build context for tool execution from runtime
-            context = {
-                "vector_db": runtime.get("vector_db"),
-                "dept_id": runtime.get("dept_id"),
-                "user_id": runtime.get("user_id"),
-                "openai_client": client,
-                "request_data": runtime.get("request_data") or {},
-                "file_service": runtime.get("file_service"),
-                "conversation_id": runtime.get("conversation_id"),
-            }
-
-            result = await execute_tool_call(tool_name, tool_args, context)
-
-            tool_results = state.get("tool_results", {})
-            tool_key = f"{tool_name}_step_{current_step}"
-            if tool_key not in tool_results:
-                tool_results[tool_key] = []
-            tool_results[tool_key].append(
-                {
-                    "step": current_step,
-                    "args": tool_args,
-                    "result": result,
-                    "query": query,
-                }
-            )
-
-            # Extract file_ids from result for chaining to subsequent tools
-            # Format from execute_download_file: "File ID: {file_id}\n..."
-            files_created = []
-            for line in result.split("\n"):
-                if "File ID:" in line:
-                    file_id = line.split("File ID:")[1].strip()
-                    files_created.append(
-                        {"file_id": file_id, "source": "download_file"}
-                    )
-
-            # Store tool result with files_created for chaining
-            step_contexts = state.get("step_contexts", {})
-            if current_step not in step_contexts:
-                step_contexts[current_step] = []
-
-            # Remove any existing download_file context
-            step_contexts[current_step] = [
-                ctx
-                for ctx in step_contexts[current_step]
-                if not (
-                    ctx.get("type") == "tool"
-                    and ctx.get("tool_name") == "download_file"
-                )
-            ]
-
-            # Add new download_file context with files_created for chaining
-            step_contexts[current_step].append(
-                {
-                    "type": "tool",
-                    "tool_name": tool_name,
-                    "result": result,
-                    "args": tool_args,
-                    "files_created": files_created,  # For chaining to send_email
-                    "plan_step": (
-                        plan[current_step] if plan and current_step < len(plan) else ""
-                    ),
-                }
-            )
-
+        except TimeoutError:
+            logger.warning("[DOWNLOAD_FILE] Node timed out after %ds", Config.AGENT_TOOL_TIMEOUT)
+            increment_error(MetricsErrorType.NODE_TIMEOUT)
             return {
-                "tools_used": state.get("tools_used", []) + [tool_name],
-                "tool_results": tool_results,
-                "step_contexts": step_contexts,
-                "draft_answer": result,  # Set draft_answer for verify_node
+                "tools_used": state.get("tools_used", []),
+                "tool_results": state.get("tool_results", {}),
+                "draft_answer": f"Download timed out after {Config.AGENT_TOOL_TIMEOUT}s.",
                 "current_step": current_step,
                 "iteration_count": state.get("iteration_count", 0) + 1,
+                "error": f"Download file timed out after {Config.AGENT_TOOL_TIMEOUT}s",
                 "messages": state.get("messages", [])
-                + [
-                    AIMessage(
-                        content=f"Downloaded files: {len(files_created)} file(s) created"
-                    )
-                ],
+                + [AIMessage(content=f"Download file timed out after {Config.AGENT_TOOL_TIMEOUT}s.")],
             }
-
         except Exception as e:
             return {
                 "tools_used": state.get("tools_used", []),
@@ -1333,185 +1394,199 @@ def create_tool_create_documents_node(
         """
         increment_query_routing("create_documents")
         try:
-            plan = state.get("plan", [])
-            current_step = state.get("current_step", 0)
-            query = state.get("query", "")
+            async with asyncio.timeout(Config.AGENT_TOOL_TIMEOUT):
+                plan = state.get("plan", [])
+                current_step = state.get("current_step", 0)
+                query = state.get("query", "")
 
-            # Get OpenAI client from runtime
-            client = runtime.get("openai_client")
-            if not client:
-                return {
-                    "tools_used": state.get("tools_used", []),
-                    "tool_results": state.get("tool_results", {}),
-                    "current_step": current_step,
-                    "iteration_count": state.get("iteration_count", 0) + 1,
-                    "error": "OpenAI client required for tool execution",
+                # Get OpenAI client from runtime
+                client = runtime.get("openai_client")
+                if not client:
+                    return {
+                        "tools_used": state.get("tools_used", []),
+                        "tool_results": state.get("tool_results", {}),
+                        "current_step": current_step,
+                        "iteration_count": state.get("iteration_count", 0) + 1,
+                        "error": "OpenAI client required for tool execution",
+                    }
+
+                # Use unified helper to get all previous step context
+                prev_ctx = build_previous_step_context(state, current_step)
+
+                # Get attachment content (extract full content for document creation)
+                _, attachment_content = await get_attachment_context(
+                    runtime, extract_content=True
+                )
+
+                # Combine previous step context with attachment content
+                combined_content = prev_ctx.text
+                if attachment_content:
+                    if combined_content:
+                        combined_content = f"{combined_content}\n\n{attachment_content}"
+                    else:
+                        combined_content = attachment_content
+
+                logger.info(
+                    f"[CREATE_DOCUMENTS_NODE] prev_ctx: urls={len(prev_ctx.urls)}, "
+                    f"file_ids={len(prev_ctx.file_ids)}, text_len={len(prev_ctx.text)}, "
+                    f"attachment_len={len(attachment_content)}"
+                )
+
+                # Get step_contexts for writing results (will store files_created)
+                step_contexts = state.get("step_contexts", {})
+
+                # Build prompt for LLM tool calling
+                if plan and current_step < len(plan):
+                    action_step = plan[current_step]
+                    clean_query = (
+                        action_step.split(":", 1)[1].strip()
+                        if ":" in action_step
+                        else action_step
+                    )
+                    # Include previous step content AND attachment content in prompt
+                    prompt = ToolPrompts.create_documents_prompt(
+                        clean_query, previous_content=combined_content
+                    )
+                else:
+                    prompt = ToolPrompts.fallback_prompt(query, "create_documents")
+
+                response = await chat_completion_with_tools(
+                    client=client,
+                    model=Config.OPENAI_MODEL,
+                    messages=[{"role": "user", "content": prompt}],
+                    tools=TOOL_CREATE_DOCUMENTS,
+                    tool_choice="auto",
+                    temperature=0.1,
+                )
+
+                if not response.choices[0].message.tool_calls:
+                    # Save step_contexts so verify_node doesn't throw and can combine all step_answers
+                    if current_step not in step_contexts:
+                        step_contexts[current_step] = []
+                    step_contexts[current_step].append(
+                        {
+                            "type": "tool",
+                            "tool_name": "create_documents",
+                            "result": "Document creation not performed",
+                            "args": {},
+                            "plan_step": (
+                                plan[current_step]
+                                if plan and current_step < len(plan)
+                                else ""
+                            ),
+                        }
+                    )
+                    return {
+                        "tools_used": state.get("tools_used", []),
+                        "tool_results": state.get("tool_results", {}),
+                        "step_contexts": step_contexts,
+                        "current_step": current_step,
+                        "iteration_count": state.get("iteration_count", 0) + 1,
+                        "draft_answer": "Document creation was not performed.",
+                        "messages": state.get("messages", [])
+                        + [
+                            AIMessage(
+                                content="No tool was called by the LLM for document creation."
+                            )
+                        ],
+                    }
+
+                tool_call = response.choices[0].message.tool_calls[0]
+                tool_name = tool_call.function.name
+                tool_args = json.loads(tool_call.function.arguments)
+
+                # Build context for tool execution from runtime
+                context = {
+                    "vector_db": runtime.get("vector_db"),
+                    "dept_id": runtime.get("dept_id"),
+                    "user_id": runtime.get("user_id"),
+                    "openai_client": client,
+                    "request_data": runtime.get("request_data") or {},
+                    "file_service": runtime.get("file_service"),
+                    "conversation_id": runtime.get("conversation_id"),
                 }
 
-            # Use unified helper to get all previous step context
-            prev_ctx = build_previous_step_context(state, current_step)
+                result = await execute_tool_call(tool_name, tool_args, context)
 
-            # Get attachment content (extract full content for document creation)
-            _, attachment_content = await get_attachment_context(
-                runtime, extract_content=True
-            )
-
-            # Combine previous step context with attachment content
-            combined_content = prev_ctx.text
-            if attachment_content:
-                if combined_content:
-                    combined_content = f"{combined_content}\n\n{attachment_content}"
-                else:
-                    combined_content = attachment_content
-
-            logger.info(
-                f"[CREATE_DOCUMENTS_NODE] prev_ctx: urls={len(prev_ctx.urls)}, "
-                f"file_ids={len(prev_ctx.file_ids)}, text_len={len(prev_ctx.text)}, "
-                f"attachment_len={len(attachment_content)}"
-            )
-
-            # Get step_contexts for writing results (will store files_created)
-            step_contexts = state.get("step_contexts", {})
-
-            # Build prompt for LLM tool calling
-            if plan and current_step < len(plan):
-                action_step = plan[current_step]
-                clean_query = (
-                    action_step.split(":", 1)[1].strip()
-                    if ":" in action_step
-                    else action_step
+                tool_results = state.get("tool_results", {})
+                tool_key = f"{tool_name}_step_{current_step}"
+                if tool_key not in tool_results:
+                    tool_results[tool_key] = []
+                tool_results[tool_key].append(
+                    {
+                        "step": current_step,
+                        "args": tool_args,
+                        "result": result,
+                        "query": query,
+                    }
                 )
-                # Include previous step content AND attachment content in prompt
-                prompt = ToolPrompts.create_documents_prompt(
-                    clean_query, previous_content=combined_content
-                )
-            else:
-                prompt = ToolPrompts.fallback_prompt(query, "create_documents")
 
-            response = await chat_completion_with_tools(
-                client=client,
-                model=Config.OPENAI_MODEL,
-                messages=[{"role": "user", "content": prompt}],
-                tools=TOOL_CREATE_DOCUMENTS,
-                tool_choice="auto",
-                temperature=0.1,
-            )
+                # Extract file_ids from result for chaining to subsequent tools
+                # Format from execute_create_documents: "File ID: {file_id}\n..."
+                files_created = []
+                for line in result.split("\n"):
+                    if "File ID:" in line:
+                        file_id = line.split("File ID:")[1].strip()
+                        files_created.append(
+                            {"file_id": file_id, "source": "create_documents"}
+                        )
 
-            if not response.choices[0].message.tool_calls:
-                # Save step_contexts so verify_node doesn't throw and can combine all step_answers
+                # Store tool result with files_created for chaining
                 if current_step not in step_contexts:
                     step_contexts[current_step] = []
+
+                # Remove any existing create_documents context
+                step_contexts[current_step] = [
+                    ctx
+                    for ctx in step_contexts[current_step]
+                    if not (
+                        ctx.get("type") == "tool"
+                        and ctx.get("tool_name") == "create_documents"
+                    )
+                ]
+
+                # Add new create_documents context with files_created for chaining
                 step_contexts[current_step].append(
                     {
                         "type": "tool",
-                        "tool_name": "create_documents",
-                        "result": "Document creation not performed",
-                        "args": {},
+                        "tool_name": tool_name,
+                        "result": result,
+                        "args": tool_args,
+                        "files_created": files_created,  # For chaining to send_email
                         "plan_step": (
-                            plan[current_step]
-                            if plan and current_step < len(plan)
-                            else ""
+                            plan[current_step] if plan and current_step < len(plan) else ""
                         ),
                     }
                 )
+
                 return {
-                    "tools_used": state.get("tools_used", []),
-                    "tool_results": state.get("tool_results", {}),
+                    "tools_used": state.get("tools_used", []) + [tool_name],
+                    "tool_results": tool_results,
                     "step_contexts": step_contexts,
+                    "draft_answer": result,  # Set draft_answer for verify_node
                     "current_step": current_step,
                     "iteration_count": state.get("iteration_count", 0) + 1,
-                    "draft_answer": "Document creation was not performed.",
                     "messages": state.get("messages", [])
                     + [
                         AIMessage(
-                            content="No tool was called by the LLM for document creation."
+                            content=f"Created documents: {len(files_created)} file(s)"
                         )
                     ],
                 }
 
-            tool_call = response.choices[0].message.tool_calls[0]
-            tool_name = tool_call.function.name
-            tool_args = json.loads(tool_call.function.arguments)
-
-            # Build context for tool execution from runtime
-            context = {
-                "vector_db": runtime.get("vector_db"),
-                "dept_id": runtime.get("dept_id"),
-                "user_id": runtime.get("user_id"),
-                "openai_client": client,
-                "request_data": runtime.get("request_data") or {},
-                "file_service": runtime.get("file_service"),
-                "conversation_id": runtime.get("conversation_id"),
-            }
-
-            result = await execute_tool_call(tool_name, tool_args, context)
-
-            tool_results = state.get("tool_results", {})
-            tool_key = f"{tool_name}_step_{current_step}"
-            if tool_key not in tool_results:
-                tool_results[tool_key] = []
-            tool_results[tool_key].append(
-                {
-                    "step": current_step,
-                    "args": tool_args,
-                    "result": result,
-                    "query": query,
-                }
-            )
-
-            # Extract file_ids from result for chaining to subsequent tools
-            # Format from execute_create_documents: "File ID: {file_id}\n..."
-            files_created = []
-            for line in result.split("\n"):
-                if "File ID:" in line:
-                    file_id = line.split("File ID:")[1].strip()
-                    files_created.append(
-                        {"file_id": file_id, "source": "create_documents"}
-                    )
-
-            # Store tool result with files_created for chaining
-            if current_step not in step_contexts:
-                step_contexts[current_step] = []
-
-            # Remove any existing create_documents context
-            step_contexts[current_step] = [
-                ctx
-                for ctx in step_contexts[current_step]
-                if not (
-                    ctx.get("type") == "tool"
-                    and ctx.get("tool_name") == "create_documents"
-                )
-            ]
-
-            # Add new create_documents context with files_created for chaining
-            step_contexts[current_step].append(
-                {
-                    "type": "tool",
-                    "tool_name": tool_name,
-                    "result": result,
-                    "args": tool_args,
-                    "files_created": files_created,  # For chaining to send_email
-                    "plan_step": (
-                        plan[current_step] if plan and current_step < len(plan) else ""
-                    ),
-                }
-            )
-
+        except TimeoutError:
+            logger.warning("[CREATE_DOCUMENTS] Node timed out after %ds", Config.AGENT_TOOL_TIMEOUT)
+            increment_error(MetricsErrorType.NODE_TIMEOUT)
             return {
-                "tools_used": state.get("tools_used", []) + [tool_name],
-                "tool_results": tool_results,
-                "step_contexts": step_contexts,
-                "draft_answer": result,  # Set draft_answer for verify_node
+                "tools_used": state.get("tools_used", []),
+                "tool_results": state.get("tool_results", {}),
+                "draft_answer": f"Document creation timed out after {Config.AGENT_TOOL_TIMEOUT}s.",
                 "current_step": current_step,
                 "iteration_count": state.get("iteration_count", 0) + 1,
+                "error": f"Create documents timed out after {Config.AGENT_TOOL_TIMEOUT}s",
                 "messages": state.get("messages", [])
-                + [
-                    AIMessage(
-                        content=f"Created documents: {len(files_created)} file(s)"
-                    )
-                ],
+                + [AIMessage(content=f"Create documents timed out after {Config.AGENT_TOOL_TIMEOUT}s.")],
             }
-
         except Exception as e:
             return {
                 "tools_used": state.get("tools_used", []),
@@ -1560,215 +1635,229 @@ def create_tool_send_email_node(
         """
         increment_query_routing("send_email")
         try:
-            logger.info("[SEND_EMAIL_NODE] Starting send_email node execution")
-            plan = state.get("plan", [])
-            current_step = state.get("current_step", 0)
-            query = state.get("query", "")
+            async with asyncio.timeout(Config.AGENT_TOOL_TIMEOUT):
+                logger.info("[SEND_EMAIL_NODE] Starting send_email node execution")
+                plan = state.get("plan", [])
+                current_step = state.get("current_step", 0)
+                query = state.get("query", "")
 
-            # Get OpenAI client from runtime
-            client = runtime.get("openai_client")
-            if not client:
-                return {
-                    "tools_used": state.get("tools_used", []),
-                    "tool_results": state.get("tool_results", {}),
-                    "current_step": current_step,
-                    "iteration_count": state.get("iteration_count", 0) + 1,
-                    "error": "OpenAI client required for tool execution",
-                }
-
-            # Use unified helper to get all previous step context
-            # This gives us file_ids from this plan AND full text context
-            prev_ctx = build_previous_step_context(state, current_step)
-            logger.info(
-                f"[SEND_EMAIL_NODE] prev_ctx: urls={len(prev_ctx.urls)}, "
-                f"file_ids={len(prev_ctx.file_ids)}, text_len={len(prev_ctx.text)}"
-            )
-
-            # Get step_contexts for writing results later
-            step_contexts = state.get("step_contexts", {})
-
-            # Files from THIS PLAN (high priority) - from helper
-            session_file_ids = prev_ctx.file_ids
-
-            # User's EXISTING files (low priority) - from runtime, keep separate
-            available_files = runtime.get("available_files", [])
-            available_file_info = []
-            for f in available_files:
-                available_file_info.append(
-                    {
-                        "file_id": f.get(
-                            "id"
-                        ),  # list_files returns "id", not "file_id"
-                        "name": f.get("original_name"),
-                        "category": f.get("category"),
+                # Get OpenAI client from runtime
+                client = runtime.get("openai_client")
+                if not client:
+                    return {
+                        "tools_used": state.get("tools_used", []),
+                        "tool_results": state.get("tool_results", {}),
+                        "current_step": current_step,
+                        "iteration_count": state.get("iteration_count", 0) + 1,
+                        "error": "OpenAI client required for tool execution",
                     }
-                )
 
-            # Build prompt for LLM tool calling with file context
-            if plan and current_step < len(plan):
-                action_step = plan[current_step]
-                clean_query = (
-                    action_step.split(":", 1)[1].strip()
-                    if ":" in action_step
-                    else action_step
-                )
-                prompt = ToolPrompts.send_email_prompt(
-                    clean_query,
-                    available_file_ids=session_file_ids,  # Files from THIS plan (high priority)
-                    available_files=available_file_info,  # User's existing files (low priority)
-                    previous_step_context=prev_ctx.text,  # Full context from previous steps
-                )
-            else:
-                prompt = ToolPrompts.fallback_prompt(query, "send_email")
-
-            # Build messages with conversation history (like plan_node/generate_node)
-            # This allows LLM to see prior context when user says "confirm" or references earlier messages
-            messages = []
-            conversation_history = runtime.get("conversation_history", [])
-            if conversation_history:
-                # Add recent history for context (reference resolution for confirmations)
-                recent_history = conversation_history[-Config.PLANNING_CONTEXT_LIMIT :]
-                for h in recent_history:
-                    messages.append(
-                        {"role": h.get("role", "user"), "content": h.get("content", "")}
-                    )
-            messages.append({"role": "user", "content": prompt})
-
-            logger.info(
-                f"[SEND_EMAIL_NODE] Calling LLM with session_file_ids={session_file_ids}, history_len={len(conversation_history)}"
-            )
-            response = await chat_completion_with_tools(
-                client=client,
-                model=Config.OPENAI_MODEL,
-                messages=messages,
-                tools=TOOL_SEND_EMAIL,
-                tool_choice="auto",
-                temperature=0.1,
-            )
-            logger.info(
-                f"[SEND_EMAIL_NODE] LLM response received, has_tool_calls={bool(response.choices[0].message.tool_calls)}"
-            )
-
-            if not response.choices[0].message.tool_calls:
-                # Like AgentService: capture LLM's text response (clarification question)
-                llm_text = response.choices[0].message.content or ""
+                # Use unified helper to get all previous step context
+                # This gives us file_ids from this plan AND full text context
+                prev_ctx = build_previous_step_context(state, current_step)
                 logger.info(
-                    f"[SEND_EMAIL_NODE] No tool called, LLM text: {llm_text[:200]}..."
+                    f"[SEND_EMAIL_NODE] prev_ctx: urls={len(prev_ctx.urls)}, "
+                    f"file_ids={len(prev_ctx.file_ids)}, text_len={len(prev_ctx.text)}"
                 )
 
-                # CRITICAL: Save step_contexts even when tool is not called
-                # This ensures verify_node doesn't throw and can combine all step_answers
-                # (including previous download step with markdown links)
-                if current_step not in step_contexts:
-                    step_contexts[current_step] = []
-                step_contexts[current_step].append(
-                    {
-                        "type": "tool",
-                        "tool_name": "send_email",
-                        "result": llm_text or "Email not sent - awaiting confirmation",
-                        "args": {},
-                        "plan_step": (
-                            plan[current_step]
-                            if plan and current_step < len(plan)
-                            else ""
-                        ),
-                    }
+                # Get step_contexts for writing results later
+                step_contexts = state.get("step_contexts", {})
+
+                # Files from THIS PLAN (high priority) - from helper
+                session_file_ids = prev_ctx.file_ids
+
+                # User's EXISTING files (low priority) - from runtime, keep separate
+                available_files = runtime.get("available_files", [])
+                available_file_info = []
+                for f in available_files:
+                    available_file_info.append(
+                        {
+                            "file_id": f.get(
+                                "id"
+                            ),  # list_files returns "id", not "file_id"
+                            "name": f.get("original_name"),
+                            "category": f.get("category"),
+                        }
+                    )
+
+                # Build prompt for LLM tool calling with file context
+                if plan and current_step < len(plan):
+                    action_step = plan[current_step]
+                    clean_query = (
+                        action_step.split(":", 1)[1].strip()
+                        if ":" in action_step
+                        else action_step
+                    )
+                    prompt = ToolPrompts.send_email_prompt(
+                        clean_query,
+                        available_file_ids=session_file_ids,  # Files from THIS plan (high priority)
+                        available_files=available_file_info,  # User's existing files (low priority)
+                        previous_step_context=prev_ctx.text,  # Full context from previous steps
+                    )
+                else:
+                    prompt = ToolPrompts.fallback_prompt(query, "send_email")
+
+                # Build messages with conversation history (like plan_node/generate_node)
+                # This allows LLM to see prior context when user says "confirm" or references earlier messages
+                messages = []
+                conversation_history = runtime.get("conversation_history", [])
+                if conversation_history:
+                    # Add recent history for context (reference resolution for confirmations)
+                    recent_history = conversation_history[-Config.PLANNING_CONTEXT_LIMIT :]
+                    for h in recent_history:
+                        messages.append(
+                            {"role": h.get("role", "user"), "content": h.get("content", "")}
+                        )
+                messages.append({"role": "user", "content": prompt})
+
+                logger.info(
+                    f"[SEND_EMAIL_NODE] Calling LLM with session_file_ids={session_file_ids}, history_len={len(conversation_history)}"
+                )
+                response = await chat_completion_with_tools(
+                    client=client,
+                    model=Config.OPENAI_MODEL,
+                    messages=messages,
+                    tools=TOOL_SEND_EMAIL,
+                    tool_choice="auto",
+                    temperature=0.1,
+                )
+                logger.info(
+                    f"[SEND_EMAIL_NODE] LLM response received, has_tool_calls={bool(response.choices[0].message.tool_calls)}"
                 )
 
-                if llm_text.strip():
-                    # Return LLM's clarification as draft_answer (like AgentService line 98-99)
+                if not response.choices[0].message.tool_calls:
+                    # Like AgentService: capture LLM's text response (clarification question)
+                    llm_text = response.choices[0].message.content or ""
+                    logger.info(
+                        f"[SEND_EMAIL_NODE] No tool called, LLM text: {llm_text[:200]}..."
+                    )
+
+                    # CRITICAL: Save step_contexts even when tool is not called
+                    # This ensures verify_node doesn't throw and can combine all step_answers
+                    # (including previous download step with markdown links)
+                    if current_step not in step_contexts:
+                        step_contexts[current_step] = []
+                    step_contexts[current_step].append(
+                        {
+                            "type": "tool",
+                            "tool_name": "send_email",
+                            "result": llm_text or "Email not sent - awaiting confirmation",
+                            "args": {},
+                            "plan_step": (
+                                plan[current_step]
+                                if plan and current_step < len(plan)
+                                else ""
+                            ),
+                        }
+                    )
+
+                    if llm_text.strip():
+                        # Return LLM's clarification as draft_answer (like AgentService line 98-99)
+                        return {
+                            "tools_used": state.get("tools_used", []),
+                            "tool_results": state.get("tool_results", {}),
+                            "step_contexts": step_contexts,  # Include step_contexts!
+                            "current_step": current_step,
+                            "iteration_count": state.get("iteration_count", 0) + 1,
+                            "draft_answer": llm_text,
+                            "messages": state.get("messages", [])
+                            + [AIMessage(content=llm_text)],
+                        }
+
                     return {
                         "tools_used": state.get("tools_used", []),
                         "tool_results": state.get("tool_results", {}),
                         "step_contexts": step_contexts,  # Include step_contexts!
                         "current_step": current_step,
                         "iteration_count": state.get("iteration_count", 0) + 1,
-                        "draft_answer": llm_text,
+                        "draft_answer": "Email not sent - no response from LLM.",
                         "messages": state.get("messages", [])
-                        + [AIMessage(content=llm_text)],
+                        + [
+                            AIMessage(
+                                content="No tool was called by the LLM for send email."
+                            )
+                        ],
                     }
 
+                tool_call = response.choices[0].message.tool_calls[0]
+                tool_name = tool_call.function.name
+                tool_args = json.loads(tool_call.function.arguments)
+
+                # Build context for tool execution from runtime
+                context = {
+                    "vector_db": runtime.get("vector_db"),
+                    "dept_id": runtime.get("dept_id"),
+                    "user_id": runtime.get("user_id"),
+                    "openai_client": client,
+                    "request_data": runtime.get("request_data") or {},
+                    "file_service": runtime.get("file_service"),
+                }
+
+                result = await execute_tool_call(tool_name, tool_args, context)
+
+                tool_results = state.get("tool_results", {})
+                tool_key = f"{tool_name}_step_{current_step}"
+                if tool_key not in tool_results:
+                    tool_results[tool_key] = []
+                tool_results[tool_key].append(
+                    {
+                        "step": current_step,
+                        "args": tool_args,
+                        "result": result,
+                        "query": query,
+                    }
+                )
+
+                # Store tool result in step_contexts
+                if current_step not in step_contexts:
+                    step_contexts[current_step] = []
+
+                # Remove any existing send_email context
+                step_contexts[current_step] = [
+                    ctx
+                    for ctx in step_contexts[current_step]
+                    if not (
+                        ctx.get("type") == "tool" and ctx.get("tool_name") == "send_email"
+                    )
+                ]
+
+                # Add new send_email context
+                step_contexts[current_step].append(
+                    {
+                        "type": "tool",
+                        "tool_name": tool_name,
+                        "result": result,
+                        "args": tool_args,
+                        "plan_step": (
+                            plan[current_step] if plan and current_step < len(plan) else ""
+                        ),
+                    }
+                )
+
                 return {
-                    "tools_used": state.get("tools_used", []),
-                    "tool_results": state.get("tool_results", {}),
-                    "step_contexts": step_contexts,  # Include step_contexts!
+                    "tools_used": state.get("tools_used", []) + [tool_name],
+                    "tool_results": tool_results,
+                    "step_contexts": step_contexts,
+                    "draft_answer": result,  # Set draft_answer for verify_node
                     "current_step": current_step,
                     "iteration_count": state.get("iteration_count", 0) + 1,
-                    "draft_answer": "Email not sent - no response from LLM.",
                     "messages": state.get("messages", [])
-                    + [
-                        AIMessage(
-                            content="No tool was called by the LLM for send email."
-                        )
-                    ],
+                    + [AIMessage(content=f"Email sent: {result[:100]}...")],
                 }
 
-            tool_call = response.choices[0].message.tool_calls[0]
-            tool_name = tool_call.function.name
-            tool_args = json.loads(tool_call.function.arguments)
-
-            # Build context for tool execution from runtime
-            context = {
-                "vector_db": runtime.get("vector_db"),
-                "dept_id": runtime.get("dept_id"),
-                "user_id": runtime.get("user_id"),
-                "openai_client": client,
-                "request_data": runtime.get("request_data") or {},
-                "file_service": runtime.get("file_service"),
-            }
-
-            result = await execute_tool_call(tool_name, tool_args, context)
-
-            tool_results = state.get("tool_results", {})
-            tool_key = f"{tool_name}_step_{current_step}"
-            if tool_key not in tool_results:
-                tool_results[tool_key] = []
-            tool_results[tool_key].append(
-                {
-                    "step": current_step,
-                    "args": tool_args,
-                    "result": result,
-                    "query": query,
-                }
-            )
-
-            # Store tool result in step_contexts
-            if current_step not in step_contexts:
-                step_contexts[current_step] = []
-
-            # Remove any existing send_email context
-            step_contexts[current_step] = [
-                ctx
-                for ctx in step_contexts[current_step]
-                if not (
-                    ctx.get("type") == "tool" and ctx.get("tool_name") == "send_email"
-                )
-            ]
-
-            # Add new send_email context
-            step_contexts[current_step].append(
-                {
-                    "type": "tool",
-                    "tool_name": tool_name,
-                    "result": result,
-                    "args": tool_args,
-                    "plan_step": (
-                        plan[current_step] if plan and current_step < len(plan) else ""
-                    ),
-                }
-            )
-
+        except TimeoutError:
+            logger.warning("[SEND_EMAIL] Node timed out after %ds", Config.AGENT_TOOL_TIMEOUT)
+            increment_error(MetricsErrorType.NODE_TIMEOUT)
             return {
-                "tools_used": state.get("tools_used", []) + [tool_name],
-                "tool_results": tool_results,
-                "step_contexts": step_contexts,
-                "draft_answer": result,  # Set draft_answer for verify_node
+                "tools_used": state.get("tools_used", []),
+                "tool_results": state.get("tool_results", {}),
+                "draft_answer": f"Email sending timed out after {Config.AGENT_TOOL_TIMEOUT}s.",
                 "current_step": current_step,
                 "iteration_count": state.get("iteration_count", 0) + 1,
+                "error": f"Send email timed out after {Config.AGENT_TOOL_TIMEOUT}s",
                 "messages": state.get("messages", [])
-                + [AIMessage(content=f"Email sent: {result[:100]}...")],
+                + [AIMessage(content=f"Send email timed out after {Config.AGENT_TOOL_TIMEOUT}s.")],
             }
-
         except Exception as e:
             logger.error(f"[SEND_EMAIL_NODE] Exception: {type(e).__name__}: {str(e)}")
             import traceback
@@ -1817,185 +1906,199 @@ def create_tool_code_execution_node(
         """
         increment_query_routing("code_execution")
         try:
-            plan = state.get("plan", [])
-            current_step = state.get("current_step", 0)
-            query = state.get("query", "")
+            async with asyncio.timeout(Config.AGENT_TOOL_TIMEOUT):
+                plan = state.get("plan", [])
+                current_step = state.get("current_step", 0)
+                query = state.get("query", "")
 
-            # Get OpenAI client from runtime
-            client = runtime.get("openai_client")
-            if not client:
-                return {
-                    "tools_used": state.get("tools_used", []),
-                    "tool_results": state.get("tool_results", {}),
-                    "current_step": current_step,
-                    "iteration_count": state.get("iteration_count", 0) + 1,
-                    "error": "OpenAI client required for tool execution",
+                # Get OpenAI client from runtime
+                client = runtime.get("openai_client")
+                if not client:
+                    return {
+                        "tools_used": state.get("tools_used", []),
+                        "tool_results": state.get("tool_results", {}),
+                        "current_step": current_step,
+                        "iteration_count": state.get("iteration_count", 0) + 1,
+                        "error": "OpenAI client required for tool execution",
+                    }
+
+                # Determine if this is a DETOUR call
+                is_detour = state.get("evaluation_result") is not None
+
+                # Build context from previous steps for code generation
+                prev_ctx = build_previous_step_context(state, current_step)
+
+                # Get attachment content (extract full content for code execution)
+                _, attachment_content = await get_attachment_context(
+                    runtime, extract_content=True
+                )
+
+                # Combine previous step context with attachment content
+                combined_context = prev_ctx.text
+                if attachment_content:
+                    if combined_context:
+                        combined_context = f"{combined_context}\n\n{attachment_content}"
+                    else:
+                        combined_context = attachment_content
+
+                logger.info(
+                    f"[CODE_EXECUTION_NODE] prev_ctx: text_len={len(prev_ctx.text)}, "
+                    f"attachment_len={len(attachment_content)}"
+                )
+
+                # Build prompt for LLM tool calling
+                if plan and current_step < len(plan) and not is_detour:
+                    action_step = plan[current_step]
+                    clean_query = (
+                        action_step.split(":", 1)[1].strip()
+                        if ":" in action_step
+                        else action_step
+                    )
+                    prompt = ToolPrompts.code_execution_prompt(
+                        clean_query,
+                        previous_step_context=combined_context,
+                        is_detour=False,
+                    )
+                elif is_detour:
+                    refined_query = state.get("refined_query")
+                    task_query = (
+                        refined_query
+                        if refined_query
+                        else (
+                            plan[current_step]
+                            if plan and current_step < len(plan)
+                            else query
+                        )
+                    )
+                    prompt = ToolPrompts.code_execution_prompt(
+                        task_query,
+                        previous_step_context=combined_context,
+                        is_detour=True,
+                    )
+                else:
+                    prompt = ToolPrompts.fallback_prompt(query, "code_execution")
+
+                response = await chat_completion_with_tools(
+                    client=client,
+                    model=Config.OPENAI_MODEL,
+                    messages=[{"role": "user", "content": prompt}],
+                    tools=TOOL_CODE_EXECUTION,
+                    tool_choice="auto",
+                    temperature=0.1,
+                )
+
+                # Check if LLM called a tool
+                step_contexts = state.get("step_contexts", {})
+                if not response.choices[0].message.tool_calls:
+                    if current_step not in step_contexts:
+                        step_contexts[current_step] = []
+                    step_contexts[current_step].append(
+                        {
+                            "type": "tool",
+                            "tool_name": "code_execution",
+                            "result": "Code execution not called - no code generated",
+                            "args": {},
+                            "plan_step": (
+                                plan[current_step]
+                                if plan and current_step < len(plan)
+                                else ""
+                            ),
+                        }
+                    )
+                    return {
+                        "tools_used": state.get("tools_used", []),
+                        "tool_results": state.get("tool_results", {}),
+                        "step_contexts": step_contexts,
+                        "current_step": current_step,
+                        "iteration_count": state.get("iteration_count", 0) + 1,
+                        "draft_answer": "Code execution was not called.",
+                        "messages": state.get("messages", [])
+                        + [AIMessage(content="No tool was called by the LLM.")],
+                    }
+
+                # Execute the tool call
+                tool_call = response.choices[0].message.tool_calls[0]
+                tool_name = tool_call.function.name
+                tool_args = json.loads(tool_call.function.arguments)
+
+                # Build context for tool execution from runtime
+                context = {
+                    "vector_db": runtime.get("vector_db"),
+                    "dept_id": runtime.get("dept_id"),
+                    "user_id": runtime.get("user_id"),
+                    "openai_client": client,
+                    "request_data": runtime.get("request_data") or {},
+                    "file_service": runtime.get("file_service"),
                 }
 
-            # Determine if this is a DETOUR call
-            is_detour = state.get("evaluation_result") is not None
+                # Execute the tool (async)
+                result = await execute_tool_call(tool_name, tool_args, context)
 
-            # Build context from previous steps for code generation
-            prev_ctx = build_previous_step_context(state, current_step)
-
-            # Get attachment content (extract full content for code execution)
-            _, attachment_content = await get_attachment_context(
-                runtime, extract_content=True
-            )
-
-            # Combine previous step context with attachment content
-            combined_context = prev_ctx.text
-            if attachment_content:
-                if combined_context:
-                    combined_context = f"{combined_context}\n\n{attachment_content}"
-                else:
-                    combined_context = attachment_content
-
-            logger.info(
-                f"[CODE_EXECUTION_NODE] prev_ctx: text_len={len(prev_ctx.text)}, "
-                f"attachment_len={len(attachment_content)}"
-            )
-
-            # Build prompt for LLM tool calling
-            if plan and current_step < len(plan) and not is_detour:
-                action_step = plan[current_step]
-                clean_query = (
-                    action_step.split(":", 1)[1].strip()
-                    if ":" in action_step
-                    else action_step
+                # Update tool results
+                tool_results = state.get("tool_results", {})
+                tool_key = f"{tool_name}_step_{current_step}"
+                if tool_key not in tool_results:
+                    tool_results[tool_key] = []
+                tool_results[tool_key].append(
+                    {
+                        "step": current_step,
+                        "args": tool_args,
+                        "result": result,
+                        "query": query,
+                    }
                 )
-                prompt = ToolPrompts.code_execution_prompt(
-                    clean_query,
-                    previous_step_context=combined_context,
-                    is_detour=False,
-                )
-            elif is_detour:
-                refined_query = state.get("refined_query")
-                task_query = (
-                    refined_query
-                    if refined_query
-                    else (
-                        plan[current_step]
-                        if plan and current_step < len(plan)
-                        else query
-                    )
-                )
-                prompt = ToolPrompts.code_execution_prompt(
-                    task_query,
-                    previous_step_context=combined_context,
-                    is_detour=True,
-                )
-            else:
-                prompt = ToolPrompts.fallback_prompt(query, "code_execution")
 
-            response = await chat_completion_with_tools(
-                client=client,
-                model=Config.OPENAI_MODEL,
-                messages=[{"role": "user", "content": prompt}],
-                tools=TOOL_CODE_EXECUTION,
-                tool_choice="auto",
-                temperature=0.1,
-            )
-
-            # Check if LLM called a tool
-            step_contexts = state.get("step_contexts", {})
-            if not response.choices[0].message.tool_calls:
+                # Store tool result in step_contexts
                 if current_step not in step_contexts:
                     step_contexts[current_step] = []
+
+                # Remove any existing code_execution context (from previous refinement)
+                step_contexts[current_step] = [
+                    ctx
+                    for ctx in step_contexts[current_step]
+                    if not (
+                        ctx.get("type") == "tool"
+                        and ctx.get("tool_name") == "code_execution"
+                    )
+                ]
+
+                # Add new code_execution context
                 step_contexts[current_step].append(
                     {
                         "type": "tool",
-                        "tool_name": "code_execution",
-                        "result": "Code execution not called - no code generated",
-                        "args": {},
+                        "tool_name": tool_name,
+                        "result": result,
+                        "args": tool_args,
                         "plan_step": (
-                            plan[current_step]
-                            if plan and current_step < len(plan)
-                            else ""
+                            plan[current_step] if plan and current_step < len(plan) else ""
                         ),
                     }
                 )
+
                 return {
-                    "tools_used": state.get("tools_used", []),
-                    "tool_results": state.get("tool_results", {}),
+                    "tools_used": state.get("tools_used", []) + [tool_name],
+                    "tool_results": tool_results,
                     "step_contexts": step_contexts,
+                    "draft_answer": result,
                     "current_step": current_step,
                     "iteration_count": state.get("iteration_count", 0) + 1,
-                    "draft_answer": "Code execution was not called.",
                     "messages": state.get("messages", [])
-                    + [AIMessage(content="No tool was called by the LLM.")],
+                    + [AIMessage(content=f"Executed code with result: {result[:200]}...")],
                 }
 
-            # Execute the tool call
-            tool_call = response.choices[0].message.tool_calls[0]
-            tool_name = tool_call.function.name
-            tool_args = json.loads(tool_call.function.arguments)
-
-            # Build context for tool execution from runtime
-            context = {
-                "vector_db": runtime.get("vector_db"),
-                "dept_id": runtime.get("dept_id"),
-                "user_id": runtime.get("user_id"),
-                "openai_client": client,
-                "request_data": runtime.get("request_data") or {},
-                "file_service": runtime.get("file_service"),
-            }
-
-            # Execute the tool (async)
-            result = await execute_tool_call(tool_name, tool_args, context)
-
-            # Update tool results
-            tool_results = state.get("tool_results", {})
-            tool_key = f"{tool_name}_step_{current_step}"
-            if tool_key not in tool_results:
-                tool_results[tool_key] = []
-            tool_results[tool_key].append(
-                {
-                    "step": current_step,
-                    "args": tool_args,
-                    "result": result,
-                    "query": query,
-                }
-            )
-
-            # Store tool result in step_contexts
-            if current_step not in step_contexts:
-                step_contexts[current_step] = []
-
-            # Remove any existing code_execution context (from previous refinement)
-            step_contexts[current_step] = [
-                ctx
-                for ctx in step_contexts[current_step]
-                if not (
-                    ctx.get("type") == "tool"
-                    and ctx.get("tool_name") == "code_execution"
-                )
-            ]
-
-            # Add new code_execution context
-            step_contexts[current_step].append(
-                {
-                    "type": "tool",
-                    "tool_name": tool_name,
-                    "result": result,
-                    "args": tool_args,
-                    "plan_step": (
-                        plan[current_step] if plan and current_step < len(plan) else ""
-                    ),
-                }
-            )
-
+        except TimeoutError:
+            logger.warning("[CODE_EXECUTION] Node timed out after %ds", Config.AGENT_TOOL_TIMEOUT)
+            increment_error(MetricsErrorType.NODE_TIMEOUT)
             return {
-                "tools_used": state.get("tools_used", []) + [tool_name],
-                "tool_results": tool_results,
-                "step_contexts": step_contexts,
-                "draft_answer": result,
+                "tools_used": state.get("tools_used", []),
+                "tool_results": state.get("tool_results", {}),
+                "draft_answer": f"Code execution timed out after {Config.AGENT_TOOL_TIMEOUT}s.",
                 "current_step": current_step,
                 "iteration_count": state.get("iteration_count", 0) + 1,
+                "error": f"Code execution timed out after {Config.AGENT_TOOL_TIMEOUT}s",
                 "messages": state.get("messages", [])
-                + [AIMessage(content=f"Executed code with result: {result[:200]}...")],
+                + [AIMessage(content=f"Code execution timed out after {Config.AGENT_TOOL_TIMEOUT}s.")],
             }
-
         except Exception as e:
             logger.error(
                 f"[CODE_EXECUTION_NODE] Exception: {type(e).__name__}: {str(e)}"
@@ -2048,82 +2151,93 @@ def create_direct_answer_node(
         )
 
         try:
-            # Build prompts for LLM
-            system_prompt = GenerationPrompts.get_system_prompt(
-                ContextType.DIRECT_ANSWER
-            )
-
-            # Add available files context for "give me the link" type queries
-            available_files = runtime.get("available_files", [])
-            files_context = ""
-            if available_files:
-                file_lines = []
-                for f in available_files:
-                    file_lines.append(
-                        f"- [{f.get('original_name')}]({f.get('download_url')}) "
-                        f"(category: {f.get('category')})"
-                    )
-                files_context = (
-                    "\n\nAVAILABLE FILES (use these download links if user asks):\n"
-                    + "\n".join(file_lines)
+            async with asyncio.timeout(Config.AGENT_TOOL_TIMEOUT):
+                # Build prompts for LLM
+                system_prompt = GenerationPrompts.get_system_prompt(
+                    ContextType.DIRECT_ANSWER
                 )
-                system_prompt += files_context
 
-            openai_messages = [{"role": "system", "content": system_prompt}]
-            conversation_history = runtime.get("conversation_history", [])
-            if conversation_history:
-                for h in conversation_history:
-                    sanitized_msg = {
-                        "role": h.get("role", "user"),
-                        "content": sanitize_text(
-                            h.get("content", ""),
-                            max_length=Config.ONE_HISTORY_MAX_TOKENS,
-                        ),
+                # Add available files context for "give me the link" type queries
+                available_files = runtime.get("available_files", [])
+                files_context = ""
+                if available_files:
+                    file_lines = []
+                    for f in available_files:
+                        file_lines.append(
+                            f"- [{f.get('original_name')}]({f.get('download_url')}) "
+                            f"(category: {f.get('category')})"
+                        )
+                    files_context = (
+                        "\n\nAVAILABLE FILES (use these download links if user asks):\n"
+                        + "\n".join(file_lines)
+                    )
+                    system_prompt += files_context
+
+                openai_messages = [{"role": "system", "content": system_prompt}]
+                conversation_history = runtime.get("conversation_history", [])
+                if conversation_history:
+                    for h in conversation_history:
+                        sanitized_msg = {
+                            "role": h.get("role", "user"),
+                            "content": sanitize_text(
+                                h.get("content", ""),
+                                max_length=Config.ONE_HISTORY_MAX_TOKENS,
+                            ),
+                        }
+                        openai_messages.append(sanitized_msg)
+                user_message = GenerationPrompts.build_user_message(step_query)
+                openai_messages.append({"role": "user", "content": user_message})
+
+                response = await chat_completion(
+                    client=openai_client,
+                    model=Config.OPENAI_MODEL,
+                    messages=openai_messages,
+                    max_tokens=Config.CHAT_MAX_TOKENS,
+                    temperature=Config.OPENAI_TEMPERATURE,
+                )
+                direct_answer = ""
+                if response.choices and response.choices[0].message:
+                    direct_answer = response.choices[0].message.content
+
+                # Store direct answer in step_contexts
+                # Replace if exists (unlikely for direct_answer, but keep consistent)
+                step_contexts = state.get("step_contexts", {})
+                if current_step not in step_contexts:
+                    step_contexts[current_step] = []
+
+                # Remove any existing direct_answer context
+                step_contexts[current_step] = [
+                    ctx
+                    for ctx in step_contexts[current_step]
+                    if ctx.get("type") != "direct_answer"
+                ]
+
+                # Add new direct_answer context
+                step_contexts[current_step].append(
+                    {
+                        "type": "direct_answer",
+                        "answer": direct_answer,
+                        "plan_step": action_step,
                     }
-                    openai_messages.append(sanitized_msg)
-            user_message = GenerationPrompts.build_user_message(step_query)
-            openai_messages.append({"role": "user", "content": user_message})
+                )
 
-            response = await chat_completion(
-                client=openai_client,
-                model=Config.OPENAI_MODEL,
-                messages=openai_messages,
-                max_tokens=Config.CHAT_MAX_TOKENS,
-                temperature=Config.OPENAI_TEMPERATURE,
-            )
-            direct_answer = ""
-            if response.choices and response.choices[0].message:
-                direct_answer = response.choices[0].message.content
-
-            # Store direct answer in step_contexts
-            # Replace if exists (unlikely for direct_answer, but keep consistent)
-            step_contexts = state.get("step_contexts", {})
-            if current_step not in step_contexts:
-                step_contexts[current_step] = []
-
-            # Remove any existing direct_answer context
-            step_contexts[current_step] = [
-                ctx
-                for ctx in step_contexts[current_step]
-                if ctx.get("type") != "direct_answer"
-            ]
-
-            # Add new direct_answer context
-            step_contexts[current_step].append(
-                {
-                    "type": "direct_answer",
-                    "answer": direct_answer,
-                    "plan_step": action_step,
+                return {
+                    "draft_answer": direct_answer,
+                    "current_step": current_step,
+                    "step_contexts": step_contexts,
+                    "iteration_count": state.get("iteration_count", 0) + 1,
+                    "messages": state.get("messages", [])
+                    + [AIMessage(content="Generated answer from direct_answer directly.")],
                 }
-            )
-
+        except TimeoutError:
+            logger.warning("[DIRECT_ANSWER] Node timed out after %ds", Config.AGENT_TOOL_TIMEOUT)
+            increment_error(MetricsErrorType.NODE_TIMEOUT)
             return {
-                "draft_answer": direct_answer,
+                "draft_answer": "",
                 "current_step": current_step,
-                "step_contexts": step_contexts,
                 "iteration_count": state.get("iteration_count", 0) + 1,
                 "messages": state.get("messages", [])
-                + [AIMessage(content="Generated answer from direct_answer directly.")],
+                + [AIMessage(content=f"Direct answer timed out after {Config.AGENT_TOOL_TIMEOUT}s.")],
             }
         except Exception as e:
             return {
@@ -2181,37 +2295,47 @@ def create_refine_node(
         # Use existing refined query if available, otherwise use step-specific query
         current_query = state.get("refined_query") or step_query
         try:
-            openai_client = runtime.get("openai_client")
-            if not openai_client:
-                raise ValueError("OpenAI client is required for refinement node.")
+            async with asyncio.timeout(Config.AGENT_TOOL_TIMEOUT):
+                openai_client = runtime.get("openai_client")
+                if not openai_client:
+                    raise ValueError("OpenAI client is required for refinement node.")
 
-            refiner = QueryRefiner(
-                openai_client=openai_client,
-                model=Config.OPENAI_MODEL,
-                temperature=Config.OPENAI_TEMPERATURE,
-            )
-            # Convert dict back to EvaluationResult for refiner
-            evaluation_result_dict = state.get("evaluation_result")
-            if not evaluation_result_dict:
-                raise ValueError("Evaluation result is required for query refinement.")
+                refiner = QueryRefiner(
+                    openai_client=openai_client,
+                    model=Config.OPENAI_MODEL,
+                    temperature=Config.OPENAI_TEMPERATURE,
+                )
+                # Convert dict back to EvaluationResult for refiner
+                evaluation_result_dict = state.get("evaluation_result")
+                if not evaluation_result_dict:
+                    raise ValueError("Evaluation result is required for query refinement.")
 
-            evaluation_result = dict_to_evaluation_result(evaluation_result_dict)
+                evaluation_result = dict_to_evaluation_result(evaluation_result_dict)
 
-            refined_query = await refiner.refine_query(
-                original_query=current_query,
-                eval_result=evaluation_result,
-            )
+                refined_query = await refiner.refine_query(
+                    original_query=current_query,
+                    eval_result=evaluation_result,
+                )
 
-            current_refinement_count = state.get("refinement_count", 0)
-            logger.info(
-                f"[REFINED_QUERY] Original: '{current_query}' → Refined: '{refined_query}'"
-            )
+                current_refinement_count = state.get("refinement_count", 0)
+                logger.info(
+                    f"[REFINED_QUERY] Original: '{current_query}' → Refined: '{refined_query}'"
+                )
+                return {
+                    "refined_query": refined_query,
+                    "refinement_count": current_refinement_count + 1,
+                    "iteration_count": state.get("iteration_count", 0) + 1,
+                    "messages": state.get("messages", [])
+                    + [AIMessage(content=f"Refined query to: {refined_query}")],
+                }
+        except TimeoutError:
+            logger.warning("[REFINE] Node timed out after %ds", Config.AGENT_TOOL_TIMEOUT)
+            increment_error(MetricsErrorType.NODE_TIMEOUT)
             return {
-                "refined_query": refined_query,
-                "refinement_count": current_refinement_count + 1,
+                "refined_query": current_query,
                 "iteration_count": state.get("iteration_count", 0) + 1,
                 "messages": state.get("messages", [])
-                + [AIMessage(content=f"Refined query to: {refined_query}")],
+                + [AIMessage(content=f"Query refinement timed out after {Config.AGENT_TOOL_TIMEOUT}s.")],
             }
         except Exception as e:
             return {
@@ -2251,96 +2375,123 @@ def create_generate_node(
             Updated state with generated answer
         """
         try:
-            openai_client = runtime.get("openai_client", None)
-            if not openai_client:
-                raise ValueError("OpenAI client is required for generation node.")
+            async with asyncio.timeout(Config.AGENT_TOOL_TIMEOUT):
+                openai_client = runtime.get("openai_client", None)
+                if not openai_client:
+                    raise ValueError("OpenAI client is required for generation node.")
 
-            # Check if this is a CLARIFY recommendation from reflection
-            evaluation_result_dict = state.get("evaluation_result")
-            evaluation_result = dict_to_evaluation_result(evaluation_result_dict)
-            if (
-                evaluation_result
-                and evaluation_result.recommendation == RecommendationAction.CLARIFY
-            ):
-                # Generate clear clarification request message using prompt registry
-                clarification_message = GenerationPrompts.clarification_message(
-                    evaluation_result.reasoning
-                )
-                return {
-                    "draft_answer": clarification_message,
-                    "iteration_count": state.get("iteration_count", 0) + 1,
-                    "messages": state.get("messages", [])
-                    + [AIMessage(content=clarification_message)],
-                }
-
-            # Get ONLY current step's context (per-step isolation)
-            current_step = state.get("current_step", 0)
-            step_contexts = state.get("step_contexts", {})
-
-            # Get context for the current step being executed (now a list)
-            if current_step not in step_contexts or not step_contexts[current_step]:
-                return {
-                    "draft_answer": "",
-                    "iteration_count": state.get("iteration_count", 0) + 1,
-                    "messages": state.get("messages", [])
-                    + [
-                        AIMessage(
-                            content="No context available to generate answer from."
-                        )
-                    ],
-                }
-
-            step_ctx_list = step_contexts[current_step]  # Now a list of contexts
-            # Get plan_step from first context (all should have same plan_step)
-            plan_step = step_ctx_list[0].get("plan_step", "")
-
-            # Detect if ANY context is a web search result
-            is_web_search = any(
-                ctx.get("type") == "tool" and ctx.get("tool_name") == "web_search"
-                for ctx in step_ctx_list
-            )
-
-            # Build numbered context from ALL contexts in this step (handles retrieve + web_search + code_execution)
-            contexts = []
-            context_num = 1
-
-            # Track if decomposition was used (for instructions later)
-            has_decomposition = False
-            num_sub_queries = 0
-
-            # Iterate through all contexts for this step
-            for step_ctx in step_ctx_list:
-                if step_ctx["type"] == "retrieval":
-                    # Retrieved documents from this step only
-                    docs = step_ctx.get("docs", [])
-
-                    # Check if contexts have sub_query labels (indicates decomposition was used)
-                    # IMPORTANT: Use list with dict.fromkeys() to preserve insertion order from docs
-                    # (set doesn't guarantee order, causing citation number mismatch with frontend)
-                    sub_queries = list(
-                        dict.fromkeys(
-                            d.get("sub_query") for d in docs if d.get("sub_query")
-                        )
+                # Check if this is a CLARIFY recommendation from reflection
+                evaluation_result_dict = state.get("evaluation_result")
+                evaluation_result = dict_to_evaluation_result(evaluation_result_dict)
+                if (
+                    evaluation_result
+                    and evaluation_result.recommendation == RecommendationAction.CLARIFY
+                ):
+                    # Generate clear clarification request message using prompt registry
+                    clarification_message = GenerationPrompts.clarification_message(
+                        evaluation_result.reasoning
                     )
-                    has_decomposition = len(sub_queries) > 1
-                    num_sub_queries = len(sub_queries)
+                    return {
+                        "draft_answer": clarification_message,
+                        "iteration_count": state.get("iteration_count", 0) + 1,
+                        "messages": state.get("messages", [])
+                        + [AIMessage(content=clarification_message)],
+                    }
 
-                    if has_decomposition:
-                        # Group contexts by sub-query for clearer presentation to LLM
-                        # Get the original query from state
-                        original_query = state.get("query", "")
-                        contexts.append(
-                            f'Original Query: "{original_query}"\n'
-                            f"Decomposed into {num_sub_queries} sub-queries for better retrieval:\n"
+                # Get ONLY current step's context (per-step isolation)
+                current_step = state.get("current_step", 0)
+                step_contexts = state.get("step_contexts", {})
+
+                # Get context for the current step being executed (now a list)
+                if current_step not in step_contexts or not step_contexts[current_step]:
+                    return {
+                        "draft_answer": "",
+                        "iteration_count": state.get("iteration_count", 0) + 1,
+                        "messages": state.get("messages", [])
+                        + [
+                            AIMessage(
+                                content="No context available to generate answer from."
+                            )
+                        ],
+                    }
+
+                step_ctx_list = step_contexts[current_step]  # Now a list of contexts
+                # Get plan_step from first context (all should have same plan_step)
+                plan_step = step_ctx_list[0].get("plan_step", "")
+
+                # Detect if ANY context is a web search result
+                is_web_search = any(
+                    ctx.get("type") == "tool" and ctx.get("tool_name") == "web_search"
+                    for ctx in step_ctx_list
+                )
+
+                # Build numbered context from ALL contexts in this step (handles retrieve + web_search + code_execution)
+                contexts = []
+                context_num = 1
+
+                # Track if decomposition was used (for instructions later)
+                has_decomposition = False
+                num_sub_queries = 0
+
+                # Iterate through all contexts for this step
+                for step_ctx in step_ctx_list:
+                    if step_ctx["type"] == "retrieval":
+                        # Retrieved documents from this step only
+                        docs = step_ctx.get("docs", [])
+
+                        # Check if contexts have sub_query labels (indicates decomposition was used)
+                        # IMPORTANT: Use list with dict.fromkeys() to preserve insertion order from docs
+                        # (set doesn't guarantee order, causing citation number mismatch with frontend)
+                        sub_queries = list(
+                            dict.fromkeys(
+                                d.get("sub_query") for d in docs if d.get("sub_query")
+                            )
                         )
+                        has_decomposition = len(sub_queries) > 1
+                        num_sub_queries = len(sub_queries)
 
-                        for sq in sub_queries:
-                            sq_docs = [d for d in docs if d.get("sub_query") == sq]
+                        if has_decomposition:
+                            # Group contexts by sub-query for clearer presentation to LLM
+                            # Get the original query from state
+                            original_query = state.get("query", "")
                             contexts.append(
-                                f'=== Sub-query: "{sq}" ({len(sq_docs)} results) ===\n'
+                                f'Original Query: "{original_query}"\n'
+                                f"Decomposed into {num_sub_queries} sub-queries for better retrieval:\n"
                             )
 
-                            for doc in sq_docs:
+                            for sq in sub_queries:
+                                sq_docs = [d for d in docs if d.get("sub_query") == sq]
+                                contexts.append(
+                                    f'=== Sub-query: "{sq}" ({len(sq_docs)} results) ===\n'
+                                )
+
+                                for doc in sq_docs:
+                                    chunk = doc.get("chunk", str(doc))
+                                    source = doc.get("source", "unknown")
+                                    page = doc.get("page", 0)
+
+                                    header = f"Context {context_num} (Source: {source}"
+                                    if page > 0:
+                                        header += f", Page: {page}"
+                                    header += "):\n"
+
+                                    score_info = ""
+                                    if doc.get("hybrid") is not None:
+                                        score_info += f"Hybrid score: {doc['hybrid']:.2f}"
+                                    if doc.get("rerank") is not None:
+                                        if score_info:
+                                            score_info += ", "
+                                        score_info += f"Rerank score: {doc['rerank']:.2f}"
+
+                                    context_entry = f"{header}{chunk}"
+                                    if score_info:
+                                        context_entry += f"\n{score_info}"
+
+                                    contexts.append(context_entry)
+                                    context_num += 1
+                        else:
+                            # Original flat format (no decomposition or single sub-query)
+                            for doc in docs:
                                 chunk = doc.get("chunk", str(doc))
                                 source = doc.get("source", "unknown")
                                 page = doc.get("page", 0)
@@ -2364,176 +2515,159 @@ def create_generate_node(
 
                                 contexts.append(context_entry)
                                 context_num += 1
-                    else:
-                        # Original flat format (no decomposition or single sub-query)
-                        for doc in docs:
-                            chunk = doc.get("chunk", str(doc))
-                            source = doc.get("source", "unknown")
-                            page = doc.get("page", 0)
 
-                            header = f"Context {context_num} (Source: {source}"
-                            if page > 0:
-                                header += f", Page: {page}"
-                            header += "):\n"
+                    elif step_ctx["type"] == "tool":
+                        # Tool result from this step only
+                        tool_name = step_ctx.get("tool_name", "unknown")
+                        result_text = step_ctx.get("result", "")
+                        args = step_ctx.get("args", {})
 
-                            score_info = ""
-                            if doc.get("hybrid") is not None:
-                                score_info += f"Hybrid score: {doc['hybrid']:.2f}"
-                            if doc.get("rerank") is not None:
-                                if score_info:
-                                    score_info += ", "
-                                score_info += f"Rerank score: {doc['rerank']:.2f}"
+                        header = f"Context {context_num} (Tool: {tool_name}, Step: {current_step}):\n"
+                        if args:
+                            header += f"Arguments: {args}\n"
 
-                            context_entry = f"{header}{chunk}"
-                            if score_info:
-                                context_entry += f"\n{score_info}"
+                        context_entry = f"{header}Result: {result_text}"
+                        contexts.append(context_entry)
+                        context_num += 1
 
-                            contexts.append(context_entry)
-                            context_num += 1
-
-                elif step_ctx["type"] == "tool":
-                    # Tool result from this step only
-                    tool_name = step_ctx.get("tool_name", "unknown")
-                    result_text = step_ctx.get("result", "")
-                    args = step_ctx.get("args", {})
-
-                    header = f"Context {context_num} (Tool: {tool_name}, Step: {current_step}):\n"
-                    if args:
-                        header += f"Arguments: {args}\n"
-
-                    context_entry = f"{header}Result: {result_text}"
-                    contexts.append(context_entry)
-                    context_num += 1
-
-            if not contexts:
-                logger.warning(
-                    f"[GENERATE_NODE] No contexts found for step {current_step}. "
-                    f"step_ctx_list={step_ctx_list}"
-                )
-                raise ValueError(
-                    "No context available from retrieved documents or tool results."
-                )
-
-            final_context = "\n\n".join(contexts)
-
-            # Build system prompt - different rules for web search vs document retrieval
-            # Use prompt registry for context-aware prompts
-            if is_web_search:
-                context_type = ContextType.WEB_SEARCH
-            else:
-                context_type = ContextType.DOCUMENT
-
-            system_prompt = GenerationPrompts.get_system_prompt(context_type)
-
-            # Add decomposition instructions if query was decomposed
-            if has_decomposition and not is_web_search:
-                decomp_instruction = (
-                    f"\n\nDECOMPOSITION INSTRUCTIONS:\n"
-                    f"- The original query was decomposed into {num_sub_queries} sub-queries for better retrieval.\n"
-                    f"- Contexts are grouped by sub-query above.\n"
-                    f"- Use information from ALL sub-query groups to fully answer the ORIGINAL query.\n"
-                    f"- When comparing entities, ensure you include data from each relevant sub-query group."
-                )
-                system_prompt += decomp_instruction
-
-            # Add source file download links for retrieved documents
-            # Match retrieved doc sources with available_files to provide links
-            available_files = runtime.get("available_files", [])
-            if available_files and not is_web_search:
-                # Build file_id to download_url mapping
-                file_map = {}
-                for f in available_files:
-                    file_map[f.get("file_id")] = {
-                        "name": f.get("original_name"),
-                        "url": f.get("download_url"),
-                    }
-
-                # Collect unique source files from retrieved docs
-                source_files = set()
-                for step_ctx in step_ctx_list:
-                    if step_ctx["type"] == "retrieval":
-                        for doc in step_ctx.get("docs", []):
-                            file_id = doc.get("file_id")
-                            if file_id and file_id in file_map:
-                                source_files.add(file_id)
-
-                # Add source file links to system prompt
-                if source_files:
-                    source_links = []
-                    for fid in source_files:
-                        info = file_map[fid]
-                        source_links.append(f"- [{info['name']}]({info['url']})")
-                    system_prompt += (
-                        "\n\nSOURCE FILE DOWNLOADS (include these links in your answer):\n"
-                        + "\n".join(source_links)
+                if not contexts:
+                    logger.warning(
+                        f"[GENERATE_NODE] No contexts found for step {current_step}. "
+                        f"step_ctx_list={step_ctx_list}"
+                    )
+                    raise ValueError(
+                        "No context available from retrieved documents or tool results."
                     )
 
-            # Use the SPECIFIC plan step as the question (not the full multi-part query)
-            # This ensures the LLM answers ONLY what this step is about
-            refined_query = state.get("refined_query", None)
+                final_context = "\n\n".join(contexts)
 
-            # Extract the task from plan step (format: "tool_name: description")
-            step_question = plan_step
-            if ":" in plan_step:
-                step_question = plan_step.split(":", 1)[1].strip()
+                # Build system prompt - different rules for web search vs document retrieval
+                # Use prompt registry for context-aware prompts
+                if is_web_search:
+                    context_type = ContextType.WEB_SEARCH
+                else:
+                    context_type = ContextType.DOCUMENT
 
-            # Build user message using prompt registry
-            user_message_with_context = GenerationPrompts.build_user_message(
-                question=step_question,
-                context=final_context,
-                refined_query=refined_query,
-            )
-            # Comment out too much citation prompt
-            # Include bracket citations [n] for every sentence that uses information.
-            # At the end of your answer, cite the sources you used. For each source file, list the specific page numbers
-            # from the contexts you referenced. Format: 'Sources: filename.pdf (pages 15, 23), filename2.pdf (page 7)'
+                system_prompt = GenerationPrompts.get_system_prompt(context_type)
 
-            # Build messages list: system + conversation_history + current query with contexts
-            openai_messages = [{"role": "system", "content": system_prompt}]
+                # Add decomposition instructions if query was decomposed
+                if has_decomposition and not is_web_search:
+                    decomp_instruction = (
+                        f"\n\nDECOMPOSITION INSTRUCTIONS:\n"
+                        f"- The original query was decomposed into {num_sub_queries} sub-queries for better retrieval.\n"
+                        f"- Contexts are grouped by sub-query above.\n"
+                        f"- Use information from ALL sub-query groups to fully answer the ORIGINAL query.\n"
+                        f"- When comparing entities, ensure you include data from each relevant sub-query group."
+                    )
+                    system_prompt += decomp_instruction
 
-            # Use pre-loaded conversation history from runtime (loaded in chat.py, avoids async issues)
-            conversation_history = runtime.get("conversation_history", [])
-            if conversation_history:
-                for h in conversation_history:
-                    sanitized_msg = {
-                        "role": h.get("role", "user"),
-                        "content": sanitize_text(
-                            h.get("content", ""),
-                            max_length=Config.ONE_HISTORY_MAX_TOKENS,
-                        ),
-                    }
-                    openai_messages.append(sanitized_msg)
+                # Add source file download links for retrieved documents
+                # Match retrieved doc sources with available_files to provide links
+                available_files = runtime.get("available_files", [])
+                if available_files and not is_web_search:
+                    # Build file_id to download_url mapping
+                    file_map = {}
+                    for f in available_files:
+                        file_map[f.get("file_id")] = {
+                            "name": f.get("original_name"),
+                            "url": f.get("download_url"),
+                        }
 
-            # Add current query with contexts
-            openai_messages.append(
-                {"role": "user", "content": user_message_with_context}
-            )
+                    # Collect unique source files from retrieved docs
+                    source_files = set()
+                    for step_ctx in step_ctx_list:
+                        if step_ctx["type"] == "retrieval":
+                            for doc in step_ctx.get("docs", []):
+                                file_id = doc.get("file_id")
+                                if file_id and file_id in file_map:
+                                    source_files.add(file_id)
 
-            response = await chat_completion(
-                client=openai_client,
-                model=Config.OPENAI_MODEL,
-                messages=openai_messages,
-                max_tokens=Config.CHAT_MAX_TOKENS,
-                temperature=Config.OPENAI_TEMPERATURE,
-            )
-            draft_answer = ""
-            if response.choices and response.choices[0].message:
-                draft_answer = response.choices[0].message.content
+                    # Add source file links to system prompt
+                    if source_files:
+                        source_links = []
+                        for fid in source_files:
+                            info = file_map[fid]
+                            source_links.append(f"- [{info['name']}]({info['url']})")
+                        system_prompt += (
+                            "\n\nSOURCE FILE DOWNLOADS (include these links in your answer):\n"
+                            + "\n".join(source_links)
+                        )
 
-            # Log if answer seems too short (potential issue)
-            if draft_answer and len(draft_answer) < 10:
-                logger.warning(
-                    f"[GENERATE_NODE] Very short answer generated ({len(draft_answer)} chars): "
-                    f"'{draft_answer[:100]}'. Context length was {len(final_context)} chars."
+                # Use the SPECIFIC plan step as the question (not the full multi-part query)
+                # This ensures the LLM answers ONLY what this step is about
+                refined_query = state.get("refined_query", None)
+
+                # Extract the task from plan step (format: "tool_name: description")
+                step_question = plan_step
+                if ":" in plan_step:
+                    step_question = plan_step.split(":", 1)[1].strip()
+
+                # Build user message using prompt registry
+                user_message_with_context = GenerationPrompts.build_user_message(
+                    question=step_question,
+                    context=final_context,
+                    refined_query=refined_query,
+                )
+                # Comment out too much citation prompt
+                # Include bracket citations [n] for every sentence that uses information.
+                # At the end of your answer, cite the sources you used. For each source file, list the specific page numbers
+                # from the contexts you referenced. Format: 'Sources: filename.pdf (pages 15, 23), filename2.pdf (page 7)'
+
+                # Build messages list: system + conversation_history + current query with contexts
+                openai_messages = [{"role": "system", "content": system_prompt}]
+
+                # Use pre-loaded conversation history from runtime (loaded in chat.py, avoids async issues)
+                conversation_history = runtime.get("conversation_history", [])
+                if conversation_history:
+                    for h in conversation_history:
+                        sanitized_msg = {
+                            "role": h.get("role", "user"),
+                            "content": sanitize_text(
+                                h.get("content", ""),
+                                max_length=Config.ONE_HISTORY_MAX_TOKENS,
+                            ),
+                        }
+                        openai_messages.append(sanitized_msg)
+
+                # Add current query with contexts
+                openai_messages.append(
+                    {"role": "user", "content": user_message_with_context}
                 )
 
+                response = await chat_completion(
+                    client=openai_client,
+                    model=Config.OPENAI_MODEL,
+                    messages=openai_messages,
+                    max_tokens=Config.CHAT_MAX_TOKENS,
+                    temperature=Config.OPENAI_TEMPERATURE,
+                )
+                draft_answer = ""
+                if response.choices and response.choices[0].message:
+                    draft_answer = response.choices[0].message.content
+
+                # Log if answer seems too short (potential issue)
+                if draft_answer and len(draft_answer) < 10:
+                    logger.warning(
+                        f"[GENERATE_NODE] Very short answer generated ({len(draft_answer)} chars): "
+                        f"'{draft_answer[:100]}'. Context length was {len(final_context)} chars."
+                    )
+
+                return {
+                    "draft_answer": draft_answer,
+                    "iteration_count": state.get("iteration_count", 0) + 1,
+                    "messages": state.get("messages", [])
+                    + [AIMessage(content="Generated answer successfully.")],
+                }
+
+        except TimeoutError:
+            logger.warning("[GENERATE] Node timed out after %ds", Config.AGENT_TOOL_TIMEOUT)
+            increment_error(MetricsErrorType.NODE_TIMEOUT)
             return {
-                "draft_answer": draft_answer,
+                "draft_answer": "",
                 "iteration_count": state.get("iteration_count", 0) + 1,
                 "messages": state.get("messages", [])
-                + [AIMessage(content="Generated answer successfully.")],
+                + [AIMessage(content=f"Answer generation timed out after {Config.AGENT_TOOL_TIMEOUT}s.")],
             }
-
         except Exception as e:
             return {
                 "draft_answer": "",

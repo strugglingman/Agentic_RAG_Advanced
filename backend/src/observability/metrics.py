@@ -88,6 +88,7 @@ class MetricsErrorType:
     RERANK_FAILED = "rerank_failed"
     LLM_FAILED = "llm_failed"
     TIMEOUT = "timeout"
+    NODE_TIMEOUT = "node_timeout"
     WEB_SEARCH_FAILED = "web_search_failed"
     INGESTION_FAILED = "ingestion_failed"
 

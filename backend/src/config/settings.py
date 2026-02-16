@@ -56,6 +56,14 @@ class Config:
     LLM_CB_FAILURE_THRESHOLD = int(os.getenv("LLM_CB_FAILURE_THRESHOLD", "5"))
     LLM_CB_RECOVERY_TIMEOUT = int(os.getenv("LLM_CB_RECOVERY_TIMEOUT", "30"))
     AGENT_MAX_ITERATIONS = int(os.getenv("AGENT_MAX_ITERATIONS", "20"))
+    # Per-request wall-clock timeout for agent execution (seconds).
+    # Each user request gets its own independent 300s budget via asyncio.timeout().
+    # Prevents resource exhaustion from slow LLM/tool calls piling up.
+    AGENT_TIMEOUT = int(os.getenv("AGENT_TIMEOUT", "300"))
+    # Per-tool execution timeout (seconds).
+    # Uniform safety net wrapping any tool (Tavily, E2B, ChromaDB, etc.)
+    # regardless of the tool SDK's own internal timeout settings.
+    AGENT_TOOL_TIMEOUT = int(os.getenv("AGENT_TOOL_TIMEOUT", "60"))
 
     # ==============================================================================
     # LangChain & LangSmith Tracing
