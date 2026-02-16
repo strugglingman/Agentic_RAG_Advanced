@@ -62,8 +62,10 @@ def _verify_slack_signature(
     See: https://api.slack.com/authentication/verifying-requests-from-slack
     """
     if not signing_secret:
-        logger.warning("SLACK_SIGNING_SECRET not configured, skipping verification")
-        return True  # Skip verification if not configured (dev mode)
+        logger.error("SLACK_SIGNING_SECRET not configured, rejecting request")
+        return (
+            False  # Fail-closed: can not prove the request is from Slack, so reject it
+        )
 
     # Check timestamp to prevent replay attacks (5 minute window)
     try:
