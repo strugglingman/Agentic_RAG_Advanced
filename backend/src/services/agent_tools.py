@@ -28,6 +28,7 @@ from src.services.retrieval import build_where
 from src.services.retrieval_decomposition import retrieve_with_decomposition
 from src.config.settings import Config
 from src.utils.safety import scrub_context
+from src.utils.ssrf_protection import validate_url as validate_url_ssrf
 from src.services.retrieval_evaluator import RetrievalEvaluator
 from src.models.evaluation import ReflectionConfig, EvaluationCriteria
 from src.services.query_refiner import QueryRefiner
@@ -944,14 +945,20 @@ async def execute_download_file(args: Dict[str, Any], context: Dict[str, Any]) -
     for file_url in file_list:
         try:
             logger.debug(f"[DOWNLOAD_FILE] File URL: {file_url}")
-            parsed_url = urlparse(file_url)
-            if parsed_url.scheme not in ("http", "https"):
-                errors.append(f"⚠️ Invalid URL scheme: {file_url}")
+
+            # SSRF protection: block private/internal IPs
+            try:
+                validate_url_ssrf(file_url)
+            except ValueError as e:
+                errors.append(f"⚠️ Blocked URL: {file_url} ({e})")
                 continue
 
+            parsed_url = urlparse(file_url)
+
             # Use async HTTP client for non-blocking downloads
+            # follow_redirects=False to prevent SSRF via redirect
             async with httpx.AsyncClient(
-                follow_redirects=True, headers=headers
+                follow_redirects=False, headers=headers
             ) as http_client:
                 # Check file size before downloading
                 try:

@@ -3,6 +3,7 @@
 import logging
 import httpx
 from src.config.settings import Config
+from src.utils.ssrf_protection import validate_url as validate_url_ssrf
 
 logger = logging.getLogger(__name__)
 
@@ -20,9 +21,12 @@ class SlackFileHandler:
         if not is_valid:
             raise ValueError(err)
 
+        # SSRF protection: validate URL before fetching
+        validate_url_ssrf(file_url)
+
         headers = {"Authorization": f"Bearer {self._bot_token}"}
         mimetype = file_info.get("mimetype", "application/octet-stream")
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(follow_redirects=False) as client:
             response = await client.get(file_url, headers=headers)
             response.raise_for_status()
             content = response.content
