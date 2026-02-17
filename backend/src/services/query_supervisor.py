@@ -567,9 +567,9 @@ class QuerySupervisor:
         agent_state = self._build_langgraph_initial_state(query)
 
         # Use conversation_id as thread_id for checkpointing (enables multi-turn conversations and state recovery)
-        thread_id = (
-            context.get("thread_id") or context.get("conversation_id") or "default"
-        )
+        thread_id = context.get("thread_id") or context.get("conversation_id")
+        if not thread_id:
+            raise ValueError("thread_id or conversation_id is required in context")
         config = {"configurable": {"thread_id": thread_id}}
 
         # Clear old checkpoint data before starting new query
