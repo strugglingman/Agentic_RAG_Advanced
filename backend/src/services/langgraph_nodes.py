@@ -2118,12 +2118,24 @@ def create_direct_answer_node(
         # - Store result in step_contexts with type="direct_answer"
         # - Return updated state
         increment_query_routing("direct_answer")
-        openai_client = runtime.get("openai_client", None)
-        if not openai_client:
-            raise ValueError("OpenAI client is required for direct answer node.")
-
         plan = state.get("plan", [])
         current_step = state.get("current_step", 0)
+
+        openai_client = runtime.get("openai_client", None)
+        if not openai_client:
+            step_contexts = _clone_step_contexts(state)
+            if current_step not in step_contexts:
+                step_contexts[current_step] = []
+            step_contexts[current_step].append({
+                "type": "direct_answer",
+                "plan_step": plan[current_step] if plan and current_step < len(plan) else "",
+            })
+            return {
+                "draft_answer": "I'm sorry, I'm unable to process this request right now. Please try again later.",
+                "step_contexts": step_contexts,
+                "iteration_count": state.get("iteration_count", 0) + 1,
+                "messages": [AIMessage(content="OpenAI client not available for direct answer.")],
+            }
         if not plan or current_step >= len(plan):
             return {
                 "direct_answer": "No valid plan step for direct answer.",
