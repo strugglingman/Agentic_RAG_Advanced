@@ -7,9 +7,18 @@ from chromadb.utils.embedding_functions import (
     SentenceTransformerEmbeddingFunction,
     OpenAIEmbeddingFunction,
 )
+from tenacity import retry, stop_after_attempt, wait_exponential, before_sleep_log
 from src.config.settings import Config
 
 logger = logging.getLogger(__name__)
+
+# Retry decorator: 3 attempts, exponential backoff (1s, 2s, 4s)
+_chroma_retry = retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=4),
+    before_sleep=before_sleep_log(logger, logging.WARNING),
+    reraise=True,
+)
 
 
 class VectorDB:
@@ -55,10 +64,12 @@ class VectorDB:
             embedding_function=self.embedding_fun,
         )
 
+    @_chroma_retry
     def upsert(self, ids: list, documents: list, metadatas: list):
         """Insert or update documents"""
         self.collection.upsert(ids=ids, documents=documents, metadatas=metadatas)
 
+    @_chroma_retry
     def query(
         self,
         query_texts: list,
@@ -74,6 +85,7 @@ class VectorDB:
             include=include or ["documents", "metadatas", "distances"],
         )
 
+    @_chroma_retry
     def get(self, include: list = None, where: dict = None):
         """Get documents, optionally filtered by a ChromaDB where clause."""
         return self.collection.get(
@@ -81,6 +93,7 @@ class VectorDB:
             where=where,
         )
 
+    @_chroma_retry
     def delete_by_file_id(self, file_id: str) -> int:
         """
         Delete all chunks belonging to a specific file.
