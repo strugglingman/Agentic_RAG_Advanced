@@ -60,6 +60,28 @@ logger = logging.getLogger(__name__)
 # ==================== HELPER: EvaluationResult <-> dict ====================
 
 
+def _clone_step_contexts(state: AgentState) -> dict:
+    """
+    Defensive copy for step_contexts to avoid mutating prior state snapshots in-place.
+    """
+    raw = state.get("step_contexts", {}) or {}
+    return {
+        step: list(items) if isinstance(items, list) else []
+        for step, items in raw.items()
+    }
+
+
+def _clone_tool_results(state: AgentState) -> dict:
+    """
+    Defensive copy for tool_results to avoid mutating prior state snapshots in-place.
+    """
+    raw = state.get("tool_results", {}) or {}
+    return {
+        key: list(items) if isinstance(items, list) else []
+        for key, items in raw.items()
+    }
+
+
 def evaluation_result_to_dict(result: EvaluationResult) -> dict:
     """Convert EvaluationResult object to serializable dict."""
     return {
@@ -127,7 +149,7 @@ def build_previous_step_context(
     import re
 
     step_answers = state.get("step_answers", [])
-    step_contexts = state.get("step_contexts", {})
+    step_contexts = _clone_step_contexts(state)
 
     text_parts = []
     file_ids = []
@@ -420,8 +442,7 @@ def create_plan_node(
                 "plan": existing_plan,
                 "current_step": state.get("current_step", 0),
                 "iteration_count": state.get("iteration_count", 0) + 1,
-                "messages": state.get("messages", [])
-                + [
+                "messages": [
                     AIMessage(
                         content=f"Continuing with existing plan, step {state.get('current_step', 0) + 1}/{len(existing_plan)}"
                     )
@@ -456,8 +477,7 @@ def create_plan_node(
                 "plan": plans,
                 "current_step": 0,
                 "iteration_count": state.get("iteration_count", 0) + 1,
-                "messages": state.get("messages", [])
-                + [
+                "messages": [
                     AIMessage(
                         content=f"[Semantic Router] Plan: {plans[0]} (confidence: {confidence:.2f})"
                     )
@@ -589,8 +609,7 @@ def create_plan_node(
             "plan": plans,
             "current_step": 0,
             "iteration_count": state.get("iteration_count", 0) + 1,
-            "messages": state.get("messages", [])
-            + [
+            "messages": [
                 AIMessage(
                     content=f"""
                          Plan created with {len(plans)} steps:\n
@@ -638,16 +657,14 @@ def create_retrieve_node(
                 "retrieved_docs": [],
                 "current_step": current_step,
                 "iteration_count": state.get("iteration_count", 0) + 1,
-                "messages": state.get("messages", [])
-                + [AIMessage(content="No plan or over max steps in plan.")],
+                "messages": [AIMessage(content="No plan or over max steps in plan.")],
             }
         if current_step >= len(plan):
             return {
                 "retrieved_docs": state.get("retrieved_docs", []),
                 "current_step": current_step,
                 "iteration_count": state.get("iteration_count", 0) + 1,
-                "messages": state.get("messages", [])
-                + [AIMessage(content="Over maximum steps in plan.")],
+                "messages": [AIMessage(content="Over maximum steps in plan.")],
             }
         action = plan[current_step].lower()
         if (
@@ -660,8 +677,7 @@ def create_retrieve_node(
                 "retrieved_docs": state.get("retrieved_docs", []),
                 "current_step": current_step,
                 "iteration_count": state.get("iteration_count", 0) + 1,
-                "messages": state.get("messages", [])
-                + [AIMessage(content="Current step is not to retrieve documents.")],
+                "messages": [AIMessage(content="Current step is not to retrieve documents.")],
             }
 
         # Get runtime context
@@ -675,16 +691,14 @@ def create_retrieve_node(
                 "retrieved_docs": state.get("retrieved_docs", []),
                 "current_step": current_step,
                 "iteration_count": state.get("iteration_count", 0) + 1,
-                "messages": state.get("messages", [])
-                + [AIMessage(content="No vector database available for retrieval.")],
+                "messages": [AIMessage(content="No vector database available for retrieval.")],
             }
         if not dept_id or not user_id:
             return {
                 "retrieved_docs": [],
                 "current_step": current_step,
                 "iteration_count": state.get("iteration_count", 0) + 1,
-                "messages": state.get("messages", [])
-                + [
+                "messages": [
                     AIMessage(
                         content="Missing department or user context for retrieval."
                     )
@@ -739,13 +753,12 @@ def create_retrieve_node(
                         "retrieved_docs": [],
                         "current_step": current_step,
                         "iteration_count": state.get("iteration_count", 0) + 1,
-                        "messages": state.get("messages", [])
-                        + [AIMessage(content="No relevant documents found.")],
+                        "messages": [AIMessage(content="No relevant documents found.")],
                     }
 
                 # Store retrieved docs PER STEP to avoid mixing contexts from different questions
                 # Replace old retrieval context if exists (from refinement loop), keep only latest
-                step_contexts = state.get("step_contexts", {})
+                step_contexts = _clone_step_contexts(state)
                 if current_step not in step_contexts:
                     step_contexts[current_step] = []
 
@@ -771,8 +784,7 @@ def create_retrieve_node(
                     "tools_used": state.get("tools_used", []) + ["search_documents"],
                     "current_step": current_step,
                     "iteration_count": state.get("iteration_count", 0) + 1,
-                    "messages": state.get("messages", [])
-                    + [AIMessage(content=f"Retrieved {len(ctx)} documents.")],
+                    "messages": [AIMessage(content=f"Retrieved {len(ctx)} documents.")],
                 }
         except TimeoutError:
             logger.warning("[RETRIEVE] Node timed out after %ds", Config.AGENT_TOOL_TIMEOUT)
@@ -781,16 +793,14 @@ def create_retrieve_node(
                 "retrieved_docs": [],
                 "current_step": current_step,
                 "iteration_count": state.get("iteration_count", 0) + 1,
-                "messages": state.get("messages", [])
-                + [AIMessage(content=f"Retrieval timed out after {Config.AGENT_TOOL_TIMEOUT}s.")],
+                "messages": [AIMessage(content=f"Retrieval timed out after {Config.AGENT_TOOL_TIMEOUT}s.")],
             }
         except Exception as e:
             return {
                 "retrieved_docs": [],
                 "current_step": current_step,
                 "iteration_count": state.get("iteration_count", 0) + 1,
-                "messages": state.get("messages", [])
-                + [AIMessage(content="Error during document retrieval.")],
+                "messages": [AIMessage(content="Error during document retrieval.")],
             }
 
     return retrieve_node
@@ -873,8 +883,7 @@ def create_reflect_node(
                 return {
                     "evaluation_result": evaluation_result_to_dict(evaluation_result),
                     "iteration_count": state.get("iteration_count", 0) + 1,
-                    "messages": state.get("messages", [])
-                    + [
+                    "messages": [
                         AIMessage(
                             content=f"Retrieval quality: {evaluation_result.quality.value} (confidence: {evaluation_result.confidence:.2f}). Recommendation: {evaluation_result.recommendation.value}."
                         )
@@ -893,8 +902,7 @@ def create_reflect_node(
             return {
                 "evaluation_result": evaluation_result_to_dict(fallback_result),
                 "iteration_count": state.get("iteration_count", 0) + 1,
-                "messages": state.get("messages", [])
-                + [AIMessage(content=f"Reflection timed out after {Config.AGENT_TOOL_TIMEOUT}s.")],
+                "messages": [AIMessage(content=f"Reflection timed out after {Config.AGENT_TOOL_TIMEOUT}s.")],
             }
         except Exception as e:
             # Fallback to default values (as dict)
@@ -908,8 +916,7 @@ def create_reflect_node(
             return {
                 "evaluation_result": evaluation_result_to_dict(fallback_result),
                 "iteration_count": state.get("iteration_count", 0) + 1,
-                "messages": state.get("messages", [])
-                + [
+                "messages": [
                     AIMessage(
                         content=f"Reflection failed: {str(e)}. Proceeding with default assessment."
                     )
@@ -1016,7 +1023,7 @@ def create_tool_web_search_node(
 
                 if not response.choices[0].message.tool_calls:
                     # Save step_contexts so verify_node doesn't throw and can combine all step_answers
-                    step_contexts = state.get("step_contexts", {})
+                    step_contexts = _clone_step_contexts(state)
                     if current_step not in step_contexts:
                         step_contexts[current_step] = []
                     step_contexts[current_step].append(
@@ -1039,8 +1046,7 @@ def create_tool_web_search_node(
                         "current_step": current_step,
                         "iteration_count": state.get("iteration_count", 0) + 1,
                         "draft_answer": "Web search was not performed.",
-                        "messages": state.get("messages", [])
-                        + [AIMessage(content="No tool was called by the LLM.")],
+                        "messages": [AIMessage(content="No tool was called by the LLM.")],
                     }
 
                 tool_call = response.choices[0].message.tool_calls[0]
@@ -1059,7 +1065,7 @@ def create_tool_web_search_node(
 
                 result = await execute_tool_call(tool_name, tool_args, context)
 
-                tool_results = state.get("tool_results", {})
+                tool_results = _clone_tool_results(state)
                 tool_key = f"{tool_name}_step_{current_step}"
                 if tool_key not in tool_results:
                     tool_results[tool_key] = []
@@ -1073,7 +1079,7 @@ def create_tool_web_search_node(
                 )
 
                 # Replace old web_search context if exists (from refinement loop), keep only latest
-                step_contexts = state.get("step_contexts", {})
+                step_contexts = _clone_step_contexts(state)
                 if current_step not in step_contexts:
                     step_contexts[current_step] = []
 
@@ -1105,8 +1111,7 @@ def create_tool_web_search_node(
                     "step_contexts": step_contexts,
                     "current_step": current_step,
                     "iteration_count": state.get("iteration_count", 0) + 1,
-                    "messages": state.get("messages", [])
-                    + [
+                    "messages": [
                         AIMessage(
                             content=f"Executed {tool_name} with result: {result[:200]}..."
                         )
@@ -1122,8 +1127,7 @@ def create_tool_web_search_node(
                 "current_step": current_step,
                 "iteration_count": state.get("iteration_count", 0) + 1,
                 "error": f"Web search timed out after {Config.AGENT_TOOL_TIMEOUT}s",
-                "messages": state.get("messages", [])
-                + [AIMessage(content=f"Web search timed out after {Config.AGENT_TOOL_TIMEOUT}s.")],
+                "messages": [AIMessage(content=f"Web search timed out after {Config.AGENT_TOOL_TIMEOUT}s.")],
             }
         except Exception as e:
             return {
@@ -1132,8 +1136,7 @@ def create_tool_web_search_node(
                 "current_step": current_step,
                 "iteration_count": state.get("iteration_count", 0) + 1,
                 "error": f"Tool execution failed: {str(e)}",
-                "messages": state.get("messages", [])
-                + [AIMessage(content=f"Tool execution failed: {str(e)}")],
+                "messages": [AIMessage(content=f"Tool execution failed: {str(e)}")],
             }
 
     return tool_web_search_node
@@ -1219,7 +1222,7 @@ def create_tool_download_file_node(
 
                 if not response.choices[0].message.tool_calls:
                     # Save step_contexts so verify_node doesn't throw and can combine all step_answers
-                    step_contexts = state.get("step_contexts", {})
+                    step_contexts = _clone_step_contexts(state)
                     if current_step not in step_contexts:
                         step_contexts[current_step] = []
                     step_contexts[current_step].append(
@@ -1242,8 +1245,7 @@ def create_tool_download_file_node(
                         "current_step": current_step,
                         "iteration_count": state.get("iteration_count", 0) + 1,
                         "draft_answer": "Download was not performed.",
-                        "messages": state.get("messages", [])
-                        + [
+                        "messages": [
                             AIMessage(content="No tool was called by the LLM for download.")
                         ],
                     }
@@ -1265,7 +1267,7 @@ def create_tool_download_file_node(
 
                 result = await execute_tool_call(tool_name, tool_args, context)
 
-                tool_results = state.get("tool_results", {})
+                tool_results = _clone_tool_results(state)
                 tool_key = f"{tool_name}_step_{current_step}"
                 if tool_key not in tool_results:
                     tool_results[tool_key] = []
@@ -1289,7 +1291,7 @@ def create_tool_download_file_node(
                         )
 
                 # Store tool result with files_created for chaining
-                step_contexts = state.get("step_contexts", {})
+                step_contexts = _clone_step_contexts(state)
                 if current_step not in step_contexts:
                     step_contexts[current_step] = []
 
@@ -1324,8 +1326,7 @@ def create_tool_download_file_node(
                     "draft_answer": result,  # Set draft_answer for verify_node
                     "current_step": current_step,
                     "iteration_count": state.get("iteration_count", 0) + 1,
-                    "messages": state.get("messages", [])
-                    + [
+                    "messages": [
                         AIMessage(
                             content=f"Downloaded files: {len(files_created)} file(s) created"
                         )
@@ -1342,8 +1343,7 @@ def create_tool_download_file_node(
                 "current_step": current_step,
                 "iteration_count": state.get("iteration_count", 0) + 1,
                 "error": f"Download file timed out after {Config.AGENT_TOOL_TIMEOUT}s",
-                "messages": state.get("messages", [])
-                + [AIMessage(content=f"Download file timed out after {Config.AGENT_TOOL_TIMEOUT}s.")],
+                "messages": [AIMessage(content=f"Download file timed out after {Config.AGENT_TOOL_TIMEOUT}s.")],
             }
         except Exception as e:
             return {
@@ -1353,8 +1353,7 @@ def create_tool_download_file_node(
                 "current_step": current_step,
                 "iteration_count": state.get("iteration_count", 0) + 1,
                 "error": f"Download file failed: {str(e)}",
-                "messages": state.get("messages", [])
-                + [AIMessage(content=f"Download file failed: {str(e)}")],
+                "messages": [AIMessage(content=f"Download file failed: {str(e)}")],
             }
 
     return tool_download_file_node
@@ -1433,7 +1432,7 @@ def create_tool_create_documents_node(
                 )
 
                 # Get step_contexts for writing results (will store files_created)
-                step_contexts = state.get("step_contexts", {})
+                step_contexts = _clone_step_contexts(state)
 
                 # Build prompt for LLM tool calling
                 if plan and current_step < len(plan):
@@ -1483,8 +1482,7 @@ def create_tool_create_documents_node(
                         "current_step": current_step,
                         "iteration_count": state.get("iteration_count", 0) + 1,
                         "draft_answer": "Document creation was not performed.",
-                        "messages": state.get("messages", [])
-                        + [
+                        "messages": [
                             AIMessage(
                                 content="No tool was called by the LLM for document creation."
                             )
@@ -1508,7 +1506,7 @@ def create_tool_create_documents_node(
 
                 result = await execute_tool_call(tool_name, tool_args, context)
 
-                tool_results = state.get("tool_results", {})
+                tool_results = _clone_tool_results(state)
                 tool_key = f"{tool_name}_step_{current_step}"
                 if tool_key not in tool_results:
                     tool_results[tool_key] = []
@@ -1566,8 +1564,7 @@ def create_tool_create_documents_node(
                     "draft_answer": result,  # Set draft_answer for verify_node
                     "current_step": current_step,
                     "iteration_count": state.get("iteration_count", 0) + 1,
-                    "messages": state.get("messages", [])
-                    + [
+                    "messages": [
                         AIMessage(
                             content=f"Created documents: {len(files_created)} file(s)"
                         )
@@ -1584,8 +1581,7 @@ def create_tool_create_documents_node(
                 "current_step": current_step,
                 "iteration_count": state.get("iteration_count", 0) + 1,
                 "error": f"Create documents timed out after {Config.AGENT_TOOL_TIMEOUT}s",
-                "messages": state.get("messages", [])
-                + [AIMessage(content=f"Create documents timed out after {Config.AGENT_TOOL_TIMEOUT}s.")],
+                "messages": [AIMessage(content=f"Create documents timed out after {Config.AGENT_TOOL_TIMEOUT}s.")],
             }
         except Exception as e:
             return {
@@ -1595,8 +1591,7 @@ def create_tool_create_documents_node(
                 "current_step": current_step,
                 "iteration_count": state.get("iteration_count", 0) + 1,
                 "error": f"Create documents failed: {str(e)}",
-                "messages": state.get("messages", [])
-                + [AIMessage(content=f"Create documents failed: {str(e)}")],
+                "messages": [AIMessage(content=f"Create documents failed: {str(e)}")],
             }
 
     return tool_create_documents_node
@@ -1661,7 +1656,7 @@ def create_tool_send_email_node(
                 )
 
                 # Get step_contexts for writing results later
-                step_contexts = state.get("step_contexts", {})
+                step_contexts = _clone_step_contexts(state)
 
                 # Files from THIS PLAN (high priority) - from helper
                 session_file_ids = prev_ctx.file_ids
@@ -1760,8 +1755,7 @@ def create_tool_send_email_node(
                             "current_step": current_step,
                             "iteration_count": state.get("iteration_count", 0) + 1,
                             "draft_answer": llm_text,
-                            "messages": state.get("messages", [])
-                            + [AIMessage(content=llm_text)],
+                            "messages": [AIMessage(content=llm_text)],
                         }
 
                     return {
@@ -1771,8 +1765,7 @@ def create_tool_send_email_node(
                         "current_step": current_step,
                         "iteration_count": state.get("iteration_count", 0) + 1,
                         "draft_answer": "Email not sent - no response from LLM.",
-                        "messages": state.get("messages", [])
-                        + [
+                        "messages": [
                             AIMessage(
                                 content="No tool was called by the LLM for send email."
                             )
@@ -1795,7 +1788,7 @@ def create_tool_send_email_node(
 
                 result = await execute_tool_call(tool_name, tool_args, context)
 
-                tool_results = state.get("tool_results", {})
+                tool_results = _clone_tool_results(state)
                 tool_key = f"{tool_name}_step_{current_step}"
                 if tool_key not in tool_results:
                     tool_results[tool_key] = []
@@ -1841,8 +1834,7 @@ def create_tool_send_email_node(
                     "draft_answer": result,  # Set draft_answer for verify_node
                     "current_step": current_step,
                     "iteration_count": state.get("iteration_count", 0) + 1,
-                    "messages": state.get("messages", [])
-                    + [AIMessage(content=f"Email sent: {result[:100]}...")],
+                    "messages": [AIMessage(content=f"Email sent: {result[:100]}...")],
                 }
 
         except TimeoutError:
@@ -1855,8 +1847,7 @@ def create_tool_send_email_node(
                 "current_step": current_step,
                 "iteration_count": state.get("iteration_count", 0) + 1,
                 "error": f"Send email timed out after {Config.AGENT_TOOL_TIMEOUT}s",
-                "messages": state.get("messages", [])
-                + [AIMessage(content=f"Send email timed out after {Config.AGENT_TOOL_TIMEOUT}s.")],
+                "messages": [AIMessage(content=f"Send email timed out after {Config.AGENT_TOOL_TIMEOUT}s.")],
             }
         except Exception as e:
             logger.error(f"[SEND_EMAIL_NODE] Exception: {type(e).__name__}: {str(e)}")
@@ -1870,8 +1861,7 @@ def create_tool_send_email_node(
                 "current_step": current_step,
                 "iteration_count": state.get("iteration_count", 0) + 1,
                 "error": f"Send email failed: {str(e)}",
-                "messages": state.get("messages", [])
-                + [AIMessage(content=f"Send email failed: {str(e)}")],
+                "messages": [AIMessage(content=f"Send email failed: {str(e)}")],
             }
 
     return tool_send_email_node
@@ -1988,7 +1978,7 @@ def create_tool_code_execution_node(
                 )
 
                 # Check if LLM called a tool
-                step_contexts = state.get("step_contexts", {})
+                step_contexts = _clone_step_contexts(state)
                 if not response.choices[0].message.tool_calls:
                     if current_step not in step_contexts:
                         step_contexts[current_step] = []
@@ -2012,8 +2002,7 @@ def create_tool_code_execution_node(
                         "current_step": current_step,
                         "iteration_count": state.get("iteration_count", 0) + 1,
                         "draft_answer": "Code execution was not called.",
-                        "messages": state.get("messages", [])
-                        + [AIMessage(content="No tool was called by the LLM.")],
+                        "messages": [AIMessage(content="No tool was called by the LLM.")],
                     }
 
                 # Execute the tool call
@@ -2035,7 +2024,7 @@ def create_tool_code_execution_node(
                 result = await execute_tool_call(tool_name, tool_args, context)
 
                 # Update tool results
-                tool_results = state.get("tool_results", {})
+                tool_results = _clone_tool_results(state)
                 tool_key = f"{tool_name}_step_{current_step}"
                 if tool_key not in tool_results:
                     tool_results[tool_key] = []
@@ -2082,8 +2071,7 @@ def create_tool_code_execution_node(
                     "draft_answer": result,
                     "current_step": current_step,
                     "iteration_count": state.get("iteration_count", 0) + 1,
-                    "messages": state.get("messages", [])
-                    + [AIMessage(content=f"Executed code with result: {result[:200]}...")],
+                    "messages": [AIMessage(content=f"Executed code with result: {result[:200]}...")],
                 }
 
         except TimeoutError:
@@ -2096,8 +2084,7 @@ def create_tool_code_execution_node(
                 "current_step": current_step,
                 "iteration_count": state.get("iteration_count", 0) + 1,
                 "error": f"Code execution timed out after {Config.AGENT_TOOL_TIMEOUT}s",
-                "messages": state.get("messages", [])
-                + [AIMessage(content=f"Code execution timed out after {Config.AGENT_TOOL_TIMEOUT}s.")],
+                "messages": [AIMessage(content=f"Code execution timed out after {Config.AGENT_TOOL_TIMEOUT}s.")],
             }
         except Exception as e:
             logger.error(
@@ -2110,8 +2097,7 @@ def create_tool_code_execution_node(
                 "current_step": current_step,
                 "iteration_count": state.get("iteration_count", 0) + 1,
                 "error": f"Code execution failed: {str(e)}",
-                "messages": state.get("messages", [])
-                + [AIMessage(content=f"Code execution failed: {str(e)}")],
+                "messages": [AIMessage(content=f"Code execution failed: {str(e)}")],
             }
 
     return tool_code_execution_node
@@ -2142,8 +2128,7 @@ def create_direct_answer_node(
             return {
                 "direct_answer": "No valid plan step for direct answer.",
                 "iteration_count": state.get("iteration_count", 0) + 1,
-                "messages": state.get("messages", [])
-                + [AIMessage(content="No valid plan step for direct answer.")],
+                "messages": [AIMessage(content="No valid plan step for direct answer.")],
             }
         action_step = plan[current_step]
         step_query = (
@@ -2201,7 +2186,7 @@ def create_direct_answer_node(
 
                 # Store direct answer in step_contexts
                 # Replace if exists (unlikely for direct_answer, but keep consistent)
-                step_contexts = state.get("step_contexts", {})
+                step_contexts = _clone_step_contexts(state)
                 if current_step not in step_contexts:
                     step_contexts[current_step] = []
 
@@ -2226,8 +2211,7 @@ def create_direct_answer_node(
                     "current_step": current_step,
                     "step_contexts": step_contexts,
                     "iteration_count": state.get("iteration_count", 0) + 1,
-                    "messages": state.get("messages", [])
-                    + [AIMessage(content="Generated answer from direct_answer directly.")],
+                    "messages": [AIMessage(content="Generated answer from direct_answer directly.")],
                 }
         except TimeoutError:
             logger.warning("[DIRECT_ANSWER] Node timed out after %ds", Config.AGENT_TOOL_TIMEOUT)
@@ -2236,16 +2220,14 @@ def create_direct_answer_node(
                 "draft_answer": "",
                 "current_step": current_step,
                 "iteration_count": state.get("iteration_count", 0) + 1,
-                "messages": state.get("messages", [])
-                + [AIMessage(content=f"Direct answer timed out after {Config.AGENT_TOOL_TIMEOUT}s.")],
+                "messages": [AIMessage(content=f"Direct answer timed out after {Config.AGENT_TOOL_TIMEOUT}s.")],
             }
         except Exception as e:
             return {
                 "draft_answer": "",
                 "current_step": current_step,
                 "iteration_count": state.get("iteration_count", 0) + 1,
-                "messages": state.get("messages", [])
-                + [AIMessage(content="Error during direct answer generation.")],
+                "messages": [AIMessage(content="Error during direct answer generation.")],
             }
 
     return direct_answer_node
@@ -2325,8 +2307,7 @@ def create_refine_node(
                     "refined_query": refined_query,
                     "refinement_count": current_refinement_count + 1,
                     "iteration_count": state.get("iteration_count", 0) + 1,
-                    "messages": state.get("messages", [])
-                    + [AIMessage(content=f"Refined query to: {refined_query}")],
+                    "messages": [AIMessage(content=f"Refined query to: {refined_query}")],
                 }
         except TimeoutError:
             logger.warning("[REFINE] Node timed out after %ds", Config.AGENT_TOOL_TIMEOUT)
@@ -2334,15 +2315,13 @@ def create_refine_node(
             return {
                 "refined_query": current_query,
                 "iteration_count": state.get("iteration_count", 0) + 1,
-                "messages": state.get("messages", [])
-                + [AIMessage(content=f"Query refinement timed out after {Config.AGENT_TOOL_TIMEOUT}s.")],
+                "messages": [AIMessage(content=f"Query refinement timed out after {Config.AGENT_TOOL_TIMEOUT}s.")],
             }
         except Exception as e:
             return {
                 "refined_query": current_query,
                 "iteration_count": state.get("iteration_count", 0) + 1,
-                "messages": state.get("messages", [])
-                + [AIMessage(content="Error during query refinement.")],
+                "messages": [AIMessage(content="Error during query refinement.")],
             }
 
     return refine_node
@@ -2394,21 +2373,19 @@ def create_generate_node(
                     return {
                         "draft_answer": clarification_message,
                         "iteration_count": state.get("iteration_count", 0) + 1,
-                        "messages": state.get("messages", [])
-                        + [AIMessage(content=clarification_message)],
+                        "messages": [AIMessage(content=clarification_message)],
                     }
 
                 # Get ONLY current step's context (per-step isolation)
                 current_step = state.get("current_step", 0)
-                step_contexts = state.get("step_contexts", {})
+                step_contexts = _clone_step_contexts(state)
 
                 # Get context for the current step being executed (now a list)
                 if current_step not in step_contexts or not step_contexts[current_step]:
                     return {
                         "draft_answer": "",
                         "iteration_count": state.get("iteration_count", 0) + 1,
-                        "messages": state.get("messages", [])
-                        + [
+                        "messages": [
                             AIMessage(
                                 content="No context available to generate answer from."
                             )
@@ -2655,8 +2632,7 @@ def create_generate_node(
                 return {
                     "draft_answer": draft_answer,
                     "iteration_count": state.get("iteration_count", 0) + 1,
-                    "messages": state.get("messages", [])
-                    + [AIMessage(content="Generated answer successfully.")],
+                    "messages": [AIMessage(content="Generated answer successfully.")],
                 }
 
         except TimeoutError:
@@ -2665,15 +2641,13 @@ def create_generate_node(
             return {
                 "draft_answer": "",
                 "iteration_count": state.get("iteration_count", 0) + 1,
-                "messages": state.get("messages", [])
-                + [AIMessage(content=f"Answer generation timed out after {Config.AGENT_TOOL_TIMEOUT}s.")],
+                "messages": [AIMessage(content=f"Answer generation timed out after {Config.AGENT_TOOL_TIMEOUT}s.")],
             }
         except Exception as e:
             return {
                 "draft_answer": "",
                 "iteration_count": state.get("iteration_count", 0) + 1,
-                "messages": state.get("messages", [])
-                + [AIMessage(content="Error during answer generation.")],
+                "messages": [AIMessage(content="Error during answer generation.")],
             }
 
     return generate_node
@@ -2730,8 +2704,7 @@ def create_verify_node(
                 "evaluation_result": None,  # Clear evaluation_result for next cycle
                 "refined_query": None,  # Clear refined_query for next step
                 "iteration_count": state.get("iteration_count", 0) + 1,
-                "messages": state.get("messages", [])
-                + [AIMessage(content="No draft answer to verify.")],
+                "messages": [AIMessage(content="No draft answer to verify.")],
             }
 
         # Check if this is a CLARIFY recommendation - pass through without verification
@@ -2751,16 +2724,15 @@ def create_verify_node(
                 "evaluation_result": None,  # Clear evaluation_result for next cycle
                 "refined_query": None,  # Clear refined_query for next step
                 "iteration_count": state.get("iteration_count", 0) + 1,
-                "messages": state.get("messages", [])
-                + [AIMessage(content="Clarification request prepared.")],
+                "messages": [AIMessage(content="Clarification request prepared.")],
             }
 
         try:
             # Calculate valid context IDs from both sources
             retrieved_docs = state.get("retrieved_docs", [])
-            tool_results = state.get("tool_results", {})
+            tool_results = _clone_tool_results(state)
 
-            step_contexts = state.get("step_contexts", {})
+            step_contexts = _clone_step_contexts(state)
             step_ctx_list = step_contexts.get(current_step, [])
             if not step_ctx_list:
                 raise ValueError(f"No context found for step {current_step}")
@@ -2814,8 +2786,7 @@ def create_verify_node(
                         "evaluation_result": None,  # Clear evaluation_result for next cycle
                         "refined_query": None,  # Clear refined_query for next step
                         "iteration_count": state.get("iteration_count", 0) + 1,
-                        "messages": state.get("messages", [])
-                        + [
+                        "messages": [
                             AIMessage(
                                 content="Warning: No contexts to verify citations against."
                             )
@@ -2838,7 +2809,8 @@ def create_verify_node(
             if ":" in plan_step_desc:
                 clean_question = plan_step_desc.split(":", 1)[1].strip()
 
-            step_answers = state.get("step_answers", [])
+            # Copy before append to avoid in-place mutation of prior state snapshots.
+            step_answers = list(state.get("step_answers", []))
             step_answers.append(
                 {
                     "step": current_step,
@@ -2850,7 +2822,7 @@ def create_verify_node(
             # If all steps complete, concatenate all step answers
             if not has_more_steps:
                 # Get step_contexts for doc counting and sources
-                step_contexts = state.get("step_contexts", {})
+                step_contexts = _clone_step_contexts(state)
 
                 # Build final answer from all step answers
                 if len(step_answers) == 1:
@@ -2940,8 +2912,7 @@ def create_verify_node(
                 "evaluation_result": None,  # Clear evaluation_result for next cycle
                 "refined_query": None,  # Clear refined_query for next step
                 "iteration_count": state.get("iteration_count", 0) + 1,
-                "messages": state.get("messages", [])
-                + [AIMessage(content="Answer verified and citations checked.")],
+                "messages": [AIMessage(content="Answer verified and citations checked.")],
             }
         except Exception as e:
             return {
@@ -2951,8 +2922,7 @@ def create_verify_node(
                 "evaluation_result": None,  # Clear evaluation_result for next cycle
                 "refined_query": None,  # Clear refined_query for next step
                 "iteration_count": state.get("iteration_count", 0) + 1,
-                "messages": state.get("messages", [])
-                + [AIMessage(content=f"Error during verification: {str(e)}")],
+                "messages": [AIMessage(content=f"Error during verification: {str(e)}")],
             }
 
     return verify_node
@@ -2973,6 +2943,5 @@ async def error_handler_node(state: AgentState) -> Dict[str, Any]:
     return {
         "final_answer": f"Error: {error_message}",
         "iteration_count": state.get("iteration_count", 0) + 1,
-        "messages": state.get("messages", [])
-        + [AIMessage(content=f"Handled error: {error_message}")],
+        "messages": [AIMessage(content=f"Handled error: {error_message}")],
     }

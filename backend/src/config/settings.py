@@ -263,7 +263,11 @@ class Config:
     CONTEXTUAL_RETRIEVAL_MAX_WORKERS = int(
         os.getenv("CONTEXTUAL_RETRIEVAL_MAX_WORKERS", "8")
     )
-    TEXT_MAX = int(os.getenv("TEXT_MAX", "-1"))
+    TEXT_MAX = (
+        None
+        if int(os.getenv("TEXT_MAX", "-1")) == -1
+        else int(os.getenv("TEXT_MAX", "-1"))
+    )
     # Batch size for upserting chunks into vector DB. Larger batches are more efficient but use more memory.
     UPSERT_BATCH_SIZE = int(os.getenv("UPSERT_BATCH_SIZE", "500"))
 

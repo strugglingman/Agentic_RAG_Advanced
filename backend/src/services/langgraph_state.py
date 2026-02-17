@@ -7,9 +7,9 @@ State is split into:
 - RuntimeContext: Non-serializable, read-only, passed separately
 """
 
-from operator import add
-from typing import TypedDict, List, Optional, Annotated, Sequence, Any, Tuple
+from typing import Annotated, TypedDict, List, Optional, Sequence, Any, Tuple
 from langchain_core.messages import BaseMessage, HumanMessage
+from langgraph.graph.message import add_messages
 
 
 class RuntimeContext(TypedDict):
@@ -42,7 +42,9 @@ class AgentState(TypedDict):
     """
 
     # Core
-    messages: Annotated[Sequence[BaseMessage], add]  # Conversation history
+    # Uses add_messages reducer: nodes return only NEW messages, LangGraph appends them.
+    # Do NOT return state.get("messages", []) + [new] — that causes duplication.
+    messages: Annotated[Sequence[BaseMessage], add_messages]
     query: str  # Original user query
 
     # Planning
