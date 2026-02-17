@@ -2728,10 +2728,7 @@ def create_verify_node(
             }
 
         try:
-            # Calculate valid context IDs from both sources
-            retrieved_docs = state.get("retrieved_docs", [])
-            tool_results = _clone_tool_results(state)
-
+            # Calculate valid context IDs from step contexts (matches generate_node numbering)
             step_contexts = _clone_step_contexts(state)
             step_ctx_list = step_contexts.get(current_step, [])
             if not step_ctx_list:
@@ -2766,14 +2763,14 @@ def create_verify_node(
             else:
                 context_num = 1
 
-                # Add IDs for retrieved documents
-                for _ in retrieved_docs:
-                    valid_ids.append(context_num)
-                    context_num += 1
-
-                # Add IDs for tool results
-                for _, results in tool_results.items():
-                    for _ in results:
+                # Build valid_ids from step_ctx_list (same source as generate_node)
+                # to ensure citation numbers match what the LLM saw in the prompt
+                for step_ctx in step_ctx_list:
+                    if step_ctx.get("type") == "retrieval":
+                        for _ in step_ctx.get("docs", []):
+                            valid_ids.append(context_num)
+                            context_num += 1
+                    elif step_ctx.get("type") == "tool":
                         valid_ids.append(context_num)
                         context_num += 1
 
