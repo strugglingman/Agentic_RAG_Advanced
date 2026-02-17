@@ -387,7 +387,7 @@ async def delete_files(
                 DeleteFileResult(
                     file_id=file_id,
                     success=False,
-                    message=str(e),
+                    message="Delete failed",
                 )
             )
 

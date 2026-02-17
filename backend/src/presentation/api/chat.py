@@ -229,9 +229,10 @@ async def chat_agent(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
     except Exception as e:
         status_code = 500
+        logger.exception("Chat error: %s", e)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Chat error: {str(e)}",
+            detail="Internal server error",
         )
     finally:
         duration = time.time() - start_time
@@ -319,9 +320,10 @@ async def chat_simple(
     except PermissionError as e:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
     except Exception as e:
+        logger.exception("Chat error: %s", e)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Chat error: {str(e)}",
+            detail="Internal server error",
         )
 
 
@@ -408,8 +410,8 @@ async def resume_workflow(
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except Exception as e:
-        logger.error(f"[HITL] Resume workflow error: {e}")
+        logger.exception("[HITL] Resume workflow error: %s", e)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Resume error: {str(e)}",
+            detail="Internal server error",
         )

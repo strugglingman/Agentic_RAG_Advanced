@@ -236,7 +236,7 @@ async def ingest_documents(
                 "error",
                 {
                     "job_id": job_id,
-                    "error": str(e),
+                    "error": "Ingestion failed",
                     "status": "error",
                 },
             )
