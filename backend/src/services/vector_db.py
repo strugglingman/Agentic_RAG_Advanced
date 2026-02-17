@@ -64,9 +64,28 @@ class VectorDB:
             embedding_function=self.embedding_fun,
         )
 
-    @_chroma_retry
     def upsert(self, ids: list, documents: list, metadatas: list):
-        """Insert or update documents"""
+        """Insert or update documents, automatically batching large payloads."""
+        batch_size = Config.UPSERT_BATCH_SIZE
+        total = len(ids)
+        for i in range(0, total, batch_size):
+            end = min(i + batch_size, total)
+            self._upsert_batch(
+                ids=ids[i:end],
+                documents=documents[i:end],
+                metadatas=metadatas[i:end],
+            )
+            if total > batch_size:
+                logger.info(
+                    "[VectorDB] Upserted batch %d/%d (%d chunks)",
+                    i // batch_size + 1,
+                    (total + batch_size - 1) // batch_size,
+                    end - i,
+                )
+
+    @_chroma_retry
+    def _upsert_batch(self, ids: list, documents: list, metadatas: list):
+        """Upsert a single batch with retry."""
         self.collection.upsert(ids=ids, documents=documents, metadatas=metadatas)
 
     @_chroma_retry
