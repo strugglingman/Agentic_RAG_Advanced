@@ -64,6 +64,25 @@ services:
       retries: 5
 
   # =============================================================================
+  # Qdrant Vector Database
+  # =============================================================================
+  qdrant:
+    image: qdrant/qdrant:v1.13.2
+    ports:
+      - "6333:6333"   # REST API
+      - "6334:6334"   # gRPC
+    volumes:
+      - ./qdrant_data:/qdrant/storage
+    restart: unless-stopped
+    environment:
+      - QDRANT__SERVICE__GRPC_PORT=6334
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:6333/healthz"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # =============================================================================
   # Backend (FastAPI)
   # =============================================================================
   backend:
@@ -82,12 +101,15 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      qdrant:
+        condition: service_healthy
     restart: unless-stopped
     environment:
       # Override database URLs to use container hostnames
       - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?schema=chatbot
       - CHECKPOINT_POSTGRES_DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       - REDIS_URL=redis://redis:6379
+      - QDRANT_URL=http://qdrant:6333
       - SERVICE_AUTH_SECRET=${SERVICE_AUTH_SECRET}
     networks:
       - default

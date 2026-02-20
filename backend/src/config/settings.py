@@ -137,6 +137,24 @@ class Config:
     CHROMA_PATH = os.getenv("CHROMA_PATH", "./chroma_db")
 
     # ==============================================================================
+    # Vector Database (Qdrant)
+    # ==============================================================================
+    # Provider toggle: "chromadb" or "qdrant"
+    VECTOR_DB_PROVIDER: str = os.getenv("VECTOR_DB_PROVIDER", "qdrant")
+    QDRANT_URL: str = os.getenv("QDRANT_URL", "http://localhost:6333")
+    QDRANT_API_KEY: str = os.getenv("QDRANT_API_KEY", "")
+    QDRANT_COLLECTION_NAME: str = os.getenv("QDRANT_COLLECTION_NAME", "documents")
+    # Use gRPC for better performance (requires port 6334)
+    QDRANT_PREFER_GRPC: bool = os.getenv("QDRANT_PREFER_GRPC", "true").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    # Sparse vector model for BM25 at ingest time (fastembed)
+    QDRANT_SPARSE_MODEL: str = os.getenv("QDRANT_SPARSE_MODEL", "Qdrant/bm25")
+
+    # ==============================================================================
     # PostgreSQL Database (Conversations & Checkpoints)
     # ==============================================================================
     DATABASE_URL: str = os.getenv("DATABASE_URL", "")

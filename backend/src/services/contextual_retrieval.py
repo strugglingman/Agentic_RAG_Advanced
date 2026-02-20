@@ -10,11 +10,11 @@ Reference: https://www.anthropic.com/news/contextual-retrieval
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
 import os
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 
 from src.config.settings import Config
@@ -63,12 +63,12 @@ _client: Optional[object] = None
 
 
 def _get_client():
-    """Get or create the OpenAI client (sync, since ingest_file runs in a thread)."""
+    """Get or create the async OpenAI client."""
     global _client
     if _client is None:
-        from openai import OpenAI
+        from openai import AsyncOpenAI
 
-        _client = OpenAI(api_key=Config.OPENAI_KEY)
+        _client = AsyncOpenAI(api_key=Config.OPENAI_KEY)
     return _client
 
 
@@ -88,7 +88,7 @@ Answer only with the succinct context and nothing else."""
 _MAX_DOC_CHARS = 120_000
 
 
-def _generate_context(
+async def _generate_context(
     full_text: str,
     chunk_text: str,
     filename: str,
@@ -105,7 +105,7 @@ def _generate_context(
             document=full_text[:_MAX_DOC_CHARS],
             chunk=chunk_text,
         )
-        response = client.chat.completions.create(
+        response = await client.chat.completions.create(
             model=model,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=150,
@@ -121,7 +121,7 @@ def _generate_context(
     return f"From {filename}."
 
 
-def contextualize_chunks(
+async def contextualize_chunks(
     full_document_text: str,
     chunks: list[tuple[int, str]],
     filename: str,
@@ -154,38 +154,34 @@ def contextualize_chunks(
         )
         return cached
 
-    results: list[tuple[int, int, str, str]] = []  # (index, page_num, ctx_text, orig)
-
     logger.info(
         f"[CONTEXTUAL] Contextualizing {len(chunks)} chunks for {filename} "
-        f"(model={model}, workers={max_workers})"
+        f"(model={model}, concurrency={max_workers})"
     )
 
-    def _process_chunk(idx: int, page_num: int, chunk_text: str):
-        context = _generate_context(full_document_text, chunk_text, filename, model)
-        contextualized = f"{context}\n\n{chunk_text}"
-        return idx, page_num, contextualized, chunk_text
+    semaphore = asyncio.Semaphore(max_workers)
 
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {
-            executor.submit(_process_chunk, i, pg, txt): i
-            for i, (pg, txt) in enumerate(chunks)
-        }
-        for future in as_completed(futures):
+    async def _process_chunk(idx: int, page_num: int, chunk_text: str):
+        async with semaphore:
             try:
-                results.append(future.result())
+                context = await _generate_context(
+                    full_document_text, chunk_text, filename, model,
+                )
+                contextualized = f"{context}\n\n{chunk_text}"
+                return idx, page_num, contextualized, chunk_text
             except Exception as e:
-                idx = futures[future]
-                pg, txt = chunks[idx]
                 logger.warning(
                     f"[CONTEXTUAL] Worker failed for chunk {idx} in {filename}: {e}"
                 )
-                # Fallback: use rule-based context
-                fallback = f"From {filename}.\n\n{txt}"
-                results.append((idx, pg, fallback, txt))
+                fallback = f"From {filename}.\n\n{chunk_text}"
+                return idx, page_num, fallback, chunk_text
+
+    results = await asyncio.gather(
+        *(_process_chunk(i, pg, txt) for i, (pg, txt) in enumerate(chunks))
+    )
 
     # Sort by original index to preserve chunk order
-    results.sort(key=lambda x: x[0])
+    results = sorted(results, key=lambda x: x[0])
 
     final = [(pg, ctx, orig) for _, pg, ctx, orig in results]
 

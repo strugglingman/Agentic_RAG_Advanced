@@ -139,7 +139,10 @@ class LangChainProcessor:
                 continue
 
             # Two-stage split for Markdown content (Docling output, .md files)
-            if self._has_markdown_headers(text) and self.config.strategy == ChunkingStrategy.RECURSIVE:
+            if (
+                self._has_markdown_headers(text)
+                and self.config.strategy == ChunkingStrategy.RECURSIVE
+            ):
                 chunks = self._split_markdown_two_stage(text)
             else:
                 chunks = self._splitter.split_text(text)
@@ -172,13 +175,28 @@ class LangChainProcessor:
         )
 
         # Stage 1: split by headers → list of Documents with header metadata
+        logger.debug(
+            "[Chunker] Stage 1 input (%d chars):\n%.500s",
+            len(text),
+            text,
+        )
         header_docs = md_splitter.split_text(text)
+        logger.debug(
+            "[Chunker] Stage 1 output: %d sections → %s",
+            len(header_docs),
+            [(d.metadata, d.page_content[:80] + "...") for d in header_docs[:5]],
+        )
 
         if not header_docs:
             return self._splitter.split_text(text)
 
         # Stage 2: enforce size limits within each section
         sized_docs = self._splitter.split_documents(header_docs)
+        logger.debug(
+            "[Chunker] Stage 2 output: %d chunks (from %d sections)",
+            len(sized_docs),
+            len(header_docs),
+        )
 
         # Rebuild header prefix from metadata for sub-chunks that lost it.
         # With strip_headers=False, the first sub-chunk of a section already
@@ -198,7 +216,9 @@ class LangChainProcessor:
 
             if prefix_lines:
                 # Find which header the content already starts with (if any)
-                prepend_lines = prefix_lines  # default: prepend all (continuation chunk)
+                prepend_lines = (
+                    prefix_lines  # default: prepend all (continuation chunk)
+                )
                 for i, line in enumerate(prefix_lines):
                     if content.startswith(line):
                         # Content already has this header; only prepend parents above it
