@@ -1,97 +1,17 @@
-"""Utility functions for streaming text responses"""
+"""Utility functions for streaming text responses via SSE."""
 
+import asyncio
 import json
-import time
-from typing import Any, Generator, Union
+from typing import Any, AsyncGenerator, Union
 
 
-def stream_text(
-    text: str,
-    chunk_mode: str = "token_like",
-    chunk_size: int = 1,
-    delay_ms: int = 0,
-) -> Generator[str, None, None]:
-    """
-    Stream text in chunks similar to LLM streaming responses.
-
-    Args:
-        text: The full text to stream
-        chunk_mode: How to split the text - "char", "word", or "token_like"
-            - "char": Character by character (most granular)
-            - "word": Word by word (smooth, natural)
-            - "token_like": 1-3 characters per chunk (mimics LLM behavior)
-        chunk_size: Number of units per chunk (for char/word modes)
-        delay_ms: Delay in milliseconds between chunks (0 for no delay)
-
-    Yields:
-        str: Text chunks
-
-    Examples:
-        # Character by character
-        for chunk in stream_text("Hello world", chunk_mode="char"):
-            yield chunk
-
-        # Word by word
-        for chunk in stream_text("Hello world", chunk_mode="word"):
-            yield chunk
-
-        # Token-like (mimics LLM, 1-3 chars per chunk)
-        for chunk in stream_text("Hello world", chunk_mode="token_like"):
-            yield chunk
-    """
-    if not text:
-        return
-
-    delay_seconds = delay_ms / 1000.0 if delay_ms > 0 else 0
-
-    if chunk_mode == "char":
-        # Stream character by character
-        for i in range(0, len(text), chunk_size):
-            chunk = text[i : i + chunk_size]
-            yield chunk
-            if delay_seconds > 0:
-                time.sleep(delay_seconds)
-
-    elif chunk_mode == "word":
-        # Stream word by word (preserving spaces)
-        words = text.split(" ")
-        for i in range(0, len(words), chunk_size):
-            # Get chunk_size words
-            word_chunk = words[i : i + chunk_size]
-            # Join with spaces and add trailing space if not last chunk
-            chunk = " ".join(word_chunk)
-            if i + chunk_size < len(words):
-                chunk += " "
-            yield chunk
-            if delay_seconds > 0:
-                time.sleep(delay_seconds)
-
-    elif chunk_mode == "token_like":
-        # Mimic LLM token streaming (1-3 characters per chunk, varies)
-        # This creates a more "natural" streaming feel like real LLMs
-        import random
-
-        i = 0
-        while i < len(text):
-            # Randomly choose 1-3 characters (weighted toward 1-2)
-            chars_to_take = random.choices([1, 2, 3], weights=[50, 35, 15])[0]
-            chunk = text[i : i + chars_to_take]
-            yield chunk
-            i += chars_to_take
-            if delay_seconds > 0:
-                time.sleep(delay_seconds)
-    else:
-        raise ValueError(
-            f"Invalid chunk_mode: {chunk_mode}. Use 'char', 'word', or 'token_like'"
-        )
-
-
-def stream_text_smart(text: str, delay_ms: int = 20) -> Generator[str, None, None]:
+async def stream_text_smart(text: str, delay_ms: int = 20) -> AsyncGenerator[str, None]:
     """
     Smart streaming that chooses chunk size based on text length.
     Mimics LLM streaming behavior with variable chunk sizes.
 
-    This is the recommended function for most use cases.
+    Uses ``await asyncio.sleep`` instead of ``time.sleep`` so the event
+    loop stays free to serve other requests between chunks.
 
     Args:
         text: The full text to stream
@@ -140,7 +60,7 @@ def stream_text_smart(text: str, delay_ms: int = 20) -> Generator[str, None, Non
         i += len(chunk)
 
         if delay_seconds > 0:
-            time.sleep(delay_seconds)
+            await asyncio.sleep(delay_seconds)
 
 
 def sse_event(event: str, data: Union[str, dict, list, Any]) -> str:

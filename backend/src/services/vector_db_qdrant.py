@@ -630,6 +630,30 @@ class QdrantVectorDB:
         )
         return count_before
 
+    async def count(self, where: dict | None = None) -> int:
+        """Count documents, optionally filtered."""
+        qdrant_filter = self._build_qdrant_filter(where) if where else None
+        result = await self.client.count(
+            collection_name=self.collection_name,
+            count_filter=qdrant_filter,
+        )
+        return result.count
+
+    async def delete_by_filter(self, where: dict) -> int:
+        """Delete all points matching a filter. Returns count deleted."""
+        qdrant_filter = self._build_qdrant_filter(where)
+        if not qdrant_filter:
+            return 0
+        count_before = await self.count(where)
+        if count_before == 0:
+            return 0
+        await self.client.delete(
+            collection_name=self.collection_name,
+            points_selector=models.FilterSelector(filter=qdrant_filter),
+        )
+        logger.info("[QdrantVectorDB] Deleted %d chunks by filter", count_before)
+        return count_before
+
     async def delete_collection(self) -> None:
         """Delete the entire collection."""
         if await self.client.collection_exists(self.collection_name):

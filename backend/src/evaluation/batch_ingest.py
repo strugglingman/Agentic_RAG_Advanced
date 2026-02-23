@@ -1,7 +1,7 @@
 """
 Batch ingestion script for evaluation documents.
 
-Uploads all files from a specified folder directly into ChromaDB,
+Uploads all files from a specified folder directly into Qdrant,
 bypassing the FileRegistry for quick evaluation testing.
 
 Usage:
@@ -12,6 +12,7 @@ Usage:
 import os
 import sys
 import argparse
+import asyncio
 import hashlib
 import logging
 from pathlib import Path
@@ -20,7 +21,7 @@ from datetime import datetime
 # Add backend to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from src.services.vector_db import VectorDB
+from src.services.vector_db_qdrant import QdrantVectorDB
 from src.services.document_processor import read_text
 from src.services.langchain_processor import make_chunks_langchain
 from src.config.settings import Config
@@ -38,21 +39,21 @@ def make_id(text: str) -> str:
 
 def get_supported_extensions() -> set:
     """Return set of supported file extensions."""
-    return {".txt", ".pdf", ".docx", ".csv", ".json", ".md"}
+    return {".txt", ".pdf", ".docx", ".pptx", ".html", ".htm", ".xlsx", ".csv", ".json", ".md"}
 
 
-def ingest_file_direct(
-    vector_db: VectorDB,
+async def ingest_file_direct(
+    vector_db: QdrantVectorDB,
     file_path: str,
     dept_id: str,
     user_id: str,
     use_langchain: bool = True,
 ) -> tuple[int, str]:
     """
-    Ingest a single file directly into ChromaDB.
+    Ingest a single file directly into Qdrant.
 
     Args:
-        vector_db: VectorDB instance
+        vector_db: QdrantVectorDB instance
         file_path: Path to the file
         dept_id: Department ID for metadata
         user_id: User ID for metadata
@@ -122,22 +123,21 @@ def ingest_file_direct(
             }
         )
 
-    # Upsert to ChromaDB
+    # Upsert to Qdrant
     try:
-        vector_db.upsert(ids=ids, documents=docs, metadatas=metas)
+        await vector_db.upsert(ids=ids, documents=docs, metadatas=metas)
     except Exception as e:
-        return 0, f"Failed to upsert to ChromaDB: {str(e)}"
+        return 0, f"Failed to upsert to Qdrant: {str(e)}"
 
     return len(docs), ""
 
 
-def batch_ingest(
+async def batch_ingest(
     folder_path: str,
     dept_id: str,
     user_id: str,
     clear_existing: bool = False,
     use_langchain: bool = True,
-    chroma_path: str = "chroma_db",
 ) -> dict:
     """
     Batch ingest all supported files from a folder.
@@ -148,7 +148,6 @@ def batch_ingest(
         user_id: User ID for all documents
         clear_existing: Whether to clear existing documents for this dept_id first
         use_langchain: Whether to use LangChain chunking
-        chroma_path: Path to ChromaDB
 
     Returns:
         Dictionary with ingestion statistics
@@ -157,19 +156,22 @@ def batch_ingest(
     if not folder.exists():
         raise ValueError(f"Folder not found: {folder_path}")
 
-    # Initialize VectorDB
-    logger.info(f"Initializing VectorDB at {chroma_path}...")
-    vector_db = VectorDB(path=chroma_path, embedding_provider="openai")
+    # Initialize QdrantVectorDB
+    logger.info("Initializing QdrantVectorDB...")
+    vector_db = QdrantVectorDB(
+        url=Config.QDRANT_URL,
+        api_key=Config.QDRANT_API_KEY or None,
+        collection_name=Config.QDRANT_COLLECTION_NAME,
+        embedding_provider=Config.EMBEDDING_PROVIDER,
+    )
+    await vector_db.ensure_collection()
 
     # Clear existing documents for this dept_id if requested
     if clear_existing:
         logger.info(f"Clearing existing documents for dept_id: {dept_id}")
         try:
-            # Get all IDs with matching dept_id
-            results = vector_db.collection.get(where={"dept_id": dept_id}, include=[])
-            if results["ids"]:
-                vector_db.collection.delete(ids=results["ids"])
-                logger.info(f"Deleted {len(results['ids'])} existing chunks")
+            deleted = await vector_db.delete_by_filter({"dept_id": dept_id})
+            logger.info(f"Deleted {deleted} existing chunks")
         except Exception as e:
             logger.warning(f"Failed to clear existing documents: {e}")
 
@@ -199,7 +201,7 @@ def batch_ingest(
         filename = file_path.name
         logger.info(f"[{i}/{len(files_to_ingest)}] Processing: {filename}")
 
-        chunks_count, error = ingest_file_direct(
+        chunks_count, error = await ingest_file_direct(
             vector_db=vector_db,
             file_path=str(file_path),
             dept_id=dept_id,
@@ -217,7 +219,7 @@ def batch_ingest(
             logger.info(f"  Success: {chunks_count} chunks")
 
     # Final stats
-    total_in_db = vector_db.collection.count()
+    total_in_db = await vector_db.count()
     logger.info(f"\n{'='*50}")
     logger.info(f"Batch ingestion complete!")
     logger.info(f"  Files processed: {stats['total_files']}")
@@ -227,10 +229,11 @@ def batch_ingest(
     logger.info(f"  Total chunks in DB: {total_in_db}")
     logger.info(f"{'='*50}")
 
+    await vector_db.client.close()
     return stats
 
 
-def main():
+async def async_main():
     parser = argparse.ArgumentParser(
         description="Batch ingest documents for evaluation"
     )
@@ -262,23 +265,16 @@ def main():
         action="store_true",
         help="Use original chunking instead of LangChain",
     )
-    parser.add_argument(
-        "--chroma-path",
-        type=str,
-        default="chroma_db",
-        help="Path to ChromaDB (default: chroma_db)",
-    )
 
     args = parser.parse_args()
 
     try:
-        stats = batch_ingest(
+        stats = await batch_ingest(
             folder_path=args.folder,
             dept_id=args.dept_id,
             user_id=args.user_id,
             clear_existing=args.clear,
             use_langchain=not args.no_langchain,
-            chroma_path=args.chroma_path,
         )
 
         if stats["failed"] > 0:
@@ -296,4 +292,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(async_main())

@@ -24,7 +24,7 @@ from urllib.parse import urlparse
 import urllib.parse
 import httpx
 from langsmith import traceable
-from src.services.retrieval import build_where
+from src.services.retrieval_qdrant import build_where
 from src.services.retrieval_decomposition import retrieve_with_decomposition
 from src.config.settings import Config
 from src.utils.safety import scrub_context
@@ -81,10 +81,10 @@ async def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]
             - query (str): Search query
 
         context: System context containing:
-            - vector_db: VectorDB instance
+            - vector_db: QdrantVectorDB instance
             - dept_id: Department ID from auth
             - user_id: User ID from auth
-            - request: Flask request object (for filters)
+            - request_data: Request data dict (for filters)
 
     Returns:
         Formatted string result for LLM containing document chunks
@@ -369,18 +369,7 @@ async def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]
                         f"Context {context_idx} (Source: {c.get('source', 'unknown')}"
                         + (f", Page: {c['page']}" if c.get("page", 0) > 0 else "")
                         + (f", file_id: {c['file_id']}" if c.get("file_id") else "")
-                        + f"):\n{c.get('chunk', '')}\n"
-                        + (
-                            f"Hybrid score: {c['hybrid']:.2f}"
-                            if c.get("hybrid") is not None
-                            else ""
-                        )
-                        + (
-                            f", Rerank score: {c['rerank']:.2f}"
-                            if c.get("rerank") is not None
-                            else ""
-                        )
-                        + "\n\n"
+                        + f"):\n{c.get('chunk', '')}\n\n"
                     )
                     context_idx += 1
         else:
@@ -390,17 +379,7 @@ async def execute_search_documents(args: Dict[str, Any], context: Dict[str, Any]
                     f"Context {i+1} (Source: {c.get('source', 'unknown')}"
                     + (f", Page: {c['page']}" if c.get("page", 0) > 0 else "")
                     + (f", file_id: {c['file_id']}" if c.get("file_id") else "")
-                    + f"):\n{c.get('chunk', '')}\n"
-                    + (
-                        f"Hybrid score: {c['hybrid']:.2f}"
-                        if c.get("hybrid") is not None
-                        else ""
-                    )
-                    + (
-                        f", Rerank score: {c['rerank']:.2f}"
-                        if c.get("rerank") is not None
-                        else ""
-                    )
+                    + f"):\n{c.get('chunk', '')}"
                 )
                 for i, c in enumerate(ctx)
             )

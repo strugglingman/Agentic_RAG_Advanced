@@ -439,17 +439,7 @@ def build_prompt(query, ctx, use_ctx=False):
             (
                 f"Context {i+1} (Source: {os.path.basename(hit['source'])}"
                 + (f", Page: {hit['page']}" if hit.get("page", 0) > 0 else "")
-                + f"):\n{hit['chunk']}\n"
-                + (
-                    f"Hybrid score: {hit['hybrid']:.2f}"
-                    if hit["hybrid"] is not None
-                    else ""
-                )
-                + (
-                    f", Rerank score: {hit['rerank']:.2f}"
-                    if hit["rerank"] is not None
-                    else ""
-                )
+                + f"):\n{hit['chunk']}"
             )
             for i, hit in enumerate(ctx)
         )
@@ -668,23 +658,6 @@ def retrieve(
                     return (
                         [],
                         "No relevant documents found: both semantic and keyword search returned low-quality results.",
-                    )
-
-                # Secondary check: fused hybrid score
-                max_hybrid = (
-                    max(item.get("hybrid", 0) for item in ctx_candidates)
-                    if ctx_candidates
-                    else 0
-                )
-                hybrid_threshold = (
-                    Config.MIN_HYBRID * Config.RERANKER_THRESHOLD_RELAXATION
-                    if use_reranker
-                    else Config.MIN_HYBRID
-                )
-                if max_hybrid < hybrid_threshold:
-                    return (
-                        [],
-                        "No relevant documents found after applying hybrid confidence threshold.",
                     )
 
                 # Use coverage check to filter candidates

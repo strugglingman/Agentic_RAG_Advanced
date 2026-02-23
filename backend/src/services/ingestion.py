@@ -1,22 +1,21 @@
 """
-Ingestion service for document processing and ChromaDB storage.
-Handles reading, chunking, and upserting documents to vector database.
+Ingestion service for document processing and Qdrant vector storage.
+Handles reading, chunking, embedding, and upserting documents.
 """
 
 from __future__ import annotations
+import asyncio
 import os
 import hashlib
 import logging
-from typing import TYPE_CHECKING, Optional
+from typing import Optional
 from dataclasses import dataclass
 from src.services.document_processor import read_text
 from src.services.langchain_processor import make_chunks_langchain
+from src.services.vector_db_qdrant import QdrantVectorDB
 from src.domain.entities.file_registry import FileRegistry
 from src.config.settings import Config
 from src.observability.metrics import increment_error, MetricsErrorType
-
-if TYPE_CHECKING:
-    from src.services.vector_db import VectorDB
 
 logger = logging.getLogger(__name__)
 
@@ -37,19 +36,18 @@ def make_id(text):
     return hashlib.md5(text.encode("utf-8")).hexdigest()
 
 
-def ingest_file(
-    vector_db: VectorDB,
+async def ingest_file(
+    vector_db: QdrantVectorDB,
     file: FileRegistry,
     user_email: str,
     dept_id: str,
+    openai_client=None,
 ) -> IngestResult:
     """
-    Ingest a single file from FileRegistry into ChromaDB.
-
-    This is the new version that uses FileRegistry directly instead of .meta.json files.
+    Ingest a single file into Qdrant vector database.
 
     Args:
-        vector_db: VectorDB instance for vector storage
+        vector_db: QdrantVectorDB instance for vector storage
         file: FileRegistry entity with file metadata
         user_email: Current user email (for access control)
         dept_id: Current department ID (for access control)
@@ -100,9 +98,9 @@ def ingest_file(
             error=f"File not found on disk: {file_path}",
         )
 
-    # Read file content
+    # Read file content (CPU-bound Docling/PyTorch — offload to thread)
     try:
-        pages_text = read_text(file_path, text_max=Config.TEXT_MAX)
+        pages_text = await asyncio.to_thread(read_text, file_path, Config.TEXT_MAX)
     except Exception as e:
         increment_error(MetricsErrorType.INGESTION_FAILED)
         return IngestResult(
@@ -141,7 +139,9 @@ def ingest_file(
     if use_contextual:
         from src.services.contextual_retrieval import contextualize_chunks
 
-        contextualized = contextualize_chunks(full_text, chunks_with_pages, filename)
+        contextualized = await contextualize_chunks(
+            full_text, chunks_with_pages, filename, openai_client=openai_client,
+        )
         logger.info(
             f"[INGESTION] Contextual retrieval: {len(contextualized)} chunks contextualized for {filename}"
         )
@@ -149,7 +149,7 @@ def ingest_file(
         # No contextual retrieval: convert to same 3-tuple format (page, chunk, chunk)
         contextualized = [(pg, chunk, chunk) for pg, chunk in chunks_with_pages]
 
-    # Build chunk IDs, documents, and metadata for ChromaDB
+    # Build chunk IDs, documents, and metadata for Qdrant
     ids, docs, metas = [], [], []
     seen = set()
 
@@ -192,10 +192,10 @@ def ingest_file(
             meta["original_text"] = original_text
         metas.append(meta)
 
-    # Upsert to ChromaDB
+    # Upsert to Qdrant (embeds internally if embeddings not provided)
     if docs:
         try:
-            vector_db.upsert(ids=ids, documents=docs, metadatas=metas)
+            await vector_db.upsert(ids=ids, documents=docs, metadatas=metas)
             logger.info(
                 f"[INGESTION] Indexed {len(docs)} chunks for file {file_id} ({filename})"
             )
@@ -206,7 +206,7 @@ def ingest_file(
                 filename=filename,
                 chunks_count=0,
                 success=False,
-                error=f"ChromaDB upsert failed: {str(e)}",
+                error=f"Qdrant upsert failed: {str(e)}",
             )
 
     return IngestResult(

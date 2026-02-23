@@ -112,9 +112,8 @@ async def browser_download(
         )
 
         # Run the agent with timeout
-        await asyncio.wait_for(
-            agent.run(max_steps=Config.BROWSER_MAX_STEPS), timeout=timeout
-        )
+        async with asyncio.timeout(timeout):
+            await agent.run(max_steps=Config.BROWSER_MAX_STEPS)
 
         # Check for downloaded files
         downloaded_file = _find_newest_file(download_dir)
@@ -135,7 +134,7 @@ async def browser_download(
                 None,
             )
 
-    except asyncio.TimeoutError:
+    except TimeoutError:
         logger.error(f"[BROWSER_DOWNLOAD] Timeout after {timeout}s")
         increment_error(MetricsErrorType.TIMEOUT)
         return False, f"Browser automation timed out after {timeout} seconds", None

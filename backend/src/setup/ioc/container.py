@@ -26,13 +26,14 @@ Flow:
 """
 
 import logging
+from collections.abc import AsyncIterator
 from typing import Optional
 from dishka import Provider, Scope, make_async_container, provide, AsyncContainer
 from prisma import Prisma
 from httpx import Timeout
 from openai import AsyncOpenAI
 from redis.asyncio import Redis
-from src.services.vector_db import VectorDB
+from src.services.vector_db_qdrant import QdrantVectorDB
 from src.services.query_supervisor import QuerySupervisor
 from src.domain.ports.repositories import (
     ConversationRepository,
@@ -88,11 +89,18 @@ class AppProvider(Provider):
 
     # ==================== VECTOR DATABASE ====================
     @provide(scope=Scope.APP)
-    def get_vector_db(self) -> VectorDB:
-        return VectorDB(
-            path=Config.CHROMA_PATH,
+    async def get_qdrant_db(self) -> AsyncIterator[QdrantVectorDB]:
+        db = QdrantVectorDB(
+            url=Config.QDRANT_URL,
+            api_key=Config.QDRANT_API_KEY or None,
+            collection_name=Config.QDRANT_COLLECTION_NAME,
             embedding_provider=Config.EMBEDDING_PROVIDER,
+            prefer_grpc=Config.QDRANT_PREFER_GRPC,
         )
+        await db.ensure_collection()
+        yield db
+        await db.client.close()
+        logger.info("[DI] QdrantVectorDB client closed")
 
     # ==================== OPENAI CLIENT ====================
     @provide(scope=Scope.APP)
@@ -106,23 +114,26 @@ class AppProvider(Provider):
     # ==================== REDIS CACHE ====================
 
     @provide(scope=Scope.APP)
-    async def get_redis_client(self) -> Optional[Redis]:
+    async def get_redis_client(self) -> AsyncIterator[Optional[Redis]]:
         """
         Provide Redis client (singleton, app-scoped, optional).
 
         - Scope.APP = created ONCE when app starts, shared across all requests
         - Returns None if Redis is disabled or unavailable (graceful degradation)
-        - async because connect and ping are async
+        - async generator so Dishka calls close() on container.close()
         """
         if not Config.REDIS_ENABLED:
             logger.info("[Redis] Caching disabled by config")
-            return None
+            yield None
+            return
         try:
             client = await create_redis_client()
-            return client
+            yield client
+            await client.aclose()
+            logger.info("[DI] Redis client closed")
         except Exception as e:
             logger.warning(f"[Redis] Unavailable, caching disabled: {e}")
-            return None
+            yield None
 
     # ==================== JOB STORE ====================
 
@@ -149,16 +160,18 @@ class AppProvider(Provider):
     # ==================== DATABASE ====================
 
     @provide(scope=Scope.APP)
-    async def get_prisma(self) -> Prisma:
+    async def get_prisma(self) -> AsyncIterator[Prisma]:
         """
         Provide Prisma client (singleton, app-scoped).
 
         - Scope.APP = created ONCE when app starts, shared across all requests
-        - async because connect() is async
+        - async generator so Dishka calls disconnect() on container.close()
         """
         prisma = Prisma()
         await prisma.connect()
-        return prisma
+        yield prisma
+        await prisma.disconnect()
+        logger.info("[DI] Prisma client disconnected")
 
     # ==================== SERVICES ====================
     @provide(scope=Scope.APP)
@@ -261,7 +274,7 @@ class AppProvider(Provider):
         message_repository: MessageRepository,
         query_supervisor: QuerySupervisor,
         file_service: FileService,
-        vector_db: VectorDB,
+        vector_db: QdrantVectorDB,
         openai_client: AsyncOpenAI,
         agent_state_store: Optional[AgentSessionStateStore],
     ) -> SendMessageHandler:

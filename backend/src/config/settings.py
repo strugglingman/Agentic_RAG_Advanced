@@ -132,9 +132,9 @@ class Config:
     COHERE_RERANK_MODEL = os.getenv("COHERE_RERANK_MODEL", "rerank-v3.5")
 
     # ==============================================================================
-    # Vector Database (ChromaDB)
+    # Local data directory (caches, temp files)
     # ==============================================================================
-    CHROMA_PATH = os.getenv("CHROMA_PATH", "./chroma_db")
+    DATA_DIR = os.getenv("DATA_DIR", "./data")
 
     # ==============================================================================
     # Vector Database (Qdrant)
@@ -218,8 +218,8 @@ class Config:
 
     # Quality thresholds for hybrid search and reranking
     # Note: These thresholds assume normalized scores in [0,1] range
-    MIN_HYBRID = float(os.getenv("MIN_HYBRID", "0.15"))
-    AVG_HYBRID = float(os.getenv("AVG_HYBRID", "0.1"))
+    MIN_HYBRID = float(os.getenv("MIN_HYBRID", "0.50"))
+    AVG_HYBRID = float(os.getenv("AVG_HYBRID", "0.45"))
     MIN_SEM_SIM = float(os.getenv("MIN_SEM_SIM", "0.35"))
     AVG_SEM_SIM = float(os.getenv("AVG_SEM_SIM", "0.25"))
     MIN_RERANK = float(os.getenv("MIN_RERANK", "0.3"))

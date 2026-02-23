@@ -22,7 +22,7 @@ from src.config.settings import Config
 logger = logging.getLogger(__name__)
 
 # ── Cache ────────────────────────────────────────────────────────────────────
-_CACHE_DIR = os.path.join(Config.CHROMA_PATH, ".contextual_cache")
+_CACHE_DIR = os.path.join(Config.DATA_DIR, "contextual_cache")
 
 
 def _cache_key(full_text: str, model: str) -> str:
@@ -57,21 +57,6 @@ def _save_cache(key: str, results: list[tuple[int, str, str]]) -> None:
         logger.warning(f"[CONTEXTUAL] Cache write failed ({key[:12]}…): {e}")
 
 
-# ── OpenAI client ────────────────────────────────────────────────────────────
-# Lazy singleton — avoid creating a client per call
-_client: Optional[object] = None
-
-
-def _get_client():
-    """Get or create the async OpenAI client."""
-    global _client
-    if _client is None:
-        from openai import AsyncOpenAI
-
-        _client = AsyncOpenAI(api_key=Config.OPENAI_KEY)
-    return _client
-
-
 _PROMPT_TEMPLATE = """\
 <document>
 {document}
@@ -89,6 +74,7 @@ _MAX_DOC_CHARS = 120_000
 
 
 async def _generate_context(
+    client,
     full_text: str,
     chunk_text: str,
     filename: str,
@@ -100,7 +86,6 @@ async def _generate_context(
     Returns the context string, or a rule-based fallback on failure.
     """
     try:
-        client = _get_client()
         prompt = _PROMPT_TEMPLATE.format(
             document=full_text[:_MAX_DOC_CHARS],
             chunk=chunk_text,
@@ -125,6 +110,7 @@ async def contextualize_chunks(
     full_document_text: str,
     chunks: list[tuple[int, str]],
     filename: str,
+    openai_client=None,
 ) -> list[tuple[int, str, str]]:
     """
     Enrich chunks with LLM-generated document context.
@@ -165,7 +151,7 @@ async def contextualize_chunks(
         async with semaphore:
             try:
                 context = await _generate_context(
-                    full_document_text, chunk_text, filename, model,
+                    openai_client, full_document_text, chunk_text, filename, model,
                 )
                 contextualized = f"{context}\n\n{chunk_text}"
                 return idx, page_num, contextualized, chunk_text
@@ -176,9 +162,12 @@ async def contextualize_chunks(
                 fallback = f"From {filename}.\n\n{chunk_text}"
                 return idx, page_num, fallback, chunk_text
 
-    results = await asyncio.gather(
-        *(_process_chunk(i, pg, txt) for i, (pg, txt) in enumerate(chunks))
-    )
+    async with asyncio.TaskGroup() as tg:
+        tasks = [
+            tg.create_task(_process_chunk(i, pg, txt))
+            for i, (pg, txt) in enumerate(chunks)
+        ]
+    results = [t.result() for t in tasks]
 
     # Sort by original index to preserve chunk order
     results = sorted(results, key=lambda x: x[0])

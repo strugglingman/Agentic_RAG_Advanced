@@ -29,8 +29,8 @@ import asyncio
 
 from openai import AsyncOpenAI
 from src.config.settings import Config
-from src.services.vector_db import VectorDB
-from src.services.retrieval import retrieve
+from src.services.vector_db_qdrant import QdrantVectorDB
+from src.services.retrieval_qdrant import retrieve
 from src.services.retrieval_decomposition import retrieve_with_decomposition
 from src.services.llm_client import chat_completion
 from src.evaluation.ragas_evaluator import RagasEvaluator
@@ -191,7 +191,7 @@ Answer:"""
 
 async def run_rag_pipeline(
     client: AsyncOpenAI,
-    vector_db: VectorDB,
+    vector_db: QdrantVectorDB,
     question: str,
     dept_id: str,
     user_id: str,
@@ -231,7 +231,7 @@ async def run_rag_pipeline(
             use_reranker=use_reranker,
         )
     else:
-        ctx_list, error = retrieve(
+        ctx_list, error = await retrieve(
             vector_db=vector_db,
             query=retrieval_query,
             dept_id=dept_id,
@@ -324,14 +324,20 @@ async def main():
     os.makedirs(args.output, exist_ok=True)
 
     # Initialize clients
-    print("Initializing OpenAI client and VectorDB...")
+    print("Initializing OpenAI client and QdrantVectorDB...")
     from httpx import Timeout
     client = AsyncOpenAI(
         api_key=Config.OPENAI_KEY,
         max_retries=Config.LLM_MAX_RETRIES,
         timeout=Timeout(Config.LLM_TIMEOUT, connect=Config.LLM_CONNECT_TIMEOUT),
     )
-    vector_db = VectorDB(path="chroma_db", embedding_provider="openai")
+    vector_db = QdrantVectorDB(
+        url=Config.QDRANT_URL,
+        api_key=Config.QDRANT_API_KEY or None,
+        collection_name=Config.QDRANT_COLLECTION_NAME,
+        embedding_provider=Config.EMBEDDING_PROVIDER,
+    )
+    await vector_db.ensure_collection()
 
     # Load test data
     print(f"Loading test data from {args.data}...")
@@ -460,6 +466,8 @@ async def main():
 
         traceback.print_exc()
         sys.exit(1)
+    finally:
+        await vector_db.client.close()
 
 
 if __name__ == "__main__":

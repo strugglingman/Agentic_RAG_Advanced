@@ -190,8 +190,8 @@ async def chat_agent(
             }
 
             # Stream partial answer + HITL + context as SSE events
-            def generate_hitl():
-                for chunk in stream_text_smart(result.answer):
+            async def generate_hitl():
+                async for chunk in stream_text_smart(result.answer):
                     yield sse_event("text", chunk)
                 yield sse_event("hitl", hitl_response)
                 yield sse_event("context", result.contexts)
@@ -207,8 +207,8 @@ async def chat_agent(
             )
 
         # Normal response - stream the answer as SSE events
-        def generate():
-            for chunk in stream_text_smart(result.answer):
+        async def generate():
+            async for chunk in stream_text_smart(result.answer):
                 yield sse_event("text", chunk)
             yield sse_event("context", result.contexts)
 
@@ -383,8 +383,8 @@ async def resume_workflow(
                 "conversation_id": body.conversation_id or "",
             }
 
-            def generate_hitl():
-                for chunk in stream_text_smart(query_result.answer):
+            async def generate_hitl():
+                async for chunk in stream_text_smart(query_result.answer):
                     yield sse_event("text", chunk)
                 yield sse_event("hitl", hitl_response)
                 yield sse_event("context", query_result.contexts)
@@ -396,8 +396,8 @@ async def resume_workflow(
             )
 
         # Normal completion
-        def generate():
-            for chunk in stream_text_smart(query_result.answer):
+        async def generate():
+            async for chunk in stream_text_smart(query_result.answer):
                 yield sse_event("text", chunk)
             yield sse_event("context", query_result.contexts)
 

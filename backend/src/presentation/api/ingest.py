@@ -7,7 +7,6 @@ Endpoints:
 - GET /ingest/active - Get list of files currently being ingested
 """
 
-import asyncio
 import logging
 import uuid
 from typing import Optional, List
@@ -16,12 +15,12 @@ from fastapi.responses import StreamingResponse
 from dishka.integrations.fastapi import FromDishka, inject
 from pydantic import BaseModel
 
+from openai import AsyncOpenAI
 from src.domain.ports.repositories import FileRegistryRepository
 from src.utils.stream_utils import sse_event
 from src.domain.value_objects.file_id import FileId
 from src.services.ingestion import ingest_file
-from src.services.retrieval import build_bm25
-from src.services.vector_db import VectorDB
+from src.services.vector_db_qdrant import QdrantVectorDB
 from src.infrastructure.jobs import IngestJobStore
 from src.presentation.dependencies.auth import AuthUser, get_current_user
 
@@ -76,7 +75,8 @@ router = APIRouter(prefix="/ingest", tags=["ingest"])
 async def ingest_documents(
     request: IngestRequest,
     file_repo: FromDishka[FileRegistryRepository],
-    vector_db: FromDishka[VectorDB],
+    vector_db: FromDishka[QdrantVectorDB],
+    openai_client: FromDishka[AsyncOpenAI],
     job_store: FromDishka[Optional[IngestJobStore]],
     current_user: AuthUser = Depends(get_current_user),
 ):
@@ -156,14 +156,13 @@ async def ingest_documents(
                     )
                     break
 
-                # Ingest the file
-                result = await asyncio.get_running_loop().run_in_executor(
-                    None,
-                    ingest_file,
+                # Ingest the file (natively async — Qdrant + asyncio.to_thread for CPU-bound)
+                result = await ingest_file(
                     vector_db,
                     file,
                     current_user.email.value,
                     current_user.dept.value,
+                    openai_client=openai_client,
                 )
 
                 results.append(
@@ -180,10 +179,9 @@ async def ingest_documents(
                 completed_file_id = None
                 if result.success and result.chunks_count > 0:
                     # Mark file as indexed
-                    collection_name = getattr(vector_db.collection, "name", "docs")
                     await file_repo.mark_indexed(
                         file_id=FileId(file.id),
-                        collection_name=collection_name,
+                        collection_name=vector_db.collection_name,
                     )
                     total_chunks += result.chunks_count
                     ingested_count += 1
@@ -202,19 +200,6 @@ async def ingest_documents(
                         "completed_file_id": completed_file_id,
                     },
                 )
-
-            # Build BM25 index if we ingested anything
-            if ingested_count > 0:
-                try:
-                    await asyncio.get_running_loop().run_in_executor(
-                        None,
-                        build_bm25,
-                        vector_db,
-                        current_user.dept.value,
-                        current_user.email.value,
-                    )
-                except Exception as e:
-                    logger.error(f"Failed to rebuild BM25: {e}")
 
             # Send completion event (if not cancelled)
             if not cancelled:

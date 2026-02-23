@@ -13,7 +13,7 @@ User Query: "Compare Delta and Starbucks revenue 2023"
     ↓
 decompose_query() → ["Delta revenue 2023", "Starbucks revenue 2023"]
     ↓
-parallel_retrieve() → ThreadPoolExecutor runs retrieve() for each sub-query
+async_parallel_retrieve() → asyncio.TaskGroup runs retrieve() for each sub-query
     ↓
 merge_with_balanced_topk() → Deduplicated, balanced contexts with sub_query labels
     ↓
@@ -21,7 +21,7 @@ Return to caller (agent_tools.py or langgraph_nodes.py)
 
 Key Design Decisions:
 ====================
-1. SYNC function - Uses ThreadPoolExecutor, not asyncio (keeps agent_tools sync)
+1. ASYNC functions - Uses asyncio.TaskGroup for parallel retrieval (Python 3.11+, auto-cancels on failure)
 2. Early return for simple queries - No overhead when len(sub_queries) == 1
 3. Balanced merge - Each sub-query gets fair representation (prevents entity starvation)
 4. Flat context structure - Adds sub_query field, doesn't change list[dict] format
@@ -33,66 +33,15 @@ Reference: src/evaluation/eval_data/multihop_test.jsonl for example decompositio
 import asyncio
 import json
 import logging
-import atexit
 import time
 from typing import Optional, Tuple
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from src.services.vector_db import VectorDB
-from src.services.retrieval import retrieve
+from src.services.vector_db_qdrant import QdrantVectorDB
+from src.services.retrieval_qdrant import retrieve
 from src.services.llm_client import chat_completion_json
 from src.config.settings import Config
 from src.observability.metrics import observe_retrieval_latency, increment_error, MetricsErrorType
 
 logger = logging.getLogger(__name__)
-
-
-# =============================================================================
-# SHARED THREAD POOL (Prevents thread explosion under load)
-# =============================================================================
-#
-# Why shared pool:
-# - Without limit: 100 users × 2 sub-queries = 200 threads → crash
-# - With shared pool: Max 8 concurrent retrieves, others queue
-#
-# Future migration to async:
-# - When ChromaDB supports async, replace with asyncio.gather()
-# - For now, ThreadPoolExecutor is the pragmatic choice
-
-_RETRIEVAL_EXECUTOR: Optional[ThreadPoolExecutor] = None
-
-
-def get_retrieval_executor() -> ThreadPoolExecutor:
-    """
-    Get or create shared thread pool for parallel retrieval.
-
-    Uses lazy initialization to avoid creating pool if decomposition is disabled.
-    Pool is shared across all requests to limit total thread count.
-
-    Returns:
-        ThreadPoolExecutor with limited workers
-    """
-    global _RETRIEVAL_EXECUTOR
-    if _RETRIEVAL_EXECUTOR is None:
-        max_workers = Config.DECOMPOSITION_MAX_WORKERS
-        _RETRIEVAL_EXECUTOR = ThreadPoolExecutor(
-            max_workers=max_workers, thread_name_prefix="retrieval_decomp"
-        )
-        logger.info(
-            f"[DECOMPOSITION] Created shared thread pool with {max_workers} workers"
-        )
-    return _RETRIEVAL_EXECUTOR
-
-
-def shutdown_executor():
-    """Cleanup thread pool on application shutdown."""
-    global _RETRIEVAL_EXECUTOR
-    if _RETRIEVAL_EXECUTOR is not None:
-        _RETRIEVAL_EXECUTOR.shutdown(wait=False)
-        logger.info("[DECOMPOSITION] Shut down shared thread pool")
-
-
-# Register cleanup on process exit
-atexit.register(shutdown_executor)
 
 
 # =============================================================================
@@ -263,9 +212,9 @@ async def decompose_query(
         return [query]
 
 
-def parallel_retrieve(
+async def async_parallel_retrieve(
     sub_queries: list[str],
-    vector_db: VectorDB,
+    vector_db: QdrantVectorDB,
     dept_id: str,
     user_id: str,
     top_k: int,
@@ -274,89 +223,56 @@ def parallel_retrieve(
     use_reranker: bool,
 ) -> list[tuple[list[dict], str]]:
     """
-    Execute retrieve() for each sub-query in parallel using ThreadPoolExecutor.
+    Execute retrieve() for each sub-query in parallel using asyncio.TaskGroup.
 
     Args:
         sub_queries: List of sub-queries from decompose_query()
-        vector_db: VectorDB instance
+        vector_db: QdrantVectorDB instance
         dept_id: Department ID for filtering
         user_id: User ID for filtering
         top_k: Number of results per sub-query
-        where: ChromaDB where clause
+        where: Filter clause
         use_hybrid: Enable hybrid search
         use_reranker: Enable reranker
 
     Returns:
         List of (contexts, sub_query) tuples, one per sub-query
-
-    Implementation Steps:
-    --------------------
-    1. Import retrieve from src.services.retrieval
-    2. Create ThreadPoolExecutor with max_workers=len(sub_queries)
-    3. Submit retrieve() call for each sub-query
-    4. Collect results with as_completed()
-    5. Return list of (contexts, sub_query) tuples
-
-    Why ThreadPoolExecutor (not asyncio):
-    - retrieve() is sync function
-    - agent_tools.execute_search_documents is sync
-    - ThreadPoolExecutor runs in OS threads, no event loop issues
-
-    Example:
-        >>> results = parallel_retrieve(
-        ...     ["Delta revenue", "Starbucks revenue"],
-        ...     vector_db, dept_id, user_id, top_k=5, ...
-        ... )
-        >>> len(results)
-        2
-        >>> results[0]  # (contexts_list, "Delta revenue")
     """
-    if len(sub_queries) == 1:
-        ctx, _ = retrieve(
-            vector_db=vector_db,
-            query=sub_queries[0],
-            dept_id=dept_id,
-            user_id=user_id,
-            top_k=top_k,
-            where=where,
-            use_hybrid=use_hybrid,
-            use_reranker=use_reranker,
-        )
-        return [(ctx or [], sub_queries[0])]
-
-    executor = get_retrieval_executor()
-    future_to_sq = {
-        executor.submit(
-            retrieve,
-            vector_db=vector_db,
-            query=sq,
-            dept_id=dept_id,
-            user_id=user_id,
-            top_k=top_k,
-            where=where,
-            use_hybrid=use_hybrid,
-            use_reranker=use_reranker,
-        ): sq
-        for sq in sub_queries
-    }
-
-    results = []
-    sq = ""
-    try:
-        for future in as_completed(future_to_sq, timeout=60):
-            sq = future_to_sq.get(future, "")
-            ctx, _ = future.result()
-            results.append((ctx or [], sq))
+    async def _retrieve_one(sq: str) -> tuple[list[dict], str]:
+        try:
+            ctx, _ = await retrieve(
+                vector_db=vector_db,
+                query=sq,
+                dept_id=dept_id,
+                user_id=user_id,
+                top_k=top_k,
+                where=where,
+                use_hybrid=use_hybrid,
+                use_reranker=use_reranker,
+            )
             logger.debug(f"[PARALLEL_RETRIEVE] '{sq}': {len(ctx or [])} contexts")
-    except TimeoutError as te:
-        logger.error(f"[PARALLEL_RETRIEVE] Timeout: {te}")
-        increment_error(MetricsErrorType.TIMEOUT)
-        results.append(([], sq))
-    except Exception as e:
-        logger.error(f"[PARALLEL_RETRIEVE] Failed for '{sq}': {e}")
-        results.append(([], sq))
+            return (ctx or [], sq)
+        except Exception as e:
+            logger.error(f"[PARALLEL_RETRIEVE] Failed for '{sq}': {e}")
+            return ([], sq)
 
-    return results
+    if len(sub_queries) == 1:
+        return [await _retrieve_one(sub_queries[0])]
+
+    try:
+        async with asyncio.timeout(60):
+            async with asyncio.TaskGroup() as tg:
+                tasks = [tg.create_task(_retrieve_one(sq)) for sq in sub_queries]
+            return [t.result() for t in tasks]
+    except TimeoutError:
+        logger.error("[PARALLEL_RETRIEVE] Timeout waiting for sub-queries")
+        increment_error(MetricsErrorType.TIMEOUT)
+        return [([], sq) for sq in sub_queries]
+    except ExceptionGroup as eg:
+        for exc in eg.exceptions:
+            logger.error(f"[PARALLEL_RETRIEVE] Sub-query failed: {exc}")
+        increment_error(MetricsErrorType.RETRIEVAL)
+        return [([], sq) for sq in sub_queries]
 
 
 def merge_with_balanced_topk(
@@ -430,7 +346,7 @@ def merge_with_balanced_topk(
 
 
 async def retrieve_with_decomposition(
-    vector_db: VectorDB,
+    vector_db: QdrantVectorDB,
     openai_client,
     query: str,
     dept_id: str,
@@ -443,52 +359,27 @@ async def retrieve_with_decomposition(
     """
     Main entry point: Retrieve with automatic query decomposition.
 
-    This function wraps the existing retrieve() function, adding:
+    This function wraps the async retrieve() function, adding:
     1. Automatic detection of multi-entity queries
     2. LLM-based query decomposition
-    3. Parallel retrieval for sub-queries
+    3. Parallel retrieval via asyncio.TaskGroup for sub-queries
     4. Balanced merging with deduplication
 
     Args:
-        vector_db: VectorDB instance
+        vector_db: QdrantVectorDB instance
         query: User's search query
         dept_id: Department ID for filtering
         user_id: User ID for filtering
         openai_client: OpenAI client for decomposition LLM call
         top_k: Number of results to return (default: Config.TOP_K)
-        where: ChromaDB where clause
-        use_hybrid: Enable hybrid search (BM25 + semantic)
+        where: Filter clause
+        use_hybrid: Enable hybrid search (dense + sparse via Qdrant RRF)
         use_reranker: Enable cross-encoder reranking
 
     Returns:
         Tuple of (contexts_list, error_message)
         - contexts_list: List of context dicts, each with added "sub_query" field
         - error_message: None on success, error string on failure
-
-    Signature matches retrieve() for drop-in replacement.
-
-    Implementation Steps:
-    --------------------
-    1. Early return if decomposition disabled
-    2. Call decompose_query() to get sub-queries
-    3. If single sub-query, call retrieve() directly (no overhead)
-    4. If multiple sub-queries, call parallel_retrieve()
-    5. Merge results with balanced top-K
-    6. Return merged contexts
-
-    Usage in agent_tools.py:
-        # OLD:
-        ctx, err = retrieve(vector_db, query, ...)
-
-        # NEW:
-        ctx, err = retrieve_with_decomposition(vector_db, query, ..., openai_client)
-
-    Usage in langgraph_nodes.py:
-        # OLD:
-        ctx, err = retrieve(query, vector_db, ...)
-
-        # NEW:
-        ctx, err = retrieve_with_decomposition(vector_db, query, ..., openai_client)
     """
     start_time = time.time()
     search_type = "single"  # Default, updated if decomposition happens
@@ -503,8 +394,7 @@ async def retrieve_with_decomposition(
     try:
         if not Config.DECOMPOSITION_ENABLED:
             search_type = _get_search_mode()
-            return await asyncio.to_thread(
-                retrieve,
+            return await retrieve(
                 vector_db=vector_db,
                 query=query,
                 dept_id=dept_id,
@@ -525,8 +415,7 @@ async def retrieve_with_decomposition(
         else:
             search_type = _get_search_mode()
 
-        results = await asyncio.to_thread(
-            parallel_retrieve,
+        results = await async_parallel_retrieve(
             sub_queries=sub_queries,
             vector_db=vector_db,
             dept_id=dept_id,
@@ -546,8 +435,7 @@ async def retrieve_with_decomposition(
     except Exception as e:
         logger.warning(f"[DECOMPOSITION] Failed: {e}, falling back to original query")
         search_type = _get_search_mode()
-        return await asyncio.to_thread(
-            retrieve,
+        return await retrieve(
             vector_db=vector_db,
             query=query,
             dept_id=dept_id,

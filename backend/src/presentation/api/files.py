@@ -57,7 +57,7 @@ from src.application.queries.files import (
 from src.application.dto.file import FileInfoDTO
 from src.domain.value_objects.file_id import FileId
 from src.domain.ports.repositories import FileRegistryRepository
-from src.services.vector_db import VectorDB
+from src.services.vector_db_qdrant import QdrantVectorDB
 from src.presentation.dependencies.auth import AuthUser, get_current_user
 from src.config.settings import Config
 from typing import Optional
@@ -294,7 +294,7 @@ class DeleteFilesResponse(BaseModel):
 async def delete_files(
     request: DeleteFilesRequest,
     file_repo: FromDishka[FileRegistryRepository],
-    vector_db: FromDishka[VectorDB],
+    vector_db: FromDishka[QdrantVectorDB],
     current_user: AuthUser = Depends(get_current_user),
 ):
     """
@@ -349,13 +349,9 @@ async def delete_files(
 
             chunks_deleted = 0
 
-            # Delete from ChromaDB if requested
+            # Delete from Qdrant if requested
             if request.remove_vectors:
-                chunks_deleted = await asyncio.get_running_loop().run_in_executor(
-                    None,
-                    vector_db.delete_by_file_id,
-                    file_id,
-                )
+                chunks_deleted = await vector_db.delete_by_file_id(file_id)
                 total_chunks += chunks_deleted
 
             # Delete file from disk

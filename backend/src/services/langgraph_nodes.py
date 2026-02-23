@@ -17,7 +17,7 @@ import asyncio
 import logging
 from langchain_core.messages import AIMessage
 from src.services.langgraph_state import AgentState, RuntimeContext
-from src.services.retrieval import build_where
+from src.services.retrieval_qdrant import build_where
 from src.services.retrieval_decomposition import retrieve_with_decomposition
 from src.services.agent_tools import (
     execute_tool_call,
@@ -2464,19 +2464,7 @@ def create_generate_node(
                                         header += f", Page: {page}"
                                     header += "):\n"
 
-                                    score_info = ""
-                                    if doc.get("hybrid") is not None:
-                                        score_info += f"Hybrid score: {doc['hybrid']:.2f}"
-                                    if doc.get("rerank") is not None:
-                                        if score_info:
-                                            score_info += ", "
-                                        score_info += f"Rerank score: {doc['rerank']:.2f}"
-
-                                    context_entry = f"{header}{chunk}"
-                                    if score_info:
-                                        context_entry += f"\n{score_info}"
-
-                                    contexts.append(context_entry)
+                                    contexts.append(f"{header}{chunk}")
                                     context_num += 1
                         else:
                             # Original flat format (no decomposition or single sub-query)
@@ -2490,19 +2478,7 @@ def create_generate_node(
                                     header += f", Page: {page}"
                                 header += "):\n"
 
-                                score_info = ""
-                                if doc.get("hybrid") is not None:
-                                    score_info += f"Hybrid score: {doc['hybrid']:.2f}"
-                                if doc.get("rerank") is not None:
-                                    if score_info:
-                                        score_info += ", "
-                                    score_info += f"Rerank score: {doc['rerank']:.2f}"
-
-                                context_entry = f"{header}{chunk}"
-                                if score_info:
-                                    context_entry += f"\n{score_info}"
-
-                                contexts.append(context_entry)
+                                contexts.append(f"{header}{chunk}")
                                 context_num += 1
 
                     elif step_ctx["type"] == "tool":

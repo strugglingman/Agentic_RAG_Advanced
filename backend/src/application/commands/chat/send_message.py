@@ -76,7 +76,7 @@ from src.domain.ports.repositories.message_repository import MessageRepository
 from src.application.common.interfaces import Command, CommandHandler
 from src.application.services import FileService
 from src.services.query_supervisor import QuerySupervisor
-from src.services.vector_db import VectorDB
+from src.services.vector_db_qdrant import QdrantVectorDB
 from src.services.llm_client import chat_completion
 from src.services.agent_state import AgentSessionStateStore
 from src.utils.safety import looks_like_injection, sanitize_text
@@ -127,7 +127,7 @@ class SendMessageHandler(CommandHandler[SendMessageResult]):
         msg_repo: MessageRepository,
         query_supervisor: QuerySupervisor,
         file_service: FileService,
-        vector_db: Optional[VectorDB] = None,
+        vector_db: Optional[QdrantVectorDB] = None,
         openai_client: Optional[AsyncOpenAI] = None,
         agent_state_store: Optional[AgentSessionStateStore] = None,
     ):
