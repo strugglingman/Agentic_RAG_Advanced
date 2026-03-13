@@ -4,9 +4,10 @@ Integration test to verify prompt migration doesn't change behavior.
 This test simulates the LangGraph flow with the new prompt registry.
 """
 
+import os
 import sys
 
-sys.path.insert(0, "d:/chatbot/backend")
+sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
 from src.prompts import PlanningPrompts, GenerationPrompts, ToolPrompts
 from src.prompts.generation import ContextType

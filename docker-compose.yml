@@ -13,7 +13,7 @@ services:
       - ./nginx/logs:/var/log/nginx
       # Uncomment when SSL certificates are available:
       # - ./nginx/ssl:/etc/nginx/ssl:ro
-      - ./nginx/certbot:/var/www/certbot:ro
+      # - ./nginx/certbot:/var/www/certbot:ro
     depends_on:
       - frontend
       - backend
@@ -67,7 +67,7 @@ services:
   # Qdrant Vector Database
   # =============================================================================
   qdrant:
-    image: qdrant/qdrant:v1.13.2
+    image: qdrant/qdrant:v1.16.2
     ports:
       - "6333:6333"   # REST API
       - "6334:6334"   # gRPC
@@ -93,7 +93,6 @@ services:
     volumes:
       - ./backend/uploads:/app/uploads
       - ./backend/downloads:/app/downloads
-      - ./backend/chroma_db:/app/chroma_db
       - ./backend/logs:/app/logs
       - ./backend/org_structure.json:/app/org_structure.json:ro
     depends_on:
