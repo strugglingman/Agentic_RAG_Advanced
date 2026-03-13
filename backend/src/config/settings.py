@@ -270,7 +270,7 @@ class Config:
     # o200k_base: GPT-4o
     TIKTOKEN_ENCODING = os.getenv("TIKTOKEN_ENCODING", "cl100k_base")
     CONTEXTUAL_RETRIEVAL_ENABLED = os.getenv(
-        "CONTEXTUAL_RETRIEVAL_ENABLED", "false"
+        "CONTEXTUAL_RETRIEVAL_ENABLED", "true"
     ).lower() in {
         "1",
         "true",
