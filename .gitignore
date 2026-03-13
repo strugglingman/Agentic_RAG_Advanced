@@ -30,7 +30,8 @@ venv/
 .env.production.local
 
 # ---- Databases / Vector stores ----
-backend/chroma_db/
+qdrant_data/
+backend/data/
 backend/uploads/
 *.sqlite3
 
@@ -62,6 +63,10 @@ nginx/logs/
 *.tmp
 *.swp
 materials/*
+
+# ---- Reports / Generated files (optional) ----
+reports/*.md
+!reports/README.md
 
 # Uncomment if you generate large model files locally
 # models/
