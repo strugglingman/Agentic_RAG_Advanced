@@ -77,7 +77,7 @@ services:
     environment:
       - QDRANT__SERVICE__GRPC_PORT=6334
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:6333/healthz"]
+      test: ["CMD", "/qdrant/qdrant", "--version"]
       interval: 5s
       timeout: 5s
       retries: 5
