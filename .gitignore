@@ -43,6 +43,15 @@ report/*.json
 coverage/
 .coverage
 coverage.xml
+reports/playwright/
+playwright-report/
+test-results/
+frontend/reports/
+frontend/tsconfig.tsbuildinfo
+nul
+frontend/.npm-cache/
+pytest-cache-files-*/
+backend/pytest-cache-files-*/
 
 # ---- OS / Editor ----
 .DS_Store

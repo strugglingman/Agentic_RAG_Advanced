@@ -23,8 +23,8 @@ torch>=2.0.0
 PyJWT>=2.10.0
 python-magic>=0.4.27         # for linux
 #python-magic-bin>=0.4.14    # for windows
-pytest>=7.0.0
-pytest-cov>=4.0.0
+pytest>=9.0.0
+pytest-cov>=7.0.0
 freezegun>=1.2.0
 mcp>=1.0.0
 ddgs>=2.0.0  # Renamed from duckduckgo-search
@@ -63,7 +63,7 @@ fpdf2>=2.5.0
 slack-sdk>=3.39.0
 # Browser Automation (for complex downloads requiring login/JS)
 browser-use>=0.1.40
-playwright>=1.40.0
+playwright>=1.58.0
 # Semantic Router for deterministic query routing
 semantic-router>=0.1.0
 prometheus-client>=0.24.1

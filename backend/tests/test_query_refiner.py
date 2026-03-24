@@ -5,6 +5,7 @@ Run with: pytest tests/test_query_refiner.py -v
 """
 
 import pytest
+import asyncio
 from src.services.query_refiner import QueryRefiner, should_refine, track_refinement
 from src.models.evaluation import (
     EvaluationResult,
@@ -12,6 +13,8 @@ from src.models.evaluation import (
     RecommendationAction,
 )
 from src.config.settings import Config
+
+pytestmark = pytest.mark.unit
 
 
 class TestSimpleRefinement:
@@ -226,7 +229,7 @@ class TestQueryRefinerWithoutClient:
         )
 
         original = "test query"
-        refined = refiner.refine_query(original, mock_eval)
+        refined = asyncio.run(refiner.refine_query(original, mock_eval))
 
         # Should have added missing aspects via simple refinement
         assert "keyword1" in refined
