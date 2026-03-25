@@ -35,6 +35,10 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+      - name: Generate Prisma client
+        run: |
+          python -m prisma generate
+          python -m prisma py fetch --force
       - name: Run backend fast lane
         run: python -m pytest tests
 
@@ -73,6 +77,10 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+      - name: Generate Prisma client
+        run: |
+          python -m prisma generate
+          python -m prisma py fetch --force
       - name: Run backend integration lane
         run: python -m pytest -o addopts="-q -ra --strict-markers -m \"integration and not manual and not external\"" tests
       - name: Tear down infra stack
