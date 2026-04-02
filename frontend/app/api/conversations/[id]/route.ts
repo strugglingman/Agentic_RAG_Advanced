@@ -19,6 +19,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
         if (error instanceof ServiceAuthError) {
             return NextResponse.json({ error: error.message }, { status: error.status });
         }
+        return NextResponse.json({ error: "Unable to mint service token" }, { status: 500 });
     }
     const r = await fetch(`${process.env.FASTAPI_URL}/conversations/${id}`, {
         headers: {
@@ -44,6 +45,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
         if (error instanceof ServiceAuthError) {
             return NextResponse.json({ error: error.message }, { status: error.status });
         }
+        return NextResponse.json({ error: "Unable to mint service token" }, { status: 500 });
     }
 
     const payload = await req.json();
@@ -74,6 +76,7 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ id: s
         if (error instanceof ServiceAuthError) {
             return NextResponse.json({ error: error.message }, { status: error.status });
         }
+        return NextResponse.json({ error: "Unable to mint service token" }, { status: 500 });
     }
 
     const r = await fetch(`${process.env.FASTAPI_URL}/conversations/${id}`, {

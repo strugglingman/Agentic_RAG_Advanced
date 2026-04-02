@@ -20,6 +20,7 @@ export async function POST(req: Request) {
         if (error instanceof ServiceAuthError) {
             return NextResponse.json({ error: error.message }, { status: error.status });
         }
+        return NextResponse.json({ error: "Unable to mint service token" }, { status: 500 });
     }
     const r = await fetch(`${process.env.FASTAPI_URL}/upload`, {
         method: 'POST',
