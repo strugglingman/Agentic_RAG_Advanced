@@ -4,6 +4,8 @@ import pytest
 
 from src.utils.ssrf_protection import validate_url
 
+pytestmark = pytest.mark.unit
+
 
 def test_validate_url_blocks_non_http_scheme():
     with pytest.raises(ValueError) as exc_info:

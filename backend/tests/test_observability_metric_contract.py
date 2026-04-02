@@ -7,6 +7,8 @@ import pytest
 
 from src.observability import metrics as backend_metrics
 
+pytestmark = pytest.mark.unit
+
 
 def _resolve_observability_root() -> Path | None:
     candidates = [
@@ -21,21 +23,16 @@ def _resolve_observability_root() -> Path | None:
 
 
 def _normalize_metric_name(name: str) -> str:
-    for suffix in ("_bucket", "_sum", "_count", "_created"):
+    for suffix in ("_bucket", "_sum", "_count", "_created", "_total"):
         if name.endswith(suffix):
             return name[: -len(suffix)]
     return name
 
 
 def _extract_dashboard_metrics(expr: str) -> set[str]:
-    metrics = set()
-    for match in re.findall(r"(?<![A-Za-z0-9_])([a-zA-Z_:][a-zA-Z0-9_:]*)(?=(\{|\[))", expr):
-        metrics.add(match[0])
-
-    expr_trim = expr.strip()
-    if re.fullmatch(r"[a-zA-Z_:][a-zA-Z0-9_:]*", expr_trim):
-        metrics.add(expr_trim)
-    return metrics
+    # Capture metric-like identifiers even when wrapped by functions, e.g.
+    # sum by (route) (rag_query_routing_total)
+    return set(re.findall(r"(?:rag|http_server)_[a-zA-Z0-9_:]+", expr))
 
 
 def _backend_metric_names() -> set[str]:
@@ -46,6 +43,7 @@ def _backend_metric_names() -> set[str]:
         "RETRIEVAL_LATENCY",
         "LLM_TOKENS_TOTAL",
         "QUERY_ROUTING_TOTAL",
+        "RETRIEVAL_FALLBACK_TOTAL",
         "SELF_REFLECTION_TOTAL",
         "CHUNK_RELEVANCE_SCORE",
         "ERRORS_TOTAL",

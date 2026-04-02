@@ -1,4 +1,5 @@
 import time
+import asyncio
 
 import jwt
 import pytest
@@ -7,6 +8,8 @@ from fastapi.security import HTTPAuthorizationCredentials
 
 from src.config.settings import Config
 from src.presentation.dependencies.auth import get_current_user
+
+pytestmark = pytest.mark.unit
 
 
 def _mint_token(
@@ -36,8 +39,7 @@ def _creds(token: str) -> HTTPAuthorizationCredentials:
     return HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
 
 
-@pytest.mark.asyncio
-async def test_get_current_user_valid_token(monkeypatch):
+def test_get_current_user_valid_token(monkeypatch):
     monkeypatch.setattr(Config, "SERVICE_AUTH_SECRET", "test-secret", raising=False)
     monkeypatch.setattr(Config, "SERVICE_AUTH_ISSUER", "test-issuer", raising=False)
     monkeypatch.setattr(Config, "SERVICE_AUTH_AUDIENCE", "test-audience", raising=False)
@@ -50,13 +52,12 @@ async def test_get_current_user_valid_token(monkeypatch):
         dept="SALES",
     )
 
-    user = await get_current_user(_creds(token))
+    user = asyncio.run(get_current_user(_creds(token)))
     assert user.email.value == "alice@example.com"
     assert user.dept.value == "SALES"
 
 
-@pytest.mark.asyncio
-async def test_get_current_user_expired_token(monkeypatch):
+def test_get_current_user_expired_token(monkeypatch):
     monkeypatch.setattr(Config, "SERVICE_AUTH_SECRET", "test-secret", raising=False)
     monkeypatch.setattr(Config, "SERVICE_AUTH_ISSUER", "test-issuer", raising=False)
     monkeypatch.setattr(Config, "SERVICE_AUTH_AUDIENCE", "test-audience", raising=False)
@@ -69,14 +70,13 @@ async def test_get_current_user_expired_token(monkeypatch):
     )
 
     with pytest.raises(HTTPException) as exc_info:
-        await get_current_user(_creds(token))
+        asyncio.run(get_current_user(_creds(token)))
 
     assert exc_info.value.status_code == 401
     assert "expired" in str(exc_info.value.detail).lower()
 
 
-@pytest.mark.asyncio
-async def test_get_current_user_invalid_audience(monkeypatch):
+def test_get_current_user_invalid_audience(monkeypatch):
     monkeypatch.setattr(Config, "SERVICE_AUTH_SECRET", "test-secret", raising=False)
     monkeypatch.setattr(Config, "SERVICE_AUTH_ISSUER", "test-issuer", raising=False)
     monkeypatch.setattr(Config, "SERVICE_AUTH_AUDIENCE", "expected-audience", raising=False)
@@ -88,14 +88,13 @@ async def test_get_current_user_invalid_audience(monkeypatch):
     )
 
     with pytest.raises(HTTPException) as exc_info:
-        await get_current_user(_creds(token))
+        asyncio.run(get_current_user(_creds(token)))
 
     assert exc_info.value.status_code == 401
     assert "invalid token" in str(exc_info.value.detail).lower()
 
 
-@pytest.mark.asyncio
-async def test_get_current_user_missing_required_claims(monkeypatch):
+def test_get_current_user_missing_required_claims(monkeypatch):
     monkeypatch.setattr(Config, "SERVICE_AUTH_SECRET", "test-secret", raising=False)
     monkeypatch.setattr(Config, "SERVICE_AUTH_ISSUER", "test-issuer", raising=False)
     monkeypatch.setattr(Config, "SERVICE_AUTH_AUDIENCE", "test-audience", raising=False)
@@ -108,7 +107,7 @@ async def test_get_current_user_missing_required_claims(monkeypatch):
         dept=None,
     )
     with pytest.raises(HTTPException) as exc_info_dept:
-        await get_current_user(_creds(token_missing_dept))
+        asyncio.run(get_current_user(_creds(token_missing_dept)))
     assert exc_info_dept.value.status_code == 401
     assert "missing required claims" in str(exc_info_dept.value.detail).lower()
 
@@ -120,6 +119,6 @@ async def test_get_current_user_missing_required_claims(monkeypatch):
         dept="ENG",
     )
     with pytest.raises(HTTPException) as exc_info_email:
-        await get_current_user(_creds(token_missing_email))
+        asyncio.run(get_current_user(_creds(token_missing_email)))
     assert exc_info_email.value.status_code == 401
     assert "missing required claims" in str(exc_info_email.value.detail).lower()

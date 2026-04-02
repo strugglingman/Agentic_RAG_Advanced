@@ -4,6 +4,8 @@ import types
 
 import pytest
 
+pytestmark = pytest.mark.unit
+
 
 def _load_build_where():
     """
