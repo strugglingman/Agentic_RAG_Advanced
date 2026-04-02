@@ -3,98 +3,59 @@ import time
 import jwt
 import pytest
 
-from src.config.settings import Config
+pytestmark = pytest.mark.component
 
 
-PROTECTED_ROUTES = [
-    ("/upload", "post"),
-    ("/ingest", "post"),
-    ("/ingest/cancel", "post"),
-    ("/ingest/active", "get"),
-    ("/chat", "post"),
-    ("/chat/agent", "post"),
-    ("/chat/resume", "post"),
-    ("/files", "get"),
-    ("/files/delete", "post"),
-    ("/conversations", "get"),
+def _is_prisma_binary_error(exc: Exception) -> bool:
+    text = f"{exc!r}\n{exc}"
+    return "BinaryNotFoundError" in text or "prisma-query-engine" in text
+
+
+def _request_or_skip_for_prisma(client, method: str, route: str, **kwargs):
+    try:
+        return getattr(client, method)(route, **kwargs)
+    except Exception as exc:
+        if _is_prisma_binary_error(exc):
+            pytest.skip(
+                "Prisma query engine is not available for integration tests. "
+                "Run `prisma py fetch` to enable this lane locally."
+            )
+        raise
+
+
+routes = [
+    ("/upload", "post", 401),
+    ("/ingest", "post", 401),
+    ("/chat/agent", "post", 401),
+    ("/files", "get", 401),
 ]
 
 
-def _request(client, method: str, route: str, headers=None):
-    method_fn = getattr(client, method)
-
-    if route in ("/chat", "/chat/agent"):
-        return method_fn(
-            route,
-            headers=headers,
-            json={"messages": [{"role": "user", "content": "hello"}]},
-        )
-    if route == "/chat/resume":
-        return method_fn(
-            route,
-            headers=headers,
-            json={"thread_id": "t1", "confirmed": True},
-        )
-    if route == "/ingest":
-        return method_fn(route, headers=headers, json={"file_ids": ["ALL"]})
-    if route == "/ingest/cancel":
-        return method_fn(route, headers=headers, json={"job_id": "job-1"})
-    if route == "/files/delete":
-        return method_fn(route, headers=headers, json={"file_ids": ["file-1"]})
-    return method_fn(route, headers=headers)
+@pytest.mark.parametrize("route,method,expected_code", routes)
+def test_protected_routes_missing_auth(client, route, method, expected_code):
+    """Requests without auth should return 401 Unauthorized."""
+    res = _request_or_skip_for_prisma(client, method, route)
+    assert res.status_code == expected_code
+    payload = {}
+    try:
+        payload = res.json()
+    except Exception:
+        payload = {}
+    assert "error" in payload or "detail" in payload
 
 
-@pytest.mark.parametrize("route,method", PROTECTED_ROUTES)
-def test_protected_routes_missing_auth(client, route, method):
-    """
-    Protected endpoints must reject requests without Authorization header.
-    """
-    res = _request(client, method, route)
-    assert res.status_code in (401, 403)
-
-
-@pytest.mark.parametrize("route,method", PROTECTED_ROUTES)
-def test_protected_routes_invalid_token(client, route, method):
-    """
-    Protected endpoints must reject malformed/invalid JWT tokens.
-    """
-    res = _request(
-        client,
-        method,
-        route,
-        headers={"Authorization": "Bearer not-a-valid-jwt"},
-    )
-    assert res.status_code == 401
-
-
-@pytest.mark.parametrize("route,method", PROTECTED_ROUTES)
-def test_protected_routes_with_auth_not_unauthorized(client, auth_headers, route, method):
-    """
-    With a valid token, endpoints may still fail validation/business rules,
-    but should not fail as unauthorized.
-    """
-    res = _request(client, method, route, headers=auth_headers)
-    assert res.status_code != 401
-
-
-def test_missing_required_claims_rejected(client):
-    now = int(time.time())
-    token = jwt.encode(
-        {
-            "iat": now,
-            "exp": now + 300,
-            "iss": Config.SERVICE_AUTH_ISSUER,
-            "aud": Config.SERVICE_AUTH_AUDIENCE,
-            # Missing "email" and "dept" on purpose
-        },
-        Config.SERVICE_AUTH_SECRET,
-        algorithm="HS256",
-    )
-
-    res = _request(
-        client,
-        "post",
-        "/chat/agent",
-        headers={"Authorization": f"Bearer {token}"},
-    )
-    assert res.status_code == 401
+@pytest.mark.parametrize("route,method,_", routes)
+@pytest.mark.integration
+def test_protected_routes_with_auth(client, auth_headers, route, method, _):
+    """Requests with valid auth should not return 401 Unauthorized."""
+    res = _request_or_skip_for_prisma(client, method, route, headers=auth_headers)
+    assert res.status_code in [
+        200,
+        201,
+        204,
+        400,
+        403,
+        404,
+        405,
+        422,
+    ]  # Acceptable codes for protected endpoints

@@ -7,11 +7,18 @@ from src.observability.metrics import (
     observe_retrieval_latency,
     observe_llm_tokens,
     increment_query_routing,
+    increment_retrieval_fallback,
     increment_self_reflection_action,
     observe_chunk_relevance_score,
     increment_error,
     get_metrics_content,
     MetricsErrorType,
+)
+from src.observability.tracing import (
+    get_trace_context,
+    setup_otel_logging,
+    setup_tracing,
+    traced_span,
 )
 
 __all__ = [
@@ -22,8 +29,13 @@ __all__ = [
     "observe_retrieval_latency",
     "observe_llm_tokens",
     "increment_query_routing",
+    "increment_retrieval_fallback",
     "increment_self_reflection_action",
     "observe_chunk_relevance_score",
     "increment_error",
     "MetricsErrorType",
+    "get_trace_context",
+    "setup_otel_logging",
+    "setup_tracing",
+    "traced_span",
 ]

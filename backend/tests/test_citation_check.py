@@ -1,5 +1,9 @@
 from src.utils.safety import enforce_citations
 
+import pytest
+
+pytestmark = pytest.mark.unit
+
 
 def test_enforce_citations_drops_unsupported():
     answer = "Alpha fact [1]. Beta claim [2]. Hallucinated line without cite."

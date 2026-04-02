@@ -29,6 +29,7 @@ from src.config.settings import Config
 from src.utils.safety import enforce_citations, add_sources_from_citations
 from src.utils.file_content_extractor import extract_file_content
 from src.observability.metrics import increment_query_routing
+from src.observability.tracing import traced_span
 
 logger = logging.getLogger(__name__)
 
@@ -88,123 +89,123 @@ class AgentService:
         # Initialize context tracking
         context["_retrieved_contexts"] = []
 
-        # Load agent session state from Redis (enterprise pattern: explicit state)
         conv_id = context.get("conversation_id", "unknown")
-        state_store: Optional[AgentSessionStateStore] = context.get("_state_store")
+        with traced_span(
+            "rag.agent.run",
+            {
+                "rag.agent.conversation_id": conv_id,
+                "rag.agent.max_iterations": self.max_iterations,
+                "rag.query.text": query,
+            },
+        ) as span:
+            state_store: Optional[AgentSessionStateStore] = context.get("_state_store")
 
-        if state_store:
-            # Load persisted state from Redis
-            session_state = await state_store.load(conv_id)
-            logger.debug(
-                f"[AGENT] Loaded session state: {len(session_state.active_file_ids)} "
-                f"active files from Redis"
-            )
-        else:
-            # Fallback: create fresh state (no persistence)
-            session_state = AgentSessionState(conversation_id=conv_id)
-            logger.debug("[AGENT] No state store - using ephemeral session state")
-
-        context["_session_state"] = session_state
-
-        # If user attached files in this message, treat like producer tool:
-        # Clear old state and add attachments (they are "new files" for this turn)
-        attachment_file_ids = context.get("attachment_file_ids", [])
-        if attachment_file_ids:
-            session_state.active_file_ids = []
-            for att in attachment_file_ids:
-                session_state.active_file_ids.append(
-                    FileReference(
-                        file_id=att["file_id"],
-                        filename=att["filename"],
-                        source="chat_attachment",
-                    )
-                )
-            # Already cleared, so producer tools should append, not clear again
-            context["_first_producer_tool_this_turn"] = False
-            logger.debug(
-                f"[AGENT] Added {len(attachment_file_ids)} chat attachments to session state"
-            )
-        else:
-            # No attachments - first producer tool will clear old state
-            context["_first_producer_tool_this_turn"] = True
-
-        messages = await self._build_initial_messages(query, context, session_state)
-
-        # When True: Always search internal documents first
-        # When False: Let LLM decide when to search (may skip internal docs)
-        force_retrieval = Config.FORCE_INTERNAL_RETRIEVAL
-        retrieval_done = False
-
-        for iteration in range(self.max_iterations):
-            # logger.debug(
-            #     f"In AgentService.run, LLM messages: {messages[0]['content'][:600]}........"
-            # )
-
-            # First iteration: Optionally force search_documents tool call
-            # Subsequent iterations: Let LLM decide (auto)
-            if force_retrieval and not retrieval_done and iteration == 0:
-                logger.info(
-                    "[AGENT] Forcing search_documents as first tool call (FORCE_INTERNAL_RETRIEVAL=true)"
-                )
-                res = await self._call_llm(
-                    messages,
-                    tool_choice={
-                        "type": "function",
-                        "function": {"name": "search_documents"},
-                    },
-                )
-                retrieval_done = True
-            else:
-                res = await self._call_llm(messages)
-            if self._has_tool_calls(res):
-                assistant_message = res.choices[0].message
+            if state_store:
+                session_state = await state_store.load(conv_id)
                 logger.debug(
-                    f"In AgentService.run, LLM has {len(res.choices[0].message.tool_calls)} tool_calls: {res.choices[0].message.tool_calls[:150]}..."
+                    f"[AGENT] Loaded session state: {len(session_state.active_file_ids)} "
+                    f"active files from Redis"
                 )
-                tool_results = await self._execute_tools(res, context)
-                messages = self._append_tool_results(
-                    messages, assistant_message, tool_results
-                )
-                # Option A: Re-inject updated state into system message
-                # After producer tools (download_file, search_documents, create_documents)
-                # update session_state, the next LLM call needs to see the new <active_files>
-                messages = self._update_system_message_state(messages, session_state)
-            elif res.choices[0].message.content:
-                answer = self._get_final_answer(res)
-                contexts = context.get("_retrieved_contexts", [])
+            else:
+                session_state = AgentSessionState(conversation_id=conv_id)
+                logger.debug("[AGENT] No state store - using ephemeral session state")
 
-                # Enforce citations: drop sentences without valid citations
-                if contexts and Config.ENFORCE_CITATIONS:
-                    valid_ids = list(range(1, len(contexts) + 1))
-                    logger.info(
-                        f"[AGENT] Raw answer before enforce_citations: {answer!r}"
+            context["_session_state"] = session_state
+
+            attachment_file_ids = context.get("attachment_file_ids", [])
+            if attachment_file_ids:
+                session_state.active_file_ids = []
+                for att in attachment_file_ids:
+                    session_state.active_file_ids.append(
+                        FileReference(
+                            file_id=att["file_id"],
+                            filename=att["filename"],
+                            source="chat_attachment",
+                        )
                     )
-                    answer, all_supported = enforce_citations(answer, valid_ids)
-                    logger.info(f"[AGENT] Answer after enforce_citations: {answer!r}")
-                    if not all_supported:
-                        logger.warning(
-                            "[AGENT] Some sentences dropped due to missing citations"
+                context["_first_producer_tool_this_turn"] = False
+                logger.debug(
+                    f"[AGENT] Added {len(attachment_file_ids)} chat attachments to session state"
+                )
+            else:
+                context["_first_producer_tool_this_turn"] = True
+
+            if span is not None:
+                span.set_attribute(
+                    "rag.agent.attachment_count", len(attachment_file_ids)
+                )
+
+            messages = await self._build_initial_messages(query, context, session_state)
+
+            force_retrieval = Config.FORCE_INTERNAL_RETRIEVAL
+            retrieval_done = False
+
+            for iteration in range(self.max_iterations):
+                if span is not None:
+                    span.set_attribute("rag.agent.iteration", iteration)
+                # logger.debug(
+                #     f"In AgentService.run, LLM messages: {messages[0]['content'][:600]}........"
+                # )
+
+                if force_retrieval and not retrieval_done and iteration == 0:
+                    logger.info(
+                        "[AGENT] Forcing search_documents as first tool call (FORCE_INTERNAL_RETRIEVAL=true)"
+                    )
+                    res = await self._call_llm(
+                        messages,
+                        tool_choice={
+                            "type": "function",
+                            "function": {"name": "search_documents"},
+                        },
+                    )
+                    retrieval_done = True
+                else:
+                    res = await self._call_llm(messages)
+                if self._has_tool_calls(res):
+                    assistant_message = res.choices[0].message
+                    logger.debug(
+                        f"In AgentService.run, LLM has {len(res.choices[0].message.tool_calls)} tool_calls: {res.choices[0].message.tool_calls[:150]}..."
+                    )
+                    tool_results = await self._execute_tools(res, context)
+                    messages = self._append_tool_results(
+                        messages, assistant_message, tool_results
+                    )
+                    messages = self._update_system_message_state(messages, session_state)
+                elif res.choices[0].message.content:
+                    answer = self._get_final_answer(res)
+                    contexts = context.get("_retrieved_contexts", [])
+
+                    if contexts and Config.ENFORCE_CITATIONS:
+                        valid_ids = list(range(1, len(contexts) + 1))
+                        logger.info(
+                            f"[AGENT] Raw answer before enforce_citations: {answer!r}"
+                        )
+                        answer, all_supported = enforce_citations(answer, valid_ids)
+                        logger.info(f"[AGENT] Answer after enforce_citations: {answer!r}")
+                        if not all_supported:
+                            logger.warning(
+                                "[AGENT] Some sentences dropped due to missing citations"
+                            )
+
+                    if contexts:
+                        answer, cited_files = add_sources_from_citations(answer, contexts)
+                        if cited_files:
+                            logger.info(f"[AGENT] Added sources: {cited_files}")
+
+                    if state_store and session_state.active_file_ids:
+                        await state_store.save(session_state)
+                        logger.debug(
+                            f"[AGENT] Saved session state: "
+                            f"{len(session_state.active_file_ids)} active files to Redis"
                         )
 
-                # Add programmatic Sources line based on actual citations
-                if contexts:
-                    answer, cited_files = add_sources_from_citations(answer, contexts)
-                    if cited_files:
-                        logger.info(f"[AGENT] Added sources: {cited_files}")
+                    if span is not None:
+                        span.set_attribute("rag.agent.result_context_count", len(contexts))
+                    return answer, contexts
+                else:
+                    break
 
-                # Save session state to Redis (persist for next message)
-                if state_store and session_state.active_file_ids:
-                    await state_store.save(session_state)
-                    logger.debug(
-                        f"[AGENT] Saved session state: "
-                        f"{len(session_state.active_file_ids)} active files to Redis"
-                    )
-
-                return answer, contexts
-            else:
-                break
-
-        return "Error: Maximum iterations reached without final answer.", []
+            return "Error: Maximum iterations reached without final answer.", []
 
 
     async def _call_llm(

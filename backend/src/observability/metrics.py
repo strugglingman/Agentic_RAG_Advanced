@@ -58,6 +58,11 @@ QUERY_ROUTING_TOTAL = Counter(
     ["route"],
 )
 
+RETRIEVAL_FALLBACK_TOTAL = Counter(
+    "rag_retrieval_fallback_total",
+    "Total number of retrieval-to-web-search fallback transitions",
+)
+
 SELF_REFLECTION_TOTAL = Counter(
     "rag_reflection_action_total",
     "Total number of self-reflection actions taken",
@@ -128,6 +133,11 @@ def increment_query_routing(route: str):
     QUERY_ROUTING_TOTAL.labels(route=route).inc()
 
 
+def increment_retrieval_fallback():
+    """Call when retrieval flow falls back to external web search."""
+    RETRIEVAL_FALLBACK_TOTAL.inc()
+
+
 def increment_self_reflection_action(action: str):
     """Call to record self-reflection actions. Integration point: services/self_reflection.py"""
     SELF_REFLECTION_TOTAL.labels(action=action).inc()
@@ -179,6 +189,7 @@ __all__ = [
     "observe_retrieval_latency",
     "observe_llm_tokens",
     "increment_query_routing",
+    "increment_retrieval_fallback",
     "increment_self_reflection_action",
     "observe_chunk_relevance_score",
     "increment_error",

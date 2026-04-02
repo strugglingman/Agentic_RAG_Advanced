@@ -6,6 +6,21 @@ This repository is an advanced Agentic RAG system, not a simple demo chatbot.
 
 Work from the real codebase, not from outdated assumptions in README or old notes.
 
+## Evaluation Baseline (Load on Startup)
+
+- Always load `docs/evaluations/EVALUATION_LOG.md` at the start of a new session.
+- The log is maintained in reverse chronological order (latest evaluation first).
+- Every new formal evaluation must include an ISO-8601 timestamp and be inserted at the top.
+
+## Latest Formal Evaluation
+
+- [2026-04-02T07:27:02+02:00] Full source-level review of `agentic_rag_adv` plus `D:\agentic_rag_observability`, including security and tests, concluded the combined system is not production-ready.
+- Combined score: 66/100.
+- Observability/dashboard score: 53/100.
+- Major blockers: auth/account hardening gaps, sensitive data flowing into observability, public operational surfaces, thin automated coverage for production confidence, and runtime/build portability issues.
+- Concrete examples already identified in source: signup allows arbitrary `dept` submission server-side, raw user query text is attached to spans in multiple backend paths, `/metrics` is unauthenticated, frontend Prisma build/runtime portability is incomplete across Windows/Linux targets, and much of the backend test confidence depends on manual/integration lanes.
+- When continuing evaluation or remediation work, treat security, observability correctness, deployment portability, and testability as first-class priorities rather than optional polish.
+
 ## Project Shape
 
 Current implementation is centered around:
@@ -93,6 +108,9 @@ When changing retrieval logic, explicitly state:
 - why it changed
 - expected effect on quality / latency / cost
 - what should be tested afterward
+
+### Retrieval Note
+- [2026-03-26T15:07:28+01:00] Known issue to fix later: Qdrant hybrid retrieval without reranker is the main score-semantics risk. In this mode, server-side RRF returns only fused hybrid scores, so the workflow loses separate dense vs sparse evidence that existed in the old Chroma path. Example symptom: an exact-policy query like "employee vacation carry-over policy" may be wrongly rejected or wrongly accepted because evaluation/refinement sees only fused `hybrid` scores, not underlying lexical and semantic signals.
 
 ## Definition of Done
 

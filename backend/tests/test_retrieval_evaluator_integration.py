@@ -1,154 +1,133 @@
 """
-Integration test for Self-Reflection (RetrievalEvaluator).
+Manual smoke tests for RetrievalEvaluator across reflection modes.
 
-Tests all three evaluation modes (FAST, BALANCED, THOROUGH) with mock data.
-Does not require full server or uploaded documents.
-
-HOW TO RUN:
------------
-From the backend directory (with virtual environment activated):
-    python tests/test_retrieval_evaluator_integration.py
-
-Or with pytest:
-    pytest tests/test_retrieval_evaluator_integration.py -v
-
-REQUIREMENTS:
--------------
-- OpenAI API key configured in .env (OPENAI_KEY)
-- Required for BALANCED and THOROUGH modes
-
-TESTS:
-------
-1. Good Retrieval: High relevance contexts → expect ANSWER recommendation
-2. Poor Retrieval: Irrelevant contexts → expect REFINE/CLARIFY recommendation
-3. No Contexts: Empty results → expect REFINE recommendation
+These checks are intentionally opt-in and may call external APIs
+depending on MANUAL_REFLECTION_MODE.
 """
 
-from src.models.evaluation import (
-    EvaluationCriteria,
-    ReflectionConfig,
-    ReflectionMode,
-)
-from src.services.retrieval_evaluator import RetrievalEvaluator
+import asyncio
+import os
+
+import pytest
+
 from src.config.settings import Config
-from openai import OpenAI
+from src.models.evaluation import EvaluationCriteria, ReflectionConfig, ReflectionMode
+from src.services.retrieval_evaluator import RetrievalEvaluator
 
-print("=" * 70)
-print("SELF-REFLECTION INTEGRATION TEST")
-print("=" * 70)
 
-# Initialize OpenAI client
-openai_client = OpenAI(api_key=Config.OPENAI_KEY)
+pytestmark = [pytest.mark.manual, pytest.mark.integration, pytest.mark.external]
 
-# Load reflection config from settings
-config = ReflectionConfig.from_settings(Config)
-print(f"\n[Config] Mode: {config.mode.value}")
-print(f"[Config] Thresholds: {config.thresholds}")
 
-# Create evaluator
-evaluator = RetrievalEvaluator(config=config, openai_client=openai_client)
-print(f"\n[Evaluator] Created successfully")
+@pytest.fixture
+def require_manual_opt_in():
+    """Require explicit opt-in for manual smoke checks."""
+    if os.getenv("RUN_MANUAL_TESTS") != "1":
+        pytest.skip("Set RUN_MANUAL_TESTS=1 to run manual smoke tests.")
 
-# Test 1: Good retrieval (high relevance, should recommend ANSWER)
-print("\n" + "=" * 70)
-print("TEST 1: Good Retrieval")
-print("=" * 70)
 
-good_contexts = [
-    {
-        "chunk": "Our company vacation policy allows 20 days of paid time off per year. Employees can carry over up to 5 unused days to the next year.",
-        "score": 0.92,
-        "hybrid": 0.92,
-    },
-    {
-        "chunk": "Vacation requests should be submitted at least 2 weeks in advance through the HR portal. Manager approval is required.",
-        "score": 0.85,
-        "hybrid": 0.85,
-    },
-]
+def _contexts_good():
+    return [
+        {
+            "chunk": (
+                "Employees receive 20 days paid vacation annually and can carry over up to "
+                "5 unused days."
+            ),
+            "rerank": 0.92,
+        },
+        {
+            "chunk": "Vacation requests should be submitted at least 2 weeks in advance.",
+            "rerank": 0.83,
+        },
+    ]
 
-criteria_good = EvaluationCriteria(
-    query="What is our vacation policy?",
-    contexts=good_contexts,
-    search_metadata={"hybrid": True, "reranker": True, "top_k": 5},
-    mode=config.mode,
-)
 
-result_good = evaluator.evaluate(criteria_good)
-print(f"\n[Result] Quality: {result_good.quality.value}")
-print(f"[Result] Confidence: {result_good.confidence:.2f}")
-print(f"[Result] Coverage: {result_good.coverage:.2f}")
-print(f"[Result] Recommendation: {result_good.recommendation.value}")
-print(f"[Result] Reasoning: {result_good.reasoning}")
-if result_good.issues:
-    print(f"[Result] Issues: {', '.join(result_good.issues)}")
-if result_good.missing_aspects:
-    print(f"[Result] Missing: {', '.join(result_good.missing_aspects)}")
+def _contexts_poor():
+    return [
+        {
+            "chunk": "The quarterly sales standup is every Monday morning.",
+            "rerank": 0.19,
+        },
+        {
+            "chunk": "Expense reports are due by the final business day each month.",
+            "rerank": 0.15,
+        },
+    ]
 
-# Test 2: Poor retrieval (irrelevant contexts, should recommend EXTERNAL or REFINE)
-print("\n" + "=" * 70)
-print("TEST 2: Poor Retrieval (Irrelevant Contexts)")
-print("=" * 70)
 
-poor_contexts = [
-    {
-        "chunk": "The quarterly sales meeting is scheduled for next Monday at 2 PM in Conference Room A.",
-        "score": 0.15,
-        "hybrid": 0.15,
-    },
-    {
-        "chunk": "Please remember to submit your expense reports by the end of the month.",
-        "score": 0.12,
-        "hybrid": 0.12,
-    },
-]
+async def _run_evaluations(mode: ReflectionMode, openai_client):
+    config = ReflectionConfig.from_settings(Config)
+    config.mode = mode
 
-criteria_poor = EvaluationCriteria(
-    query="What is the employee vacation policy?",
-    contexts=poor_contexts,
-    search_metadata={"hybrid": True, "reranker": True, "top_k": 5},
-    mode=config.mode,
-)
+    evaluator = RetrievalEvaluator(config=config, openai_client=openai_client)
 
-result_poor = evaluator.evaluate(criteria_poor)
-print(f"\n[Result] Quality: {result_poor.quality.value}")
-print(f"[Result] Confidence: {result_poor.confidence:.2f}")
-print(f"[Result] Coverage: {result_poor.coverage:.2f}")
-print(f"[Result] Recommendation: {result_poor.recommendation.value}")
-print(f"[Result] Reasoning: {result_poor.reasoning}")
-if result_poor.issues:
-    print(f"[Result] Issues: {', '.join(result_poor.issues)}")
-if result_poor.missing_aspects:
-    print(f"[Result] Missing: {', '.join(result_poor.missing_aspects)}")
+    good = await evaluator.evaluate(
+        EvaluationCriteria(
+            query="What is the employee vacation policy?",
+            contexts=_contexts_good(),
+            search_metadata={"hybrid": True, "reranker": True},
+            mode=mode,
+        )
+    )
+    poor = await evaluator.evaluate(
+        EvaluationCriteria(
+            query="What is the employee vacation policy?",
+            contexts=_contexts_poor(),
+            search_metadata={"hybrid": True, "reranker": True},
+            mode=mode,
+        )
+    )
+    empty = await evaluator.evaluate(
+        EvaluationCriteria(
+            query="What is the employee vacation policy?",
+            contexts=[],
+            search_metadata={"hybrid": True, "reranker": True},
+            mode=mode,
+        )
+    )
+    return good, poor, empty
 
-# Test 3: No contexts (should recommend EXTERNAL)
-print("\n" + "=" * 70)
-print("TEST 3: No Contexts Retrieved")
-print("=" * 70)
 
-criteria_empty = EvaluationCriteria(
-    query="What is quantum physics?",
-    contexts=[],
-    search_metadata={"hybrid": True, "reranker": True, "top_k": 5},
-    mode=config.mode,
-)
+def test_retrieval_evaluator_quality_ordering(require_manual_opt_in):
+    """
+    Verify ordering invariants:
+    - good contexts should not score below poor/empty contexts
+    - no-context path should request fallback action
+    """
+    mode_name = os.getenv("MANUAL_REFLECTION_MODE", "fast").strip().lower()
+    try:
+        mode = ReflectionMode(mode_name)
+    except ValueError:
+        pytest.fail(
+            "MANUAL_REFLECTION_MODE must be one of: fast, balanced, thorough"
+        )
 
-result_empty = evaluator.evaluate(criteria_empty)
-print(f"\n[Result] Quality: {result_empty.quality.value}")
-print(f"\n[Result] Confidence: {result_empty.confidence:.2f}")
-print(f"[Result] Coverage: {result_empty.coverage:.2f}")
-print(f"[Result] Recommendation: {result_empty.recommendation.value}")
-print(f"[Result] Reasoning: {result_empty.reasoning}")
-if result_empty.issues:
-    print(f"[Result] Issues: {', '.join(result_empty.issues)}")
-if result_empty.missing_aspects:
-    print(f"[Result] Missing: {', '.join(result_empty.missing_aspects)}")
+    client = None
+    if mode in {ReflectionMode.BALANCED, ReflectionMode.THOROUGH}:
+        if not Config.OPENAI_KEY:
+            pytest.skip(
+                "OPENAI_API_KEY is required for balanced/thorough manual reflection mode."
+            )
+        from openai import AsyncOpenAI
 
-print("\n" + "=" * 70)
-print("ALL TESTS COMPLETE!")
-print("=" * 70)
-print(f"\n[SUCCESS] Self-reflection system is working in {config.mode.value.upper()} mode!")
-print("\nNext steps:")
-print("1. Try changing REFLECTION_MODE in .env to 'fast' or 'thorough'")
-print("2. Test with the full server when you have uploaded documents")
-print("3. Observe logs when making agent requests through the API")
+        client = AsyncOpenAI(api_key=Config.OPENAI_KEY)
+
+    async def _run():
+        try:
+            return await _run_evaluations(mode, client)
+        finally:
+            if client is not None:
+                await client.close()
+
+    good, poor, empty = asyncio.run(_run())
+
+    assert good.mode_used == mode
+    assert poor.mode_used == mode
+    assert empty.mode_used == mode
+
+    assert 0.0 <= good.confidence <= 1.0
+    assert 0.0 <= poor.confidence <= 1.0
+    assert 0.0 <= empty.confidence <= 1.0
+
+    assert good.confidence >= poor.confidence
+    assert good.confidence >= empty.confidence
+    assert empty.recommendation.value in {"refine", "external", "clarify"}

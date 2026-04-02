@@ -43,6 +43,7 @@ from src.observability.metrics import (
     increment_error,
     MetricsErrorType,
 )
+from src.observability.tracing import traced_span
 
 logger = logging.getLogger(__name__)
 
@@ -221,15 +222,31 @@ async def chat_completion(
         timeout=timeout or DEFAULT_TIMEOUT,
     )
     try:
-        await cb.check()
-        response = await client.chat.completions.create(model=model, **create_kwargs)
+        with traced_span(
+            "rag.llm.chat_completion",
+            {
+                "gen_ai.request.model": model,
+                "rag.llm.operation": "chat_completion",
+                "rag.llm.message_count": len(messages),
+            },
+        ) as span:
+            await cb.check()
+            response = await client.chat.completions.create(model=model, **create_kwargs)
 
-        if response.usage:
-            observe_llm_tokens("input", model, response.usage.prompt_tokens)
-            observe_llm_tokens("output", model, response.usage.completion_tokens)
+            if response.usage:
+                observe_llm_tokens("input", model, response.usage.prompt_tokens)
+                observe_llm_tokens("output", model, response.usage.completion_tokens)
+                if span is not None:
+                    span.set_attribute(
+                        "gen_ai.usage.input_tokens", response.usage.prompt_tokens
+                    )
+                    span.set_attribute(
+                        "gen_ai.usage.output_tokens",
+                        response.usage.completion_tokens,
+                    )
 
-        await cb.record_success()
-        return response
+            await cb.record_success()
+            return response
     except Exception as e:
         if not isinstance(e, CircuitOpenError):
             await cb.record_failure(e)
@@ -282,15 +299,36 @@ async def chat_completion_with_tools(
         timeout=timeout or DEFAULT_TIMEOUT,
     )
     try:
-        await cb.check()
-        response = await client.chat.completions.create(model=model, **create_kwargs)
+        with traced_span(
+            "rag.llm.chat_completion_with_tools",
+            {
+                "gen_ai.request.model": model,
+                "rag.llm.operation": "chat_completion_with_tools",
+                "rag.llm.message_count": len(messages),
+                "rag.llm.tool_count": len(tools),
+                "rag.llm.parallel_tool_calls": parallel_tool_calls,
+            },
+        ) as span:
+            await cb.check()
+            response = await client.chat.completions.create(model=model, **create_kwargs)
 
-        if response.usage:
-            observe_llm_tokens("input", model, response.usage.prompt_tokens)
-            observe_llm_tokens("output", model, response.usage.completion_tokens)
+            if response.usage:
+                observe_llm_tokens("input", model, response.usage.prompt_tokens)
+                observe_llm_tokens("output", model, response.usage.completion_tokens)
+                if span is not None:
+                    span.set_attribute(
+                        "gen_ai.usage.input_tokens", response.usage.prompt_tokens
+                    )
+                    span.set_attribute(
+                        "gen_ai.usage.output_tokens",
+                        response.usage.completion_tokens,
+                    )
+            if span is not None and response.choices:
+                tool_calls = response.choices[0].message.tool_calls or []
+                span.set_attribute("rag.llm.tool_call_count", len(tool_calls))
 
-        await cb.record_success()
-        return response
+            await cb.record_success()
+            return response
     except Exception as e:
         if not isinstance(e, CircuitOpenError):
             await cb.record_failure(e)
@@ -332,15 +370,31 @@ async def chat_completion_json(
         timeout=timeout or DEFAULT_TIMEOUT,
     )
     try:
-        await cb.check()
-        response = await client.chat.completions.create(model=model, **create_kwargs)
+        with traced_span(
+            "rag.llm.chat_completion_json",
+            {
+                "gen_ai.request.model": model,
+                "rag.llm.operation": "chat_completion_json",
+                "rag.llm.message_count": len(messages),
+            },
+        ) as span:
+            await cb.check()
+            response = await client.chat.completions.create(model=model, **create_kwargs)
 
-        if response.usage:
-            observe_llm_tokens("input", model, response.usage.prompt_tokens)
-            observe_llm_tokens("output", model, response.usage.completion_tokens)
+            if response.usage:
+                observe_llm_tokens("input", model, response.usage.prompt_tokens)
+                observe_llm_tokens("output", model, response.usage.completion_tokens)
+                if span is not None:
+                    span.set_attribute(
+                        "gen_ai.usage.input_tokens", response.usage.prompt_tokens
+                    )
+                    span.set_attribute(
+                        "gen_ai.usage.output_tokens",
+                        response.usage.completion_tokens,
+                    )
 
-        await cb.record_success()
-        return response
+            await cb.record_success()
+            return response
     except Exception as e:
         if not isinstance(e, CircuitOpenError):
             await cb.record_failure(e)
@@ -385,15 +439,31 @@ async def chat_completion_structured(
         timeout=timeout or DEFAULT_TIMEOUT,
     )
     try:
-        await cb.check()
-        response = await client.chat.completions.create(model=model, **create_kwargs)
+        with traced_span(
+            "rag.llm.chat_completion_structured",
+            {
+                "gen_ai.request.model": model,
+                "rag.llm.operation": "chat_completion_structured",
+                "rag.llm.message_count": len(messages),
+            },
+        ) as span:
+            await cb.check()
+            response = await client.chat.completions.create(model=model, **create_kwargs)
 
-        if response.usage:
-            observe_llm_tokens("input", model, response.usage.prompt_tokens)
-            observe_llm_tokens("output", model, response.usage.completion_tokens)
+            if response.usage:
+                observe_llm_tokens("input", model, response.usage.prompt_tokens)
+                observe_llm_tokens("output", model, response.usage.completion_tokens)
+                if span is not None:
+                    span.set_attribute(
+                        "gen_ai.usage.input_tokens", response.usage.prompt_tokens
+                    )
+                    span.set_attribute(
+                        "gen_ai.usage.output_tokens",
+                        response.usage.completion_tokens,
+                    )
 
-        await cb.record_success()
-        return response
+            await cb.record_success()
+            return response
     except Exception as e:
         if not isinstance(e, CircuitOpenError):
             await cb.record_failure(e)
@@ -435,10 +505,18 @@ async def chat_completion_stream(
         timeout=timeout or DEFAULT_TIMEOUT,
     )
     try:
-        await cb.check()
-        stream = await client.chat.completions.create(model=model, **create_kwargs)
-        await cb.record_success()
-        return stream
+        with traced_span(
+            "rag.llm.chat_completion_stream",
+            {
+                "gen_ai.request.model": model,
+                "rag.llm.operation": "chat_completion_stream",
+                "rag.llm.message_count": len(messages),
+            },
+        ):
+            await cb.check()
+            stream = await client.chat.completions.create(model=model, **create_kwargs)
+            await cb.record_success()
+            return stream
     except Exception as e:
         if not isinstance(e, CircuitOpenError):
             await cb.record_failure(e)

@@ -50,6 +50,7 @@ from slowapi.errors import RateLimitExceeded
 import logging
 
 from src.config.logging_config import setup_logging, correlation_id_var
+from src.observability.tracing import setup_tracing
 
 logger = logging.getLogger(__name__)
 from src.config.settings import Config
@@ -158,26 +159,21 @@ class MaxBodySizeMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
-# Create container at module level (before app starts)
-# This is required because Dishka adds middleware, which must happen before app starts
-container = make_async_container(AppProvider())
+def _build_lifespan(container):
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        """
+        FastAPI lifespan context manager.
 
+        Each app instance owns its own DI container to avoid reusing
+        a previously-closed container across test cases.
+        """
+        print("FastAPI application started. DI container initialized.")
+        yield
+        await container.close()
+        print("FastAPI application shutdown. DI container closed.")
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """
-    FastAPI lifespan context manager.
-
-    Handles startup and shutdown events:
-    - Startup: Log that app started (container already created)
-    - Shutdown: Close DI container (disconnects Prisma, etc.)
-    """
-    # Startup - container and Dishka already setup before app starts
-    print("FastAPI application started. DI container initialized.")
-    yield
-    # Shutdown
-    await container.close()
-    print("FastAPI application shutdown. DI container closed.")
+    return lifespan
 
 
 def create_fastapi_app() -> FastAPI:
@@ -187,11 +183,15 @@ def create_fastapi_app() -> FastAPI:
     Returns:
         FastAPI application instance
     """
+    # Create a fresh container per app instance. This is still before app startup,
+    # so Dishka middleware wiring remains valid.
+    container = make_async_container(AppProvider())
+
     app = FastAPI(
         title="Agentic RAG API",
         description="FastAPI backend for Agentic RAG application",
         version="1.0.0",
-        lifespan=lifespan,
+        lifespan=_build_lifespan(container),
     )
 
     # Setup Dishka BEFORE app starts (must add middleware before startup)
@@ -215,6 +215,8 @@ def create_fastapi_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    setup_tracing(app)
 
     # Validation error handler - shows detailed Pydantic errors
     @app.exception_handler(RequestValidationError)
