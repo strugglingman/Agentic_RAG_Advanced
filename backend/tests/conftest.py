@@ -16,10 +16,12 @@ sys.path.insert(0, os.path.abspath(os.path.dirname(__file__) + '/..'))
 # Import FastAPI app
 from fastapi.testclient import TestClient
 from src.fastapi_app import create_fastapi_app
+from src.config.settings import Config
 
-SERVICE_AUTH_SECRET = os.getenv("SERVICE_AUTH_SECRET", "test-secret")
-AUD = os.getenv("SERVICE_AUTH_AUDIENCE", "your_service_audience")
-ISS = os.getenv("SERVICE_AUTH_ISSUER", "your_service_name")
+# Keep test token generation aligned with runtime auth validation config.
+SERVICE_AUTH_SECRET = Config.SERVICE_AUTH_SECRET
+AUD = Config.SERVICE_AUTH_AUDIENCE
+ISS = Config.SERVICE_AUTH_ISSUER
 LANE_MARKERS = {"unit", "component", "integration", "external", "manual", "e2e"}
 
 
