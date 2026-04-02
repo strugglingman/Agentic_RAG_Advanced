@@ -1,4 +1,4 @@
-"""
+﻿"""
 LangGraph conditional routing functions.
 
 These functions decide which node to execute next based on state.
@@ -11,6 +11,8 @@ from typing import Optional, Tuple
 from src.services.langgraph_state import AgentState
 from src.models.evaluation import RecommendationAction
 from src.config.settings import Config
+from src.observability.metrics import increment_retrieval_fallback
+from src.observability.tracing import traced_span
 
 logger = logging.getLogger(__name__)
 
@@ -172,22 +174,32 @@ def semantic_route_query(
         return None, 0.0
 
     try:
-        result = router(query)
-        if result and result.name:
-            # semantic-router returns similarity score
-            confidence = getattr(result, "similarity", 0.7)  # Default if not available
-            logger.info(
-                f"[SEMANTIC_ROUTER] Query='{query[:50]}...' -> Route={result.name}, Confidence={confidence:.3f}"
-            )
-
-            if confidence >= confidence_threshold:
-                return result.name, confidence
-            else:
+        with traced_span(
+            "rag.routing.semantic",
+            {
+                "rag.routing.query_length": len(query),
+                "rag.routing.confidence_threshold": confidence_threshold,
+            },
+        ) as span:
+            result = router(query)
+            if result and result.name:
+                # semantic-router returns similarity score
+                confidence = getattr(result, "similarity", 0.7)  # Default if not available
                 logger.info(
-                    f"[SEMANTIC_ROUTER] Confidence {confidence:.3f} below threshold {confidence_threshold}"
+                    f"[SEMANTIC_ROUTER] Query='{query[:50]}...' -> Route={result.name}, Confidence={confidence:.3f}"
                 )
-                return None, confidence
-        return None, 0.0
+                if span is not None:
+                    span.set_attribute("rag.routing.candidate", result.name)
+                    span.set_attribute("rag.routing.confidence", confidence)
+
+                if confidence >= confidence_threshold:
+                    return result.name, confidence
+                else:
+                    logger.info(
+                        f"[SEMANTIC_ROUTER] Confidence {confidence:.3f} below threshold {confidence_threshold}"
+                    )
+                    return None, confidence
+            return None, 0.0
     except Exception as e:
         logger.warning(f"[SEMANTIC_ROUTER] Error routing query: {e}")
         return None, 0.0
@@ -325,25 +337,26 @@ def route_after_reflection(state: AgentState) -> str:
             return "error"  # No results after 3 tries
 
     if recommendation == RecommendationAction.ANSWER:
-        logger.info("[ROUTE_AFTER_REFLECTION] → GENERATE (quality sufficient)")
+        logger.info("[ROUTE_AFTER_REFLECTION] â†’ GENERATE (quality sufficient)")
         return "generate"
     elif recommendation == RecommendationAction.REFINE:
         logger.info(
-            f"[ROUTE_AFTER_REFLECTION] → REFINE (attempt {refinement_count + 1}/{Config.REFLECTION_MAX_REFINEMENT_ATTEMPTS})"
+            f"[ROUTE_AFTER_REFLECTION] â†’ REFINE (attempt {refinement_count + 1}/{Config.REFLECTION_MAX_REFINEMENT_ATTEMPTS})"
         )
         return "refine"
     elif recommendation == RecommendationAction.EXTERNAL:
-        logger.info("[ROUTE_AFTER_REFLECTION] → WEB_SEARCH (external search needed)")
+        increment_retrieval_fallback()
+        logger.info("[ROUTE_AFTER_REFLECTION] â†’ WEB_SEARCH (external search needed)")
         return "tool_web_search"
     elif recommendation == RecommendationAction.CLARIFY:
         logger.info(
-            "[ROUTE_AFTER_REFLECTION] → CLARIFY (asking user for clarification)"
+            "[ROUTE_AFTER_REFLECTION] â†’ CLARIFY (asking user for clarification)"
         )
         # User needs to clarify the query - generate with clarification message
         return "generate"
     else:
         logger.info(
-            f"[ROUTE_AFTER_REFLECTION] → GENERATE (fallback for {recommendation})"
+            f"[ROUTE_AFTER_REFLECTION] â†’ GENERATE (fallback for {recommendation})"
         )
         # Fallback for any unexpected recommendation
         return "generate"
@@ -378,3 +391,4 @@ def should_continue(state: AgentState) -> str:
 
     # Otherwise continue
     return "continue"
+

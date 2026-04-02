@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 from contextvars import ContextVar
 from src.config.settings import Config
+from src.observability.tracing import get_trace_context
 
 # Context variable to store correlation ID across async/thread boundaries
 correlation_id_var: ContextVar[str] = ContextVar(
@@ -23,12 +24,26 @@ class CorrelationIdFilter(logging.Filter):
         return True
 
 
+class TraceContextFilter(logging.Filter):
+    """Logging filter to add trace/span IDs to log records."""
+
+    def filter(self, record):
+        trace_id, span_id = get_trace_context()
+        record.trace_id = trace_id
+        record.span_id = span_id
+        return True
+
+
 class SafeFormatter(logging.Formatter):
     """Formatter that ensures correlation_id always exists."""
 
     def format(self, record):
         if not hasattr(record, "correlation_id"):
             record.correlation_id = "NO Correlation ID"
+        if not hasattr(record, "trace_id"):
+            record.trace_id = "-"
+        if not hasattr(record, "span_id"):
+            record.span_id = "-"
         return super().format(record)
 
 
@@ -98,12 +113,14 @@ def setup_logging(level: str = "INFO", log_file: str | None = None):
     root.setLevel(logging.WARNING)  # Set root to WARNING to avoid too much noise
     # Add a filter for correlation ID if exists
     root.addFilter(CorrelationIdFilter())
+    root.addFilter(TraceContextFilter())
 
     # Use the now-UTF8-wrapped stdout for the stream handler
     logger_handler = logging.StreamHandler(sys.stdout)
     formatter = SafeFormatter(Config.LOG_FORMAT)
     logger_handler.setFormatter(formatter)
     logger_handler.addFilter(CorrelationIdFilter())
+    logger_handler.addFilter(TraceContextFilter())
     root.addHandler(logger_handler)
 
     # Set up file logging if log_file provided with rotation
@@ -114,6 +131,7 @@ def setup_logging(level: str = "INFO", log_file: str | None = None):
         )
         file_handler.setFormatter(formatter)
         file_handler.addFilter(CorrelationIdFilter())
+        file_handler.addFilter(TraceContextFilter())
         root.addHandler(file_handler)
 
     logging.info("Logging is set up.")

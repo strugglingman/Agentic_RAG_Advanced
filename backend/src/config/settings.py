@@ -13,7 +13,7 @@ class Config:
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
     LOG_FORMAT: str = os.getenv(
         "LOG_FORMAT",
-        "%(asctime)s - %(correlation_id)s - %(funcName)s - %(lineno)d - %(message)s",
+        "%(asctime)s trace_id=%(trace_id)s span_id=%(span_id)s correlation_id=%(correlation_id)s %(funcName)s:%(lineno)d %(message)s",
     )
     LOG_PATH: str = os.getenv("LOG_PATH", "logs/app.log")
 
@@ -23,6 +23,7 @@ class Config:
     TESTING = os.getenv("TESTING", "false").lower() in {"1", "true", "yes", "on"}
     DEBUG = os.getenv("DEBUG", "false").lower() in {"1", "true", "yes", "on"}
     MAX_CONTENT_LENGTH = int(float(os.getenv("MAX_UPLOAD_MB", "25")) * 1024 * 1024)
+    APP_ENVIRONMENT = os.getenv("ENVIRONMENT", os.getenv("ENV", "development"))
 
     # CORS: comma-separated origins, e.g. "http://localhost:3000,https://app.company.com"
     CORS_ORIGINS: list[str] = [
@@ -79,6 +80,32 @@ class Config:
     LANGCHAIN_ENDPOINT = os.getenv(
         "LANGCHAIN_ENDPOINT", "https://eu.api.smith.langchain.com"
     )
+
+    # ==============================================================================
+    # OpenTelemetry
+    # ==============================================================================
+    OTEL_ENABLED = os.getenv("OTEL_ENABLED", "true").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    OTEL_SERVICE_NAME = os.getenv("OTEL_SERVICE_NAME", "agentic-rag-backend")
+    OTEL_SERVICE_NAMESPACE = os.getenv("OTEL_SERVICE_NAMESPACE", "agentic-rag")
+    OTEL_SERVICE_VERSION = os.getenv("OTEL_SERVICE_VERSION", "1.0.0")
+    OTEL_DEPLOYMENT_ENVIRONMENT = os.getenv(
+        "OTEL_DEPLOYMENT_ENVIRONMENT", APP_ENVIRONMENT
+    )
+    OTEL_EXPORTER_OTLP_ENDPOINT = os.getenv(
+        "OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318"
+    )
+    OTEL_EXPORTER_OTLP_PROTOCOL = os.getenv(
+        "OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf"
+    )
+    OTEL_EXPORTER_OTLP_INSECURE = os.getenv(
+        "OTEL_EXPORTER_OTLP_INSECURE", "true"
+    ).lower() in {"1", "true", "yes", "on"}
+    OTEL_TRACES_SAMPLER_ARG = float(os.getenv("OTEL_TRACES_SAMPLER_ARG", "1.0"))
 
     # ==============================================================================
     # LangGraph Configuration

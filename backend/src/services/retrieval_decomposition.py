@@ -40,6 +40,7 @@ from src.services.retrieval_qdrant import retrieve
 from src.services.llm_client import chat_completion_json
 from src.config.settings import Config
 from src.observability.metrics import observe_retrieval_latency, increment_error, MetricsErrorType
+from src.observability.tracing import traced_span
 
 logger = logging.getLogger(__name__)
 
@@ -176,35 +177,43 @@ async def decompose_query(
         },
     ]
     try:
-        response = await chat_completion_json(
-            client=openai_client,
-            messages=messages,
-            model=model,
-            temperature=temperature,
-        )
-        content = response.choices[0].message.content
-        parsed = json.loads(content)
+        with traced_span(
+            "rag.retrieval.decompose_query",
+            {
+                "rag.query.text": query,
+                "gen_ai.request.model": model,
+            },
+        ) as span:
+            response = await chat_completion_json(
+                client=openai_client,
+                messages=messages,
+                model=model,
+                temperature=temperature,
+            )
+            content = response.choices[0].message.content
+            parsed = json.loads(content)
 
-        # Extract queries from JSON object (response_format=json_object returns {})
-        if isinstance(parsed, dict):
-            sub_queries = parsed.get("queries", [])
-        elif isinstance(parsed, list):
-            # Fallback if LLM returns array directly
-            sub_queries = parsed
-        else:
-            raise ValueError(f"Unexpected response type: {type(parsed)}")
+            if isinstance(parsed, dict):
+                sub_queries = parsed.get("queries", [])
+            elif isinstance(parsed, list):
+                sub_queries = parsed
+            else:
+                raise ValueError(f"Unexpected response type: {type(parsed)}")
 
-        if not isinstance(sub_queries, list):
-            raise ValueError("'queries' field is not a list")
-        if len(sub_queries) == 0:
-            raise ValueError("Decomposition returned empty list")
-        if len(sub_queries) > 6:
-            sub_queries = sub_queries[:6]
+            if not isinstance(sub_queries, list):
+                raise ValueError("'queries' field is not a list")
+            if len(sub_queries) == 0:
+                raise ValueError("Decomposition returned empty list")
+            if len(sub_queries) > 6:
+                sub_queries = sub_queries[:6]
 
-        logger.info(f"[DECOMPOSITION] '{query}' → {sub_queries}")
-        print(f"         Decomposed into: {sub_queries}")
+            if span is not None:
+                span.set_attribute("rag.decomposition.query_count", len(sub_queries))
 
-        return sub_queries
+            logger.info(f"[DECOMPOSITION] '{query}' → {sub_queries}")
+            print(f"         Decomposed into: {sub_queries}")
+
+            return sub_queries
     except Exception as e:
         logger.warning(
             f"[DECOMPOSITION] Failed for '{query}': {e}, returning original query"
@@ -271,7 +280,7 @@ async def async_parallel_retrieve(
     except ExceptionGroup as eg:
         for exc in eg.exceptions:
             logger.error(f"[PARALLEL_RETRIEVE] Sub-query failed: {exc}")
-        increment_error(MetricsErrorType.RETRIEVAL)
+        increment_error(MetricsErrorType.RETRIEVAL_FAILED)
         return [([], sq) for sq in sub_queries]
 
 
@@ -392,11 +401,40 @@ async def retrieve_with_decomposition(
         return mode
 
     try:
-        if not Config.DECOMPOSITION_ENABLED:
-            search_type = _get_search_mode()
-            return await retrieve(
+        with traced_span(
+            "rag.retrieval.retrieve_with_decomposition",
+            {
+                "rag.query.text": query,
+                "rag.retrieval.use_hybrid": use_hybrid,
+                "rag.retrieval.use_reranker": use_reranker,
+                "rag.retrieval.top_k": top_k,
+            },
+        ) as span:
+            if not Config.DECOMPOSITION_ENABLED:
+                search_type = _get_search_mode()
+                return await retrieve(
+                    vector_db=vector_db,
+                    query=query,
+                    dept_id=dept_id,
+                    user_id=user_id,
+                    top_k=top_k,
+                    where=where,
+                    use_hybrid=use_hybrid,
+                    use_reranker=use_reranker,
+                )
+
+            sub_queries = await decompose_query(
+                query, openai_client=openai_client, model=Config.OPENAI_MODEL, temperature=0
+            )
+
+            if len(sub_queries) > 1:
+                search_type = f"decomposed_{_get_search_mode()}"
+            else:
+                search_type = _get_search_mode()
+
+            results = await async_parallel_retrieve(
+                sub_queries=sub_queries,
                 vector_db=vector_db,
-                query=query,
                 dept_id=dept_id,
                 user_id=user_id,
                 top_k=top_k,
@@ -404,34 +442,17 @@ async def retrieve_with_decomposition(
                 use_hybrid=use_hybrid,
                 use_reranker=use_reranker,
             )
-
-        sub_queries = await decompose_query(
-            query, openai_client=openai_client, model=Config.OPENAI_MODEL, temperature=0
-        )
-
-        # Set search_type based on decomposition result
-        if len(sub_queries) > 1:
-            search_type = f"decomposed_{_get_search_mode()}"
-        else:
-            search_type = _get_search_mode()
-
-        results = await async_parallel_retrieve(
-            sub_queries=sub_queries,
-            vector_db=vector_db,
-            dept_id=dept_id,
-            user_id=user_id,
-            top_k=top_k,
-            where=where,
-            use_hybrid=use_hybrid,
-            use_reranker=use_reranker,
-        )
-        final_contexts = merge_with_balanced_topk(results=results)
-        log_decomposition_result(
-            original_query=query,
-            sub_queries=sub_queries,
-            merged=final_contexts,
-        )
-        return final_contexts, None
+            final_contexts = merge_with_balanced_topk(results=results)
+            if span is not None:
+                span.set_attribute("rag.decomposition.query_count", len(sub_queries))
+                span.set_attribute("rag.retrieval.result_count", len(final_contexts))
+                span.set_attribute("rag.retrieval.search_type", search_type)
+            log_decomposition_result(
+                original_query=query,
+                sub_queries=sub_queries,
+                merged=final_contexts,
+            )
+            return final_contexts, None
     except Exception as e:
         logger.warning(f"[DECOMPOSITION] Failed: {e}, falling back to original query")
         search_type = _get_search_mode()

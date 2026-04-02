@@ -30,6 +30,7 @@ from src.models.evaluation import (
 )
 from src.services.llm_client import chat_completion, chat_completion_json
 from src.observability.metrics import increment_self_reflection_action
+from src.observability.tracing import traced_span
 
 
 class RetrievalEvaluator:
@@ -88,19 +89,32 @@ class RetrievalEvaluator:
             EvaluationResult with quality assessment and recommendation
         """
         mode = criteria.mode or self.config.mode
-        if mode == ReflectionMode.FAST:
-            result = self._evaluate_fast(criteria)
-        elif mode == ReflectionMode.BALANCED:
-            result = await self._evaluate_balanced(criteria)
-        elif mode == ReflectionMode.THOROUGH:
-            result = await self._evaluate_thorough(criteria)
-        else:
-            raise ValueError(f"Invalid reflection mode: {mode}")
+        with traced_span(
+            "rag.retrieval.evaluate",
+            {
+                "rag.reflection.mode": str(mode),
+                "rag.retrieval.context_count": len(criteria.contexts),
+                "rag.query.text": criteria.query,
+            },
+        ) as span:
+            if mode == ReflectionMode.FAST:
+                result = self._evaluate_fast(criteria)
+            elif mode == ReflectionMode.BALANCED:
+                result = await self._evaluate_balanced(criteria)
+            elif mode == ReflectionMode.THOROUGH:
+                result = await self._evaluate_thorough(criteria)
+            else:
+                raise ValueError(f"Invalid reflection mode: {mode}")
 
-        # Record self-reflection action metric for Prometheus
-        increment_self_reflection_action(result.recommendation.value)
+            increment_self_reflection_action(result.recommendation.value)
+            if span is not None:
+                span.set_attribute(
+                    "rag.reflection.recommendation", result.recommendation.value
+                )
+                span.set_attribute("rag.reflection.confidence", result.confidence)
+                span.set_attribute("rag.reflection.quality", result.quality.value)
 
-        return result
+            return result
 
     # =========================================================================
     # FAST MODE: Heuristic-Based Evaluation

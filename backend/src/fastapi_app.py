@@ -50,6 +50,7 @@ from slowapi.errors import RateLimitExceeded
 import logging
 
 from src.config.logging_config import setup_logging, correlation_id_var
+from src.observability.tracing import setup_tracing
 
 logger = logging.getLogger(__name__)
 from src.config.settings import Config
@@ -215,6 +216,8 @@ def create_fastapi_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    setup_tracing(app)
 
     # Validation error handler - shows detailed Pydantic errors
     @app.exception_handler(RequestValidationError)
