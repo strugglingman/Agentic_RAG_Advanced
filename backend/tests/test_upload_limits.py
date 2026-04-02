@@ -1,5 +1,6 @@
 import os
 import io
+import uuid
 import pytest
 
 pytestmark = pytest.mark.integration
@@ -13,7 +14,8 @@ def _is_prisma_binary_error(exc: Exception) -> bool:
 
 
 def test_upload_file_size_limit(client, auth_headers):
-    files = {"file": ("big.pdf", io.BytesIO(b"0" * (MAX_UPLOAD_SIZE_IN_BYTE + 10)), "application/pdf")}
+    filename = f"big-{uuid.uuid4().hex}.pdf"
+    files = {"file": (filename, io.BytesIO(b"0" * (MAX_UPLOAD_SIZE_IN_BYTE + 10)), "application/pdf")}
     try:
         res = client.post("/upload", headers=auth_headers, files=files)
     except Exception as exc:
@@ -27,7 +29,8 @@ def test_upload_file_size_limit(client, auth_headers):
 
 
 def test_upload_file_within_limit(client, auth_headers):
-    files = {"file": ("small.pdf", io.BytesIO(b"0" * (MAX_UPLOAD_SIZE_IN_BYTE - 1000)), "application/pdf")}
+    filename = f"small-{uuid.uuid4().hex}.pdf"
+    files = {"file": (filename, io.BytesIO(b"0" * (MAX_UPLOAD_SIZE_IN_BYTE - 1000)), "application/pdf")}
     try:
         res = client.post("/upload", headers=auth_headers, files=files)
     except Exception as exc:
