@@ -2,6 +2,9 @@
 FROM node:20-alpine AS builder
 WORKDIR /app
 
+ARG NEXT_PUBLIC_UPLOAD_FILE_LIMIT_MB=25
+ENV NEXT_PUBLIC_UPLOAD_FILE_LIMIT_MB=${NEXT_PUBLIC_UPLOAD_FILE_LIMIT_MB}
+
 # Install dependencies
 COPY package*.json ./
 RUN npm ci

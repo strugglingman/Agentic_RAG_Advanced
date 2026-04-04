@@ -126,7 +126,10 @@ services:
   # Frontend (Next.js)
   # =============================================================================
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_UPLOAD_FILE_LIMIT_MB: ${NEXT_PUBLIC_UPLOAD_FILE_LIMIT_MB:-25}
     ports:
       - "3000:3000"
     environment:
@@ -140,7 +143,7 @@ services:
       - SERVICE_AUTH_ISSUER=${SERVICE_AUTH_ISSUER}
       - SERVICE_AUTH_AUDIENCE=${SERVICE_AUTH_AUDIENCE}
       # Upload and ingestion settings
-      - UPLOAD_FILE_LIMIT_MB=25
+      - NEXT_PUBLIC_UPLOAD_FILE_LIMIT_MB=${NEXT_PUBLIC_UPLOAD_FILE_LIMIT_MB:-25}
       - INGEST_TIMEOUT_MS=600000
     depends_on:
       backend:
