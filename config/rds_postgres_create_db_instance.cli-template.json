@@ -1,0 +1,26 @@
+{
+  "DBInstanceIdentifier": "agentic-rag-postgres",
+  "Engine": "postgres",
+  "EngineVersion": "15.17",
+  "DBInstanceClass": "db.t4g.micro",
+  "AllocatedStorage": 20,
+  "StorageType": "gp3",
+  "DBName": "chatbot",
+  "MasterUsername": "REPLACE_WITH_MASTER_USERNAME",
+  "MasterUserPassword": "REPLACE_WITH_STRONG_PASSWORD",
+  "Port": 5432,
+  "MultiAZ": false,
+  "PubliclyAccessible": false,
+  "StorageEncrypted": true,
+  "KmsKeyId": "alias/aws/rds",
+  "BackupRetentionPeriod": 1,
+  "AutoMinorVersionUpgrade": true,
+  "CopyTagsToSnapshot": true,
+  "DeletionProtection": false,
+  "EnablePerformanceInsights": false,
+  "DBParameterGroupName": "default.postgres15",
+  "DBSubnetGroupName": "REPLACE_WITH_DB_SUBNET_GROUP_NAME",
+  "VpcSecurityGroupIds": [
+    "REPLACE_WITH_RDS_SECURITY_GROUP_ID"
+  ]
+}
