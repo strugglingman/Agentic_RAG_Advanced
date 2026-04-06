@@ -1,0 +1,14 @@
+{
+  "Rules": [
+    {
+      "ID": "expire-postgres-backups-after-30-days",
+      "Status": "Enabled",
+      "Filter": {
+        "Prefix": "postgres/"
+      },
+      "Expiration": {
+        "Days": 30
+      }
+    }
+  ]
+}
