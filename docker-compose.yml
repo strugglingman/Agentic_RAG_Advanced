@@ -105,9 +105,9 @@ services:
         condition: service_healthy
     restart: unless-stopped
     environment:
-      # Override database URLs to use container hostnames
-      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?schema=chatbot
-      - CHECKPOINT_POSTGRES_DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      # Database URLs come from root .env host/port settings so local Docker and RDS can share one source of truth.
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${POSTGRES_DB}?schema=chatbot
+      - CHECKPOINT_POSTGRES_DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${POSTGRES_DB}
       - REDIS_URL=redis://redis:6379
       - QDRANT_URL=http://qdrant:6333
       - SERVICE_AUTH_SECRET=${SERVICE_AUTH_SECRET}
@@ -139,7 +139,7 @@ services:
       - FASTAPI_URL=http://backend:5001
       - NEXTAUTH_URL=${APP_BASE_URL:-http://localhost}
       - NEXTAUTH_SECRET=${NEXTAUTH_SECRET}
-      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?schema=chatbot
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${POSTGRES_DB}?schema=chatbot
       - AUTH_TRUST_HOST=true
       # Service-to-service authentication (must match backend values)
       - SERVICE_AUTH_SECRET=${SERVICE_AUTH_SECRET}

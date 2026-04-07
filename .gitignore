@@ -81,6 +81,7 @@ reports/*.md
 # ---- Secret files ----
 *.pem
 *.key
+config/aws_deployment.local.map
 
 # Uncomment if you generate large model files locally
 # models/
