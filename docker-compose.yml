@@ -108,7 +108,7 @@ services:
       # Database URLs come from root .env host/port settings so local Docker and RDS can share one source of truth.
       - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${POSTGRES_DB}?schema=chatbot
       - CHECKPOINT_POSTGRES_DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${POSTGRES_DB}
-      - REDIS_URL=redis://redis:6379
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379}
       - QDRANT_URL=http://qdrant:6333
       - SERVICE_AUTH_SECRET=${SERVICE_AUTH_SECRET}
       - SERVICE_AUTH_ISSUER=${SERVICE_AUTH_ISSUER}
