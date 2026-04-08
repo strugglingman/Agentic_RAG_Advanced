@@ -676,7 +676,7 @@ class RetrievalEvaluator:
                         "in", "on", "at", "to", "for", "of", "with"}
 
         2. Lowercase query and split by non-alphanumeric chars:
-           - Use re.split(r'\W+', query.lower())
+           - Use re.split(r"\\W+", query.lower())
 
         3. Filter out stopwords and empty strings
 
