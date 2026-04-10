@@ -1,0 +1,5 @@
+{
+  "clusterName": "<your-eks-cluster-name>",
+  "addonName": "aws-ebs-csi-driver",
+  "resolveConflicts": "OVERWRITE"
+}

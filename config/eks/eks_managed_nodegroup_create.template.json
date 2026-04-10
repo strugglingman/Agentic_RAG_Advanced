@@ -1,0 +1,28 @@
+{
+  "clusterName": "<your-eks-cluster-name>",
+  "nodegroupName": "<your-eks-nodegroup-name>",
+  "scalingConfig": {
+    "minSize": 1,
+    "maxSize": 2,
+    "desiredSize": 1
+  },
+  "diskSize": 30,
+  "subnets": [
+    "<your-eks-subnet-1-id>",
+    "<your-eks-subnet-2-id>",
+    "<your-eks-subnet-3-id>"
+  ],
+  "instanceTypes": [
+    "t3.medium"
+  ],
+  "amiType": "AL2023_x86_64_STANDARD",
+  "nodeRole": "<your-eks-node-role-arn>",
+  "updateConfig": {
+    "maxUnavailable": 1,
+    "updateStrategy": "DEFAULT"
+  },
+  "nodeRepairConfig": {
+    "enabled": true
+  },
+  "capacityType": "ON_DEMAND"
+}

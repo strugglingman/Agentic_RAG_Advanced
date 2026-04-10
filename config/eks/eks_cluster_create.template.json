@@ -1,0 +1,31 @@
+{
+  "name": "<your-eks-cluster-name>",
+  "roleArn": "<your-eks-cluster-role-arn>",
+  "resourcesVpcConfig": {
+    "subnetIds": [
+      "<your-eks-subnet-1-id>",
+      "<your-eks-subnet-2-id>",
+      "<your-eks-subnet-3-id>"
+    ],
+    "endpointPublicAccess": true,
+    "endpointPrivateAccess": true,
+    "publicAccessCidrs": [
+      "<your-current-public-ip-cidr>"
+    ]
+  },
+  "kubernetesNetworkConfig": {
+    "ipFamily": "ipv4"
+  },
+  "accessConfig": {
+    "bootstrapClusterCreatorAdminPermissions": true,
+    "authenticationMode": "API"
+  },
+  "upgradePolicy": {
+    "supportType": "STANDARD"
+  },
+  "zonalShiftConfig": {
+    "enabled": false
+  },
+  "deletionProtection": false,
+  "kubernetesVersion": "1.35"
+}

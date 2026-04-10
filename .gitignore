@@ -82,6 +82,9 @@ reports/*.md
 *.pem
 *.key
 config/aws_deployment.local.map
+config/ecs/*.local.json
+config/eks/*.from_local.json
+config/iam/*.from_local.json
 
 # Uncomment if you generate large model files locally
 # models/

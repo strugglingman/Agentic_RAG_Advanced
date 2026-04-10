@@ -1,0 +1,22 @@
+[
+  {
+    "IpProtocol": "tcp",
+    "FromPort": 6379,
+    "ToPort": 6379,
+    "UserIdGroupPairs": [
+      {
+        "GroupId": "<your-ec2-security-group-id>"
+      }
+    ]
+  },
+  {
+    "IpProtocol": "tcp",
+    "FromPort": 6380,
+    "ToPort": 6380,
+    "UserIdGroupPairs": [
+      {
+        "GroupId": "<your-ec2-security-group-id>"
+      }
+    ]
+  }
+]
