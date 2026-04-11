@@ -39,6 +39,25 @@ function Escape-YamlDoubleQuoted {
     return $Value.Replace('\', '\\').Replace('"', '\"').Replace("`r", '').Replace("`n", '\n')
 }
 
+function Resolve-ComposeOverride {
+    param(
+        [hashtable]$RootEnv,
+        [hashtable]$BackendEnv,
+        [string]$Key,
+        [string]$Default = ""
+    )
+
+    if ($RootEnv.ContainsKey($Key) -and -not [string]::IsNullOrEmpty($RootEnv[$Key])) {
+        return $RootEnv[$Key]
+    }
+
+    if ($BackendEnv.ContainsKey($Key) -and -not [string]::IsNullOrEmpty($BackendEnv[$Key])) {
+        return $BackendEnv[$Key]
+    }
+
+    return $Default
+}
+
 if (-not (Test-Path $resolvedBackendEnv)) {
     throw "Backend env file not found: $resolvedBackendEnv"
 }
@@ -55,8 +74,8 @@ $backendEnv = Read-KeyValueFile -Path $resolvedBackendEnv
 $rootEnv = Read-KeyValueFile -Path $resolvedRootEnv
 $mapValues = Read-KeyValueFile -Path $resolvedMap
 
-$rdsHost = $mapValues["<your-rds-endpoint>"]
-$rdsPort = $mapValues["<your-rds-port>"]
+$rdsHost = $(if ($rootEnv.ContainsKey("POSTGRES_HOST") -and $rootEnv["POSTGRES_HOST"]) { $rootEnv["POSTGRES_HOST"] } else { $mapValues["<your-rds-endpoint>"] })
+$rdsPort = $(if ($rootEnv.ContainsKey("POSTGRES_PORT") -and $rootEnv["POSTGRES_PORT"]) { $rootEnv["POSTGRES_PORT"] } else { $mapValues["<your-rds-port>"] })
 
 if (-not $rdsHost) {
     throw "Missing <your-rds-endpoint> in $resolvedMap"
@@ -66,8 +85,38 @@ if (-not $rdsPort) {
     $rdsPort = "5432"
 }
 
-$databaseUrl = $backendEnv["DATABASE_URL"] -replace "@localhost:5433", "@$rdsHost`:$rdsPort"
-$checkpointUrl = $backendEnv["CHECKPOINT_POSTGRES_DATABASE_URL"] -replace "@localhost:5433", "@$rdsHost`:$rdsPort"
+$postgresUser = $rootEnv["POSTGRES_USER"]
+$postgresPassword = $rootEnv["POSTGRES_PASSWORD"]
+$postgresDb = $rootEnv["POSTGRES_DB"]
+
+if (-not $postgresUser) {
+    throw "Missing POSTGRES_USER in $resolvedRootEnv"
+}
+
+if (-not $postgresPassword) {
+    throw "Missing POSTGRES_PASSWORD in $resolvedRootEnv"
+}
+
+if (-not $postgresDb) {
+    throw "Missing POSTGRES_DB in $resolvedRootEnv"
+}
+
+$encodedPostgresUser = [System.Uri]::EscapeDataString($postgresUser)
+$encodedPostgresPassword = [System.Uri]::EscapeDataString($postgresPassword)
+$databaseUrl = "postgresql://{0}:{1}@{2}:{3}/{4}?schema=chatbot" -f $encodedPostgresUser, $encodedPostgresPassword, $rdsHost, $rdsPort, $postgresDb
+$checkpointUrl = "postgresql://{0}:{1}@{2}:{3}/{4}" -f $encodedPostgresUser, $encodedPostgresPassword, $rdsHost, $rdsPort, $postgresDb
+
+$serviceAuthSecret = Resolve-ComposeOverride -RootEnv $rootEnv -BackendEnv $backendEnv -Key "SERVICE_AUTH_SECRET"
+$serviceAuthIssuer = Resolve-ComposeOverride -RootEnv $rootEnv -BackendEnv $backendEnv -Key "SERVICE_AUTH_ISSUER" -Default "your_service_name"
+$serviceAuthAudience = Resolve-ComposeOverride -RootEnv $rootEnv -BackendEnv $backendEnv -Key "SERVICE_AUTH_AUDIENCE" -Default "your_service_audience"
+$otelEnabled = Resolve-ComposeOverride -RootEnv $rootEnv -BackendEnv $backendEnv -Key "OTEL_ENABLED" -Default "true"
+$otelServiceName = Resolve-ComposeOverride -RootEnv $rootEnv -BackendEnv $backendEnv -Key "OTEL_SERVICE_NAME" -Default "agentic-rag-backend"
+$otelServiceNamespace = Resolve-ComposeOverride -RootEnv $rootEnv -BackendEnv $backendEnv -Key "OTEL_SERVICE_NAMESPACE" -Default "agentic-rag"
+$otelServiceVersion = Resolve-ComposeOverride -RootEnv $rootEnv -BackendEnv $backendEnv -Key "OTEL_SERVICE_VERSION" -Default "1.0.0"
+$otelDeploymentEnvironment = Resolve-ComposeOverride -RootEnv $rootEnv -BackendEnv $backendEnv -Key "OTEL_DEPLOYMENT_ENVIRONMENT" -Default "docker"
+$otelExporterEndpoint = "http://obs-alloy:4318"
+$otelExporterProtocol = "http/protobuf"
+$otelExporterInsecure = "true"
 
 $replacements = @{
     "__BACKEND_IMAGE__" = "$($mapValues["<your-ecr-backend-repo>"]):latest"
@@ -140,8 +189,8 @@ $replacements = @{
     "__DOWNLOAD_BASE__" = $backendEnv["DOWNLOAD_BASE"]
     "__MAX_DOWNLOAD_SIZE_MB__" = $backendEnv["MAX_DOWNLOAD_SIZE_MB"]
     "__DOWNLOAD_TIMEOUT__" = $backendEnv["DOWNLOAD_TIMEOUT"]
-    "__SERVICE_AUTH_ISSUER__" = $backendEnv["SERVICE_AUTH_ISSUER"]
-    "__SERVICE_AUTH_AUDIENCE__" = $backendEnv["SERVICE_AUTH_AUDIENCE"]
+    "__SERVICE_AUTH_ISSUER__" = $serviceAuthIssuer
+    "__SERVICE_AUTH_AUDIENCE__" = $serviceAuthAudience
     "__ORG_STRUCTURE_FILE__" = $backendEnv["ORG_STRUCTURE_FILE"]
     "__RATELIMIT_STORAGE_URI__" = $backendEnv["RATELIMIT_STORAGE_URI"]
     "__DEFAULT_RATE_LIMITS__" = $backendEnv["DEFAULT_RATE_LIMITS"]
@@ -162,11 +211,14 @@ $replacements = @{
     "__REFLECTION_MIN_CONTEXTS__" = $backendEnv["REFLECTION_MIN_CONTEXTS"]
     "__REFLECTION_AUTO_REFINE__" = $backendEnv["REFLECTION_AUTO_REFINE"]
     "__REFLECTION_MAX_REFINEMENT_ATTEMPTS__" = $backendEnv["REFLECTION_MAX_REFINEMENT_ATTEMPTS"]
-    "__OTEL_ENABLED__" = $backendEnv["OTEL_ENABLED"]
-    "__OTEL_SERVICE_NAME__" = $backendEnv["OTEL_SERVICE_NAME"]
-    "__OTEL_SERVICE_NAMESPACE__" = $backendEnv["OTEL_SERVICE_NAMESPACE"]
-    "__OTEL_SERVICE_VERSION__" = $backendEnv["OTEL_SERVICE_VERSION"]
-    "__OTEL_DEPLOYMENT_ENVIRONMENT__" = $backendEnv["OTEL_DEPLOYMENT_ENVIRONMENT"]
+    "__OTEL_ENABLED__" = $otelEnabled
+    "__OTEL_SERVICE_NAME__" = $otelServiceName
+    "__OTEL_SERVICE_NAMESPACE__" = $otelServiceNamespace
+    "__OTEL_SERVICE_VERSION__" = $otelServiceVersion
+    "__OTEL_DEPLOYMENT_ENVIRONMENT__" = $otelDeploymentEnvironment
+    "__OTEL_EXPORTER_OTLP_ENDPOINT__" = $otelExporterEndpoint
+    "__OTEL_EXPORTER_OTLP_PROTOCOL__" = $otelExporterProtocol
+    "__OTEL_EXPORTER_OTLP_INSECURE__" = $otelExporterInsecure
     "__OPENAI_API_KEY__" = $backendEnv["OPENAI_API_KEY"]
     "__LANGCHAIN_API_KEY__" = $backendEnv["LANGCHAIN_API_KEY"]
     "__COHERE_API_KEY__" = $backendEnv["COHERE_API_KEY"]
@@ -176,7 +228,7 @@ $replacements = @{
     "__DATABASE_URL__" = $databaseUrl
     "__CHECKPOINT_POSTGRES_DATABASE_URL__" = $checkpointUrl
     "__REDIS_URL__" = $rootEnv["REDIS_URL"]
-    "__SERVICE_AUTH_SECRET__" = $backendEnv["SERVICE_AUTH_SECRET"]
+    "__SERVICE_AUTH_SECRET__" = $serviceAuthSecret
     "__SLACK_SIGNING_SECRET__" = $backendEnv["SLACK_SIGNING_SECRET"]
     "__SMTP_SERVER__" = $backendEnv["SMTP_SERVER"]
     "__SMTP_PORT__" = $backendEnv["SMTP_PORT"]
