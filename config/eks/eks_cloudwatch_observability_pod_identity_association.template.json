@@ -1,0 +1,5 @@
+{
+  "clusterName": "<your-eks-cluster-name>",
+  "namespace": "amazon-cloudwatch",
+  "serviceAccount": "cloudwatch-agent"
+}

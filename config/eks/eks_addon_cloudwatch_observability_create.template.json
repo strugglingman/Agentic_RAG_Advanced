@@ -1,0 +1,5 @@
+{
+  "clusterName": "<your-eks-cluster-name>",
+  "addonName": "amazon-cloudwatch-observability",
+  "resolveConflicts": "OVERWRITE"
+}
