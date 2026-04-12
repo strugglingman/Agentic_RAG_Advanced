@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: frontend-config
+  namespace: agentic-rag
+data:
+  NODE_ENV: "production"
+  HOSTNAME: "0.0.0.0"
+  PORT: "3000"
+  FASTAPI_URL: "http://backend.agentic-rag.svc.cluster.local:5001"
+  NEXTAUTH_URL: "__NEXTAUTH_URL__"
+  AUTH_TRUST_HOST: "true"
+  SERVICE_AUTH_ISSUER: "__SERVICE_AUTH_ISSUER__"
+  SERVICE_AUTH_AUDIENCE: "__SERVICE_AUTH_AUDIENCE__"
+  NEXT_PUBLIC_UPLOAD_FILE_LIMIT_MB: "__NEXT_PUBLIC_UPLOAD_FILE_LIMIT_MB__"
+  INGEST_TIMEOUT_MS: "600000"

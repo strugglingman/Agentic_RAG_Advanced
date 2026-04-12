@@ -86,6 +86,7 @@ config/ecs/*.local.json
 config/eks/*.from_local.json
 config/iam/*.from_local.json
 config/k8s/backend/rendered-local/
+config/k8s/frontend/rendered-local/
 
 # Uncomment if you generate large model files locally
 # models/
