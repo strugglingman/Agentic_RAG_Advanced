@@ -85,6 +85,7 @@ config/aws_deployment.local.map
 config/ecs/*.local.json
 config/eks/*.from_local.json
 config/iam/*.from_local.json
+config/cloudwatch/*.from_local.json
 config/k8s/backend/rendered-local/
 config/k8s/frontend/rendered-local/
 

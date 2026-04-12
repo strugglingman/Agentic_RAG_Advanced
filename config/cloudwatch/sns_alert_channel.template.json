@@ -1,0 +1,5 @@
+{
+  "region": "<your-aws-region>",
+  "topicName": "agentic-rag-alerts",
+  "emailEndpoint": "<your-alert-email>"
+}

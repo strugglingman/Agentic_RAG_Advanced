@@ -1,0 +1,91 @@
+{
+  "region": "<your-aws-region>",
+  "snsTopicName": "agentic-rag-alerts",
+  "alarms": [
+    {
+      "enabled": true,
+      "alarmName": "agentic-rag-rds-cpu-high",
+      "alarmDescription": "RDS CPUUtilization is above baseline threshold.",
+      "namespace": "AWS/RDS",
+      "metricName": "CPUUtilization",
+      "statistic": "Average",
+      "period": 300,
+      "evaluationPeriods": 3,
+      "datapointsToAlarm": 2,
+      "comparisonOperator": "GreaterThanThreshold",
+      "threshold": 70,
+      "treatMissingData": "notBreaching",
+      "dimensions": [
+        {
+          "Name": "DBInstanceIdentifier",
+          "Value": "<your-rds-db-instance-identifier>"
+        }
+      ]
+    },
+    {
+      "enabled": true,
+      "alarmName": "agentic-rag-rds-storage-low",
+      "alarmDescription": "RDS FreeStorageSpace is below 10 GiB.",
+      "namespace": "AWS/RDS",
+      "metricName": "FreeStorageSpace",
+      "statistic": "Average",
+      "period": 300,
+      "evaluationPeriods": 3,
+      "datapointsToAlarm": 2,
+      "comparisonOperator": "LessThanThreshold",
+      "threshold": 10737418240,
+      "treatMissingData": "notBreaching",
+      "dimensions": [
+        {
+          "Name": "DBInstanceIdentifier",
+          "Value": "<your-rds-db-instance-identifier>"
+        }
+      ]
+    },
+    {
+      "enabled": true,
+      "alarmName": "agentic-rag-redis-engine-cpu-high",
+      "alarmDescription": "ElastiCache engine CPU utilization is above baseline threshold.",
+      "namespace": "AWS/ElastiCache",
+      "metricName": "EngineCPUUtilization",
+      "statistic": "Average",
+      "period": 300,
+      "evaluationPeriods": 3,
+      "datapointsToAlarm": 2,
+      "comparisonOperator": "GreaterThanThreshold",
+      "threshold": 70,
+      "treatMissingData": "notBreaching",
+      "dimensions": [
+        {
+          "Name": "CacheName",
+          "Value": "<your-elasticache-cache-name>"
+        }
+      ]
+    },
+    {
+      "enabled": true,
+      "alarmName": "agentic-rag-eks-pod-restarts-high",
+      "alarmDescription": "ContainerInsights reports pod container restarts in agentic-rag namespace.",
+      "namespace": "ContainerInsights",
+      "metricName": "namespace_number_of_container_restarts",
+      "statistic": "Sum",
+      "period": 300,
+      "evaluationPeriods": 1,
+      "datapointsToAlarm": 1,
+      "comparisonOperator": "GreaterThanThreshold",
+      "threshold": 0,
+      "treatMissingData": "notBreaching",
+      "dimensions": [
+        {
+          "Name": "ClusterName",
+          "Value": "<your-eks-cluster-name>"
+        }
+        ,
+        {
+          "Name": "Namespace",
+          "Value": "agentic-rag"
+        }
+      ]
+    }
+  ]
+}
