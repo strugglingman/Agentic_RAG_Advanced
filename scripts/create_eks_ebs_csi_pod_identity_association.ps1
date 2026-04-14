@@ -7,9 +7,22 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+function Resolve-RepoPath {
+    param(
+        [string]$RepoRoot,
+        [string]$Path
+    )
+
+    if ([System.IO.Path]::IsPathRooted($Path)) {
+        return $Path
+    }
+
+    return (Join-Path $RepoRoot $Path)
+}
+
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$resolvedTemplate = Join-Path $repoRoot $TemplateFile
-$resolvedMap = Join-Path $repoRoot $MapFile
+$resolvedTemplate = Resolve-RepoPath -RepoRoot $repoRoot -Path $TemplateFile
+$resolvedMap = Resolve-RepoPath -RepoRoot $repoRoot -Path $MapFile
 
 if (-not (Test-Path $resolvedTemplate)) {
     throw "Template file not found: $resolvedTemplate"

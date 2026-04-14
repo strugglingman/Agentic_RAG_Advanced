@@ -39,6 +39,21 @@ function Escape-YamlDoubleQuoted {
     return $Value.Replace('\', '\\').Replace('"', '\"').Replace("`r", '').Replace("`n", '\n')
 }
 
+function Assert-NoUnresolvedPlaceholders {
+    param(
+        [string]$Content,
+        [string]$TemplateFile
+    )
+
+    $matches = [regex]::Matches($Content, "__[A-Z0-9_]+__")
+    if ($matches.Count -eq 0) {
+        return
+    }
+
+    $remaining = $matches | ForEach-Object { $_.Value } | Select-Object -Unique
+    throw "Unresolved placeholders remain in ${TemplateFile}: $($remaining -join ', ')"
+}
+
 function Resolve-ComposeOverride {
     param(
         [hashtable]$RootEnv,
@@ -56,6 +71,49 @@ function Resolve-ComposeOverride {
     }
 
     return $Default
+}
+
+function Resolve-ImageReference {
+    param(
+        [hashtable]$RootEnv,
+        [hashtable]$BackendEnv,
+        [hashtable]$MapValues,
+        [string]$ExplicitEnvKey,
+        [string]$ExplicitMapKey,
+        [string]$RepoMapKey
+    )
+
+    if ($BackendEnv.ContainsKey($ExplicitEnvKey) -and -not [string]::IsNullOrWhiteSpace($BackendEnv[$ExplicitEnvKey])) {
+        return $BackendEnv[$ExplicitEnvKey]
+    }
+
+    if ($RootEnv.ContainsKey($ExplicitEnvKey) -and -not [string]::IsNullOrWhiteSpace($RootEnv[$ExplicitEnvKey])) {
+        return $RootEnv[$ExplicitEnvKey]
+    }
+
+    if ($MapValues.ContainsKey($ExplicitMapKey) -and -not [string]::IsNullOrWhiteSpace($MapValues[$ExplicitMapKey])) {
+        return $MapValues[$ExplicitMapKey]
+    }
+
+    if ($MapValues.ContainsKey($RepoMapKey) -and -not [string]::IsNullOrWhiteSpace($MapValues[$RepoMapKey])) {
+        return "$($MapValues[$RepoMapKey]):latest"
+    }
+
+    return ""
+}
+
+function Resolve-ImagePullPolicy {
+    param([string]$ImageReference)
+
+    if ([string]::IsNullOrWhiteSpace($ImageReference)) {
+        return "Always"
+    }
+
+    if ($ImageReference.EndsWith(":latest")) {
+        return "Always"
+    }
+
+    return "IfNotPresent"
 }
 
 if (-not (Test-Path $resolvedBackendEnv)) {
@@ -105,6 +163,19 @@ $encodedPostgresUser = [System.Uri]::EscapeDataString($postgresUser)
 $encodedPostgresPassword = [System.Uri]::EscapeDataString($postgresPassword)
 $databaseUrl = "postgresql://{0}:{1}@{2}:{3}/{4}?schema=chatbot" -f $encodedPostgresUser, $encodedPostgresPassword, $rdsHost, $rdsPort, $postgresDb
 $checkpointUrl = "postgresql://{0}:{1}@{2}:{3}/{4}" -f $encodedPostgresUser, $encodedPostgresPassword, $rdsHost, $rdsPort, $postgresDb
+$backendImage = Resolve-ImageReference \
+    -RootEnv $rootEnv \
+    -BackendEnv $backendEnv \
+    -MapValues $mapValues \
+    -ExplicitEnvKey "BACKEND_IMAGE_REF" \
+    -ExplicitMapKey "<your-ecr-backend-image-ref>" \
+    -RepoMapKey "<your-ecr-backend-repo>"
+
+if (-not $backendImage) {
+    throw "Missing backend image reference. Set BACKEND_IMAGE_REF or <your-ecr-backend-repo> in $resolvedMap"
+}
+
+$backendImagePullPolicy = Resolve-ImagePullPolicy -ImageReference $backendImage
 
 $serviceAuthSecret = Resolve-ComposeOverride -RootEnv $rootEnv -BackendEnv $backendEnv -Key "SERVICE_AUTH_SECRET"
 $serviceAuthIssuer = Resolve-ComposeOverride -RootEnv $rootEnv -BackendEnv $backendEnv -Key "SERVICE_AUTH_ISSUER" -Default "your_service_name"
@@ -119,7 +190,8 @@ $otelExporterProtocol = "http/protobuf"
 $otelExporterInsecure = "true"
 
 $replacements = @{
-    "__BACKEND_IMAGE__" = "$($mapValues["<your-ecr-backend-repo>"]):latest"
+    "__BACKEND_IMAGE__" = $backendImage
+    "__BACKEND_IMAGE_PULL_POLICY__" = $backendImagePullPolicy
     "__ENV__" = $backendEnv["ENV"]
     "__TESTING__" = $backendEnv["TESTING"]
     "__DEBUG__" = $backendEnv["DEBUG"]
@@ -229,6 +301,7 @@ $replacements = @{
     "__CHECKPOINT_POSTGRES_DATABASE_URL__" = $checkpointUrl
     "__REDIS_URL__" = $rootEnv["REDIS_URL"]
     "__SERVICE_AUTH_SECRET__" = $serviceAuthSecret
+    "__SLACK_BOT_TOKEN__" = $backendEnv["SLACK_BOT_TOKEN"]
     "__SLACK_SIGNING_SECRET__" = $backendEnv["SLACK_SIGNING_SECRET"]
     "__SMTP_SERVER__" = $backendEnv["SMTP_SERVER"]
     "__SMTP_PORT__" = $backendEnv["SMTP_PORT"]
@@ -239,6 +312,7 @@ $replacements = @{
 New-Item -ItemType Directory -Force -Path $resolvedOutputDir | Out-Null
 
 $templateFiles = @(
+    "00-serviceaccount.yaml",
     "00-configmap.template.yaml",
     "01-secret.template.yaml",
     "02-service.yaml",
@@ -256,6 +330,8 @@ foreach ($templateFile in $templateFiles) {
         }
         $content = $content.Replace($key, (Escape-YamlDoubleQuoted -Value ([string]$value)))
     }
+
+    Assert-NoUnresolvedPlaceholders -Content $content -TemplateFile $templateFile
 
     if ($templateFile -like "*.template.yaml") {
         $outputName = $templateFile.Replace(".template.yaml", ".from_local.yaml")

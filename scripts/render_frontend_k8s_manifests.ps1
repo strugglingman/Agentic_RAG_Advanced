@@ -37,6 +37,59 @@ function Escape-YamlDoubleQuoted {
     return $Value.Replace('\', '\\').Replace('"', '\"').Replace("`r", '').Replace("`n", '\n')
 }
 
+function Resolve-ImageReference {
+    param(
+        [hashtable]$RootEnv,
+        [hashtable]$MapValues,
+        [string]$ExplicitEnvKey,
+        [string]$ExplicitMapKey,
+        [string]$RepoMapKey
+    )
+
+    if ($RootEnv.ContainsKey($ExplicitEnvKey) -and -not [string]::IsNullOrWhiteSpace($RootEnv[$ExplicitEnvKey])) {
+        return $RootEnv[$ExplicitEnvKey]
+    }
+
+    if ($MapValues.ContainsKey($ExplicitMapKey) -and -not [string]::IsNullOrWhiteSpace($MapValues[$ExplicitMapKey])) {
+        return $MapValues[$ExplicitMapKey]
+    }
+
+    if ($MapValues.ContainsKey($RepoMapKey) -and -not [string]::IsNullOrWhiteSpace($MapValues[$RepoMapKey])) {
+        return "$($MapValues[$RepoMapKey]):latest"
+    }
+
+    return ""
+}
+
+function Resolve-ImagePullPolicy {
+    param([string]$ImageReference)
+
+    if ([string]::IsNullOrWhiteSpace($ImageReference)) {
+        return "Always"
+    }
+
+    if ($ImageReference.EndsWith(":latest")) {
+        return "Always"
+    }
+
+    return "IfNotPresent"
+}
+
+function Assert-NoUnresolvedPlaceholders {
+    param(
+        [string]$Content,
+        [string]$TemplateFile
+    )
+
+    $matches = [regex]::Matches($Content, "__[A-Z0-9_]+__")
+    if ($matches.Count -eq 0) {
+        return
+    }
+
+    $remaining = $matches | ForEach-Object { $_.Value } | Select-Object -Unique
+    throw "Unresolved placeholders remain in ${TemplateFile}: $($remaining -join ', ')"
+}
+
 if (-not (Test-Path $resolvedRootEnv)) {
     throw "Root env file not found: $resolvedRootEnv"
 }
@@ -48,10 +101,17 @@ if (-not (Test-Path $resolvedMap)) {
 $rootEnv = Read-KeyValueFile -Path $resolvedRootEnv
 $mapValues = Read-KeyValueFile -Path $resolvedMap
 
-$frontendImage = "$($mapValues["<your-ecr-frontend-repo>"]):latest"
-if (-not $frontendImage -or $frontendImage -eq ":latest") {
-    throw "Missing <your-ecr-frontend-repo> in $resolvedMap"
+$frontendImage = Resolve-ImageReference \
+    -RootEnv $rootEnv \
+    -MapValues $mapValues \
+    -ExplicitEnvKey "FRONTEND_IMAGE_REF" \
+    -ExplicitMapKey "<your-ecr-frontend-image-ref>" \
+    -RepoMapKey "<your-ecr-frontend-repo>"
+if (-not $frontendImage) {
+    throw "Missing frontend image reference. Set FRONTEND_IMAGE_REF or <your-ecr-frontend-repo> in $resolvedMap"
 }
+
+$frontendImagePullPolicy = Resolve-ImagePullPolicy -ImageReference $frontendImage
 
 $postgresUser = $rootEnv["POSTGRES_USER"]
 $postgresPassword = $rootEnv["POSTGRES_PASSWORD"]
@@ -89,6 +149,7 @@ if (-not $serviceAuthAudience) { throw "Missing SERVICE_AUTH_AUDIENCE in $resolv
 
 $replacements = @{
     "__FRONTEND_IMAGE__" = $frontendImage
+    "__FRONTEND_IMAGE_PULL_POLICY__" = $frontendImagePullPolicy
     "__NEXTAUTH_URL__" = $nextAuthUrl
     "__SERVICE_AUTH_ISSUER__" = $serviceAuthIssuer
     "__SERVICE_AUTH_AUDIENCE__" = $serviceAuthAudience
@@ -101,6 +162,7 @@ $replacements = @{
 New-Item -ItemType Directory -Force -Path $resolvedOutputDir | Out-Null
 
 $templateFiles = @(
+    "00-serviceaccount.yaml",
     "00-configmap.template.yaml",
     "01-secret.template.yaml",
     "02-service.yaml",
@@ -118,6 +180,8 @@ foreach ($templateFile in $templateFiles) {
         }
         $content = $content.Replace($key, (Escape-YamlDoubleQuoted -Value ([string]$value)))
     }
+
+    Assert-NoUnresolvedPlaceholders -Content $content -TemplateFile $templateFile
 
     if ($templateFile -like "*.template.yaml") {
         $outputName = $templateFile.Replace(".template.yaml", ".from_local.yaml")

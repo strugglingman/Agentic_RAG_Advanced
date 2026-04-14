@@ -22,10 +22,23 @@ function Get-ReplacementsFromMap {
     return $replacements
 }
 
+function Resolve-RepoPath {
+    param(
+        [string]$RepoRoot,
+        [string]$Path
+    )
+
+    if ([System.IO.Path]::IsPathRooted($Path)) {
+        return $Path
+    }
+
+    return (Join-Path $RepoRoot $Path)
+}
+
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$resolvedTemplate = Join-Path $repoRoot $TemplateFile
-$resolvedMap = Join-Path $repoRoot $MapFile
-$resolvedOutput = Join-Path $repoRoot $OutputFile
+$resolvedTemplate = Resolve-RepoPath -RepoRoot $repoRoot -Path $TemplateFile
+$resolvedMap = Resolve-RepoPath -RepoRoot $repoRoot -Path $MapFile
+$resolvedOutput = Resolve-RepoPath -RepoRoot $repoRoot -Path $OutputFile
 
 if (-not (Test-Path $resolvedTemplate)) {
     throw "Template file not found: $resolvedTemplate"

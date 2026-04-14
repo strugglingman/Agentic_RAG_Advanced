@@ -21,6 +21,35 @@ function Get-ReplacementsFromMap {
     return $replacements
 }
 
+function Resolve-RepoPath {
+    param(
+        [string]$RepoRoot,
+        [string]$Path
+    )
+
+    if ([System.IO.Path]::IsPathRooted($Path)) {
+        return $Path
+    }
+
+    return (Join-Path $RepoRoot $Path)
+}
+
+function Assert-NoUnresolvedPlaceholders {
+    param(
+        [string]$Content,
+        [string]$SourceLabel
+    )
+
+    $matches = [regex]::Matches($Content, "<[^>\r\n]+>")
+    if ($matches.Count -eq 0) {
+        return
+    }
+
+    $tokens = @($matches | ForEach-Object { $_.Value } | Sort-Object -Unique)
+    $joined = $tokens -join ", "
+    throw "Unresolved placeholders remain in ${SourceLabel}: $joined"
+}
+
 function Resolve-RdsInstanceIdFromEndpoint {
     param([hashtable]$Replacements)
     $endpointKey = "<your-rds-endpoint>"
@@ -54,9 +83,9 @@ function Get-SnsTopicArnByName {
 }
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$resolvedTemplate = Join-Path $repoRoot $TemplateFile
-$resolvedMap = Join-Path $repoRoot $MapFile
-$resolvedOutput = Join-Path $repoRoot $OutputFile
+$resolvedTemplate = Resolve-RepoPath -RepoRoot $repoRoot -Path $TemplateFile
+$resolvedMap = Resolve-RepoPath -RepoRoot $repoRoot -Path $MapFile
+$resolvedOutput = Resolve-RepoPath -RepoRoot $repoRoot -Path $OutputFile
 
 if (-not (Test-Path $resolvedTemplate)) {
     throw "Template file not found: $resolvedTemplate"
@@ -79,6 +108,8 @@ if ($templateContent.Contains("<your-rds-db-instance-identifier>")) {
 foreach ($key in $replacements.Keys) {
     $templateContent = $templateContent.Replace($key, $replacements[$key])
 }
+
+Assert-NoUnresolvedPlaceholders -Content $templateContent -SourceLabel $resolvedTemplate
 
 $config = $templateContent | ConvertFrom-Json
 ($config | ConvertTo-Json -Depth 20) | Set-Content $resolvedOutput -Encoding UTF8

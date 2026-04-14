@@ -12,6 +12,7 @@ if (-not (Test-Path $resolvedManifestDir)) {
 }
 
 $files = @(
+    "00-serviceaccount.from_local.yaml",
     "00-configmap.from_local.yaml",
     "01-secret.from_local.yaml",
     "02-service.from_local.yaml",

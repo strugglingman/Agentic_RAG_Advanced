@@ -14,10 +14,11 @@ spec:
         app.kubernetes.io/name: frontend
         topology.kubernetes.io/region: eu-north-1
     spec:
+      serviceAccountName: frontend-service-account
       containers:
         - name: frontend
           image: "__FRONTEND_IMAGE__"
-          imagePullPolicy: Always
+          imagePullPolicy: "__FRONTEND_IMAGE_PULL_POLICY__"
           ports:
             - name: http
               containerPort: 3000

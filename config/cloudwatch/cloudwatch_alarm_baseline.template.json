@@ -44,6 +44,26 @@
     },
     {
       "enabled": true,
+      "alarmName": "agentic-rag-rds-memory-low",
+      "alarmDescription": "RDS FreeableMemory is below 1 GiB.",
+      "namespace": "AWS/RDS",
+      "metricName": "FreeableMemory",
+      "statistic": "Average",
+      "period": 300,
+      "evaluationPeriods": 3,
+      "datapointsToAlarm": 2,
+      "comparisonOperator": "LessThanThreshold",
+      "threshold": 1073741824,
+      "treatMissingData": "notBreaching",
+      "dimensions": [
+        {
+          "Name": "DBInstanceIdentifier",
+          "Value": "<your-rds-db-instance-identifier>"
+        }
+      ]
+    },
+    {
+      "enabled": true,
       "alarmName": "agentic-rag-redis-engine-cpu-high",
       "alarmDescription": "ElastiCache engine CPU utilization is above baseline threshold.",
       "namespace": "AWS/ElastiCache",
@@ -54,6 +74,26 @@
       "datapointsToAlarm": 2,
       "comparisonOperator": "GreaterThanThreshold",
       "threshold": 70,
+      "treatMissingData": "notBreaching",
+      "dimensions": [
+        {
+          "Name": "CacheName",
+          "Value": "<your-elasticache-cache-name>"
+        }
+      ]
+    },
+    {
+      "enabled": true,
+      "alarmName": "agentic-rag-redis-evictions-high",
+      "alarmDescription": "ElastiCache reported key evictions during the evaluation window.",
+      "namespace": "AWS/ElastiCache",
+      "metricName": "Evictions",
+      "statistic": "Sum",
+      "period": 300,
+      "evaluationPeriods": 1,
+      "datapointsToAlarm": 1,
+      "comparisonOperator": "GreaterThanThreshold",
+      "threshold": 0,
       "treatMissingData": "notBreaching",
       "dimensions": [
         {
