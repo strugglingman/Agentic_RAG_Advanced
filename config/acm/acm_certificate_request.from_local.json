@@ -1,0 +1,11 @@
+﻿{
+    "DomainName":  "wxwlabs.pro",
+    "SubjectAlternativeNames":  [
+                                    "www.wxwlabs.pro"
+                                ],
+    "ValidationMethod":  "DNS",
+    "KeyAlgorithm":  "RSA_2048",
+    "Options":  {
+                    "CertificateTransparencyLoggingPreference":  "ENABLED"
+                }
+}

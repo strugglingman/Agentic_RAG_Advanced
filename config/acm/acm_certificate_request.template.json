@@ -1,0 +1,11 @@
+{
+  "DomainName": "<your-primary-domain>",
+  "SubjectAlternativeNames": [
+    "<your-www-domain>"
+  ],
+  "ValidationMethod": "DNS",
+  "KeyAlgorithm": "RSA_2048",
+  "Options": {
+    "CertificateTransparencyLoggingPreference": "ENABLED"
+  }
+}
