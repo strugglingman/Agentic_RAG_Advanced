@@ -1,0 +1,9 @@
+{
+  "clusterName": "<your-eks-cluster-name>",
+  "region": "<your-aws-region>",
+  "namespace": "kube-system",
+  "releaseName": "aws-load-balancer-controller",
+  "serviceAccount": "aws-load-balancer-controller",
+  "chartVersion": "1.14.0",
+  "vpcId": "<your-vpc-id>"
+}

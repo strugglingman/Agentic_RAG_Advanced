@@ -1,0 +1,17 @@
+{
+  "name": "<your-eks-cluster-name>",
+  "logging": {
+    "clusterLogging": [
+      {
+        "types": [
+          "api",
+          "audit",
+          "authenticator",
+          "controllerManager",
+          "scheduler"
+        ],
+        "enabled": true
+      }
+    ]
+  }
+}
