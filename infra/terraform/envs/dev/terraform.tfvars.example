@@ -1,0 +1,18 @@
+aws_region               = "eu-north-1"
+project_name             = "agentic-rag"
+environment              = "dev"
+
+# Week 1 default is false to keep this training-safe.
+# Set true in Week 2 when you are ready to manage alarms/topic by Terraform.
+enable_monitoring        = false
+
+sns_topic_name           = "agentic-rag-alerts"
+alert_email_endpoint     = "your-email@example.com"
+rds_instance_identifier  = "agentic-rag-postgres"
+
+# NOTE:
+# Replace dimensions with the exact ones from your CloudWatch Redis metric.
+# For ElastiCache Serverless this can differ by metric namespace/dimensions.
+redis_alarm_dimensions = {
+  CacheClusterId = "agentic-rag-redis"
+}
