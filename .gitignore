@@ -89,6 +89,12 @@ config/cloudwatch/*.from_local.json
 config/k8s/backend/rendered-local/
 config/k8s/frontend/rendered-local/
 
+# ---- Local tooling / scratch (do not commit) ----
+.claude/
+.venv_wsl/
+tmp_*.json
+*.old
+
 # Uncomment if you generate large model files locally
 # models/
 
