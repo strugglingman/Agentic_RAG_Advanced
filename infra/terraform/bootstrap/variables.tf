@@ -15,3 +15,8 @@ variable "environment" {
   type        = string
   default     = "dev"
 }
+
+variable "state_bucket_name" {
+  description = "Buket to save terraform state."
+  type        = string
+}
