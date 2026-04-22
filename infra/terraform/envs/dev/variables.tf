@@ -47,3 +47,17 @@ variable "redis_alarm_dimensions" {
     CacheClusterId = "agentic-rag-redis"
   }
 }
+
+variable "redis_engine_alarm_dimensions" {
+  description = "Dimensions map for Redis engine CPU alarm metric in your environment."
+  type        = map(string)
+  default = {
+    CacheName = "agentic-rag-redis"
+  }
+}
+
+variable "eks_namespace" {
+  description = "Kubernetes namespace used for pod restart alarm."
+  type        = string
+  default     = "agentic-rag"
+}

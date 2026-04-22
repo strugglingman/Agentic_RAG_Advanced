@@ -30,3 +30,19 @@ variable "redis_alarm_dimensions" {
   description = "Dimension map for Redis alarm metric."
   type        = map(string)
 }
+
+variable "redis_engine_alarm_dimensions" {
+  description = "Dimension map for Redis engine CPU alarm metric."
+  type        = map(string)
+}
+
+variable "alarm_name_prefix" {
+  description = "Prefix for legacy CloudWatch alarm names."
+  type        = string
+}
+
+variable "eks_namespace" {
+  description = "Kubernetes namespace used for EKS pod restart alarm."
+  type        = string
+  default     = "agentic-rag"
+}
