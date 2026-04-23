@@ -175,3 +175,269 @@ variable "ecr_frontend_repo_name" {
   type        = string
   default     = "agentic-rag-frontend"
 }
+
+variable "enable_eks" {
+  description = "Whether to manage EKS resources with Terraform."
+  type        = bool
+  default     = false
+}
+
+variable "eks_cluster_name" {
+  description = "EKS cluster name."
+  type        = string
+  default     = "agentic-rag-eks"
+}
+
+variable "eks_cluster_version" {
+  description = "EKS Kubernetes version."
+  type        = string
+  default     = "1.35"
+}
+
+variable "eks_tags" {
+  description = "Common tags for EKS nodegroup/addon/pod-identity resources. Default empty for no-op adoption."
+  type        = map(string)
+  default     = {}
+}
+
+variable "eks_cluster_tags" {
+  description = "Tags for EKS cluster resource. Keep existing legacy tags during adoption."
+  type        = map(string)
+  default = {
+    "alpha.eksctl.io/cluster-oidc-enabled" = "true"
+  }
+}
+
+variable "eks_cluster_bootstrap_self_managed_addons" {
+  description = "Whether EKS cluster bootstraps self-managed addons."
+  type        = bool
+  default     = false
+}
+
+variable "eks_cluster_role_arn" {
+  description = "EKS control plane role ARN. Leave empty to reuse IAM module output."
+  type        = string
+  default     = "arn:aws:iam::543035741679:role/agentic-rag-eks-cluster-role"
+}
+
+variable "eks_cluster_subnet_ids" {
+  description = "Subnet IDs used by the EKS cluster."
+  type        = list(string)
+  default = [
+    "subnet-0f9fa5b7cd7170e81",
+    "subnet-05159408d4ed93c97",
+    "subnet-078fedfabcf3ff892",
+  ]
+}
+
+variable "eks_cluster_endpoint_public_access" {
+  description = "Whether the EKS API endpoint is publicly accessible."
+  type        = bool
+  default     = true
+}
+
+variable "eks_cluster_endpoint_private_access" {
+  description = "Whether the EKS API endpoint is privately accessible."
+  type        = bool
+  default     = true
+}
+
+variable "eks_cluster_public_access_cidrs" {
+  description = "Public CIDR allow-list for EKS API endpoint."
+  type        = list(string)
+  default = [
+    "0.0.0.0/0",
+  ]
+}
+
+variable "eks_cluster_authentication_mode" {
+  description = "EKS cluster authentication mode."
+  type        = string
+  default     = "API"
+}
+
+variable "eks_cluster_bootstrap_admin_permissions" {
+  description = "Whether creator bootstrap admin permissions are enabled."
+  type        = bool
+  default     = true
+}
+
+variable "eks_cluster_ip_family" {
+  description = "EKS cluster IP family."
+  type        = string
+  default     = "ipv4"
+}
+
+variable "eks_cluster_upgrade_support_type" {
+  description = "EKS upgrade support type."
+  type        = string
+  default     = "STANDARD"
+}
+
+variable "eks_cluster_zonal_shift_enabled" {
+  description = "Whether EKS zonal shift is enabled."
+  type        = bool
+  default     = false
+}
+
+variable "eks_cluster_enabled_log_types" {
+  description = "Control-plane logs to enable. Empty means disabled."
+  type        = list(string)
+  default     = []
+}
+
+variable "enable_eks_nodegroup" {
+  description = "Whether to manage the EKS managed node group."
+  type        = bool
+  default     = false
+}
+
+variable "eks_nodegroup_name" {
+  description = "Managed node group name."
+  type        = string
+  default     = "agentic-rag-general-ng"
+}
+
+variable "eks_node_role_arn" {
+  description = "EKS managed node group role ARN. Leave empty to reuse IAM module output."
+  type        = string
+  default     = "arn:aws:iam::543035741679:role/agentic-rag-eks-node-role"
+}
+
+variable "eks_nodegroup_subnet_ids" {
+  description = "Subnets used by EKS node group."
+  type        = list(string)
+  default = [
+    "subnet-0f9fa5b7cd7170e81",
+    "subnet-05159408d4ed93c97",
+    "subnet-078fedfabcf3ff892",
+  ]
+}
+
+variable "eks_nodegroup_capacity_type" {
+  description = "EKS node group capacity type."
+  type        = string
+  default     = "ON_DEMAND"
+}
+
+variable "eks_nodegroup_ami_type" {
+  description = "EKS node group AMI type."
+  type        = string
+  default     = "AL2023_x86_64_STANDARD"
+}
+
+variable "eks_nodegroup_instance_types" {
+  description = "EKS node group instance types."
+  type        = list(string)
+  default = [
+    "t3.medium",
+  ]
+}
+
+variable "eks_nodegroup_disk_size" {
+  description = "EKS node group root volume size (GiB)."
+  type        = number
+  default     = 30
+}
+
+variable "eks_nodegroup_min_size" {
+  description = "EKS node group min size."
+  type        = number
+  default     = 0
+}
+
+variable "eks_nodegroup_max_size" {
+  description = "EKS node group max size."
+  type        = number
+  default     = 1
+}
+
+variable "eks_nodegroup_desired_size" {
+  description = "EKS node group desired size."
+  type        = number
+  default     = 0
+}
+
+variable "eks_nodegroup_update_max_unavailable" {
+  description = "Maximum unavailable nodes during node group update."
+  type        = number
+  default     = 1
+}
+
+variable "eks_nodegroup_repair_enabled" {
+  description = "Whether node group repair is enabled."
+  type        = bool
+  default     = true
+}
+
+variable "enable_eks_ebs_csi_addon" {
+  description = "Whether to manage aws-ebs-csi-driver addon."
+  type        = bool
+  default     = false
+}
+
+variable "eks_ebs_csi_addon_version" {
+  description = "Optional aws-ebs-csi-driver addon version."
+  type        = string
+  default     = null
+}
+
+variable "enable_eks_cloudwatch_observability_addon" {
+  description = "Whether to manage amazon-cloudwatch-observability addon."
+  type        = bool
+  default     = false
+}
+
+variable "eks_cloudwatch_observability_addon_version" {
+  description = "Optional amazon-cloudwatch-observability addon version."
+  type        = string
+  default     = null
+}
+
+variable "enable_eks_ebs_csi_pod_identity_association" {
+  description = "Whether to manage EBS CSI pod identity association."
+  type        = bool
+  default     = false
+}
+
+variable "eks_ebs_csi_pod_identity_namespace" {
+  description = "Namespace for EBS CSI pod identity."
+  type        = string
+  default     = "kube-system"
+}
+
+variable "eks_ebs_csi_pod_identity_service_account" {
+  description = "Service account for EBS CSI pod identity."
+  type        = string
+  default     = "ebs-csi-controller-sa"
+}
+
+variable "eks_ebs_csi_role_arn" {
+  description = "Role ARN for EBS CSI pod identity. Leave empty to reuse IAM module output."
+  type        = string
+  default     = "arn:aws:iam::543035741679:role/AmazonEKSPodIdentityAmazonEBSCSIDriverRole"
+}
+
+variable "enable_eks_cloudwatch_pod_identity_association" {
+  description = "Whether to manage CloudWatch pod identity association."
+  type        = bool
+  default     = false
+}
+
+variable "eks_cloudwatch_pod_identity_namespace" {
+  description = "Namespace for CloudWatch pod identity."
+  type        = string
+  default     = "amazon-cloudwatch"
+}
+
+variable "eks_cloudwatch_pod_identity_service_account" {
+  description = "Service account for CloudWatch pod identity."
+  type        = string
+  default     = "cloudwatch-agent"
+}
+
+variable "eks_cloudwatch_observability_role_arn" {
+  description = "Role ARN for CloudWatch pod identity. Leave empty to reuse IAM module output."
+  type        = string
+  default     = ""
+}
