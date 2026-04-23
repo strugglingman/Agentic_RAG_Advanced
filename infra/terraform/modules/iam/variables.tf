@@ -1,83 +1,23 @@
-variable "aws_region" {
-  description = "AWS region for dev environment."
-  type        = string
-  default     = "eu-north-1"
-}
-
-variable "project_name" {
-  description = "Project name."
-  type        = string
-  default     = "agentic-rag"
-}
-
-variable "environment" {
-  description = "Environment name."
-  type        = string
-  default     = "dev"
-}
-
-variable "enable_monitoring" {
-  description = "Whether to manage monitoring resources in this environment."
+﻿variable "enabled" {
+  description = "Whether to manage IAM resources. Keep false until import/apply is intentionally planned."
   type        = bool
   default     = false
 }
 
-variable "sns_topic_name" {
-  description = "SNS topic name for infrastructure alerts."
-  type        = string
-  default     = "agentic-rag-alerts"
-}
-
-variable "alert_email_endpoint" {
-  description = "Optional email endpoint for SNS subscription."
-  type        = string
-  default     = ""
-}
-
-variable "rds_instance_identifier" {
-  description = "Existing RDS DBInstanceIdentifier."
-  type        = string
-  default     = "agentic-rag-postgres"
-}
-
-variable "redis_alarm_dimensions" {
-  description = "Dimensions map for Redis alarm metric in your environment."
+variable "tags" {
+  description = "Common tags."
   type        = map(string)
-  default = {
-    CacheClusterId = "agentic-rag-redis"
-  }
-}
-
-variable "redis_engine_alarm_dimensions" {
-  description = "Dimensions map for Redis engine CPU alarm metric in your environment."
-  type        = map(string)
-  default = {
-    CacheName = "agentic-rag-redis"
-  }
-}
-
-variable "eks_namespace" {
-  description = "Kubernetes namespace used for pod restart alarm."
-  type        = string
-  default     = "agentic-rag"
-}
-
-variable "enable_iam" {
-  description = "Whether to manage IAM resources in this environment. Keep false until import is planned."
-  type        = bool
-  default     = false
+  default     = {}
 }
 
 variable "aws_account_id" {
-  description = "AWS account ID used for account-scoped IAM policy ARNs."
+  description = "AWS account ID used for account-scoped policy ARNs."
   type        = string
-  default     = "543035741679"
 }
 
-variable "iam_tags" {
-  description = "Tags for IAM resources. Defaults to empty to preserve imported IAM no-op plans; add tags as a separate governance change."
-  type        = map(string)
-  default     = {}
+variable "aws_region" {
+  description = "AWS region used for regional policy ARNs."
+  type        = string
 }
 
 variable "eks_cluster_role_name" {
