@@ -1,4 +1,4 @@
-﻿variable "enabled" {
+variable "enabled" {
   description = "Whether to manage IAM resources. Keep false until import/apply is intentionally planned."
   type        = bool
   default     = false

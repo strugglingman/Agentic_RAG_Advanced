@@ -77,10 +77,10 @@ resource "aws_cloudwatch_metric_alarm" "eks_pod_restart_high" {
     Namespace = var.eks_namespace
   }
 
-  alarm_actions = [aws_sns_topic.alerts[0].arn]
-  ok_actions    = []
+  alarm_actions             = [aws_sns_topic.alerts[0].arn]
+  ok_actions                = []
   insufficient_data_actions = []
-  tags          = var.tags
+  tags                      = var.tags
 }
 
 resource "aws_cloudwatch_metric_alarm" "rds_storage_low" {
@@ -128,5 +128,5 @@ resource "aws_cloudwatch_metric_alarm" "redis_engine_cpu_high" {
   alarm_actions             = [aws_sns_topic.alerts[0].arn]
   ok_actions                = []
   insufficient_data_actions = []
-  tags          = var.tags
+  tags                      = var.tags
 }
