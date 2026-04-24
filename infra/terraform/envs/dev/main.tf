@@ -124,6 +124,18 @@ module "security_groups" {
   elasticache_tags          = var.elasticache_security_group_tags
   elasticache_ingress_rules = var.elasticache_security_group_ingress_rules
   elasticache_egress_rules  = var.elasticache_security_group_egress_rules
+
+  enable_eks_cluster_security_group = var.enable_eks_cluster_security_group
+  eks_cluster_name                  = var.eks_cluster_security_group_name
+  eks_cluster_description           = var.eks_cluster_security_group_description
+  eks_cluster_tags                  = var.eks_cluster_security_group_tags
+  eks_cluster_ingress_rules         = var.eks_cluster_security_group_ingress_rules
+  eks_cluster_egress_rules          = var.eks_cluster_security_group_egress_rules
+
+  enable_default_vpc_security_group = var.enable_default_vpc_security_group
+  default_vpc_ingress_rules         = var.default_vpc_security_group_ingress_rules
+  default_vpc_egress_rules          = var.default_vpc_security_group_egress_rules
+  default_vpc_tags                  = var.default_vpc_security_group_tags
 }
 
 module "network_baseline" {

@@ -610,6 +610,179 @@ variable "elasticache_security_group_egress_rules" {
   ]
 }
 
+variable "enable_eks_cluster_security_group" {
+  description = "Whether to manage the imported EKS cluster security group."
+  type        = bool
+  default     = false
+}
+
+variable "eks_cluster_security_group_name" {
+  description = "EKS cluster security group name."
+  type        = string
+  default     = "eks-cluster-sg-agentic-rag-eks-788520854"
+}
+
+variable "eks_cluster_security_group_description" {
+  description = "EKS cluster security group description."
+  type        = string
+  default     = "EKS created security group applied to ENI that is attached to EKS Control Plane master nodes, as well as any managed workloads."
+}
+
+variable "eks_cluster_security_group_tags" {
+  description = "Tags for EKS cluster security group."
+  type        = map(string)
+  default = {
+    Name                                    = "eks-cluster-sg-agentic-rag-eks-788520854"
+    "kubernetes.io/cluster/agentic-rag-eks" = "owned"
+  }
+}
+
+variable "eks_cluster_security_group_ingress_rules" {
+  description = "Ingress rules for EKS cluster security group."
+  type = list(object({
+    description      = string
+    from_port        = number
+    to_port          = number
+    protocol         = string
+    cidr_blocks      = list(string)
+    ipv6_cidr_blocks = list(string)
+    prefix_list_ids  = list(string)
+    security_groups  = list(string)
+    self             = bool
+  }))
+  default = [
+    {
+      description      = "Allows EFA traffic, which is not matched by CIDR rules."
+      from_port        = 0
+      to_port          = 0
+      protocol         = "-1"
+      cidr_blocks      = []
+      ipv6_cidr_blocks = []
+      prefix_list_ids  = []
+      security_groups  = []
+      self             = true
+    },
+    {
+      description      = "elbv2.k8s.aws/targetGroupBinding=shared"
+      from_port        = 3000
+      to_port          = 3000
+      protocol         = "tcp"
+      cidr_blocks      = []
+      ipv6_cidr_blocks = []
+      prefix_list_ids  = []
+      security_groups  = ["sg-04e2d6ea7fa2571c6"]
+      self             = false
+    },
+  ]
+}
+
+variable "eks_cluster_security_group_egress_rules" {
+  description = "Egress rules for EKS cluster security group."
+  type = list(object({
+    description      = string
+    from_port        = number
+    to_port          = number
+    protocol         = string
+    cidr_blocks      = list(string)
+    ipv6_cidr_blocks = list(string)
+    prefix_list_ids  = list(string)
+    security_groups  = list(string)
+    self             = bool
+  }))
+  default = [
+    {
+      description      = ""
+      from_port        = 0
+      to_port          = 0
+      protocol         = "-1"
+      cidr_blocks      = ["0.0.0.0/0"]
+      ipv6_cidr_blocks = []
+      prefix_list_ids  = []
+      security_groups  = []
+      self             = false
+    },
+    {
+      description      = "Allows EFA traffic, which is not matched by CIDR rules."
+      from_port        = 0
+      to_port          = 0
+      protocol         = "-1"
+      cidr_blocks      = []
+      ipv6_cidr_blocks = []
+      prefix_list_ids  = []
+      security_groups  = []
+      self             = true
+    },
+  ]
+}
+
+variable "enable_default_vpc_security_group" {
+  description = "Whether to manage the default VPC security group."
+  type        = bool
+  default     = false
+}
+
+variable "default_vpc_security_group_ingress_rules" {
+  description = "Ingress rules for default VPC security group."
+  type = list(object({
+    description      = string
+    from_port        = number
+    to_port          = number
+    protocol         = string
+    cidr_blocks      = list(string)
+    ipv6_cidr_blocks = list(string)
+    prefix_list_ids  = list(string)
+    security_groups  = list(string)
+    self             = bool
+  }))
+  default = [
+    {
+      description      = ""
+      from_port        = 0
+      to_port          = 0
+      protocol         = "-1"
+      cidr_blocks      = []
+      ipv6_cidr_blocks = []
+      prefix_list_ids  = []
+      security_groups  = []
+      self             = true
+    },
+  ]
+}
+
+variable "default_vpc_security_group_egress_rules" {
+  description = "Egress rules for default VPC security group."
+  type = list(object({
+    description      = string
+    from_port        = number
+    to_port          = number
+    protocol         = string
+    cidr_blocks      = list(string)
+    ipv6_cidr_blocks = list(string)
+    prefix_list_ids  = list(string)
+    security_groups  = list(string)
+    self             = bool
+  }))
+  default = [
+    {
+      description      = ""
+      from_port        = 0
+      to_port          = 0
+      protocol         = "-1"
+      cidr_blocks      = ["0.0.0.0/0"]
+      ipv6_cidr_blocks = []
+      prefix_list_ids  = []
+      security_groups  = []
+      self             = false
+    },
+  ]
+}
+
+variable "default_vpc_security_group_tags" {
+  description = "Tags for default VPC security group."
+  type        = map(string)
+  default     = {}
+}
+
 variable "enable_network_baseline" {
   description = "Whether to manage imported default VPC baseline resources (VPC/subnets/IGW/main route table)."
   type        = bool
