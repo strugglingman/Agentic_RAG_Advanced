@@ -17,10 +17,7 @@ redis_alarm_dimensions = {
   CacheClusterId = "agentic-rag-redis"
 }
 
-<<<<<<< HEAD
 # Dimensions for EngineCPUUtilization alarm (legacy alarm parity).
-=======
->>>>>>> e560c7f1192b79cac3065e37aa1bffa9aa83236b
 redis_engine_alarm_dimensions = {
   CacheName = "agentic-rag-redis"
 }
@@ -122,6 +119,8 @@ s3_backup_lifecycle_expiration_days           = 30
 
 # Week 7 default is false to keep security group migration import-first and reviewable.
 enable_security_groups = false
+enable_eks_cluster_security_group = false
+enable_default_vpc_security_group = false
 
 # Week 8 default is false to keep default VPC baseline migration import-first and reviewable.
 enable_network_baseline = false
