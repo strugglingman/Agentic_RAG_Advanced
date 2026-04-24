@@ -1,4 +1,4 @@
-﻿data "aws_iam_policy_document" "eks_cluster_assume_role" {
+data "aws_iam_policy_document" "eks_cluster_assume_role" {
   statement {
     effect  = "Allow"
     actions = ["sts:AssumeRole"]
@@ -187,19 +187,19 @@ resource "aws_iam_role_policy_attachment" "aws_managed" {
 resource "aws_iam_policy" "s3_backup" {
   count = var.enabled ? 1 : 0
 
-  name   = var.s3_backup_policy_name
+  name        = var.s3_backup_policy_name
   description = var.s3_backup_policy_description
-  policy = data.aws_iam_policy_document.s3_backup.json
-  tags   = var.tags
+  policy      = data.aws_iam_policy_document.s3_backup.json
+  tags        = var.tags
 }
 
 resource "aws_iam_policy" "ecr_push" {
   count = var.enabled ? 1 : 0
 
-  name   = var.ecr_push_policy_name
+  name        = var.ecr_push_policy_name
   description = var.ecr_push_policy_description
-  policy = data.aws_iam_policy_document.ecr_push.json
-  tags   = var.tags
+  policy      = data.aws_iam_policy_document.ecr_push.json
+  tags        = var.tags
 }
 
 resource "aws_iam_role_policy_attachment" "ec2_s3_backup" {

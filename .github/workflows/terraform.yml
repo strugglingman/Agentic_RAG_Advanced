@@ -1,0 +1,112 @@
+name: Terraform
+
+on:
+  pull_request:
+    paths:
+      - "infra/terraform/**"
+      - ".github/workflows/terraform.yml"
+      - "infra/terraform/README.md"
+      - "TERRAFORM_DEPLOYMENT.md"
+      - "docs/TERRAFORM_10_WEEK_EXECUTION_PLAN.md"
+  push:
+    branches: [main, master]
+    paths:
+      - "infra/terraform/**"
+      - ".github/workflows/terraform.yml"
+  workflow_dispatch:
+    inputs:
+      run_plan:
+        description: "Run speculative plan jobs"
+        required: false
+        default: "true"
+
+permissions:
+  contents: read
+
+jobs:
+  fmt_validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.8.5"
+
+      - name: Terraform fmt (check)
+        run: terraform -chdir=infra/terraform fmt -check -recursive
+
+      - name: Bootstrap init/validate (backend disabled)
+        run: |
+          terraform -chdir=infra/terraform/bootstrap init -backend=false -input=false
+          terraform -chdir=infra/terraform/bootstrap validate
+
+      - name: Dev init/validate (backend disabled)
+        run: |
+          terraform -chdir=infra/terraform/envs/dev init -backend=false -input=false
+          terraform -chdir=infra/terraform/envs/dev validate
+
+  iac_security_scan:
+    needs: fmt_validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install Checkov
+        run: |
+          python -m pip install --upgrade pip
+          pip install checkov
+
+      - name: Run Checkov scan (informational)
+        run: checkov -d infra/terraform --framework terraform --soft-fail
+
+  speculative_plan:
+    needs: [fmt_validate, iac_security_scan]
+    if: github.event_name != 'workflow_dispatch' || github.event.inputs.run_plan == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.8.5"
+
+      - name: Bootstrap speculative plan
+        run: |
+          terraform -chdir=infra/terraform/bootstrap init -backend=false -input=false
+          terraform -chdir=infra/terraform/bootstrap plan \
+            -input=false \
+            -lock=false \
+            -refresh=false \
+            -no-color \
+            -var "state_bucket_name=ci-tfstate-placeholder-012345678901-eu-north-1" \
+            > bootstrap-plan.txt
+
+      - name: Dev speculative plan (example vars)
+        run: |
+          terraform -chdir=infra/terraform/envs/dev init -backend=false -input=false
+          terraform -chdir=infra/terraform/envs/dev plan \
+            -input=false \
+            -lock=false \
+            -refresh=false \
+            -no-color \
+            -var-file=terraform.tfvars.example \
+            > dev-plan.txt
+
+      - name: Upload plan artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-speculative-plans
+          path: |
+            bootstrap-plan.txt
+            dev-plan.txt

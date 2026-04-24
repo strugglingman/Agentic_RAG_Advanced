@@ -1,9 +1,9 @@
 resource "aws_eks_cluster" "this" {
   count = var.enabled ? 1 : 0
 
-  name     = var.cluster_name
-  role_arn = var.cluster_role_arn
-  version  = var.cluster_version
+  name                          = var.cluster_name
+  role_arn                      = var.cluster_role_arn
+  version                       = var.cluster_version
   bootstrap_self_managed_addons = var.cluster_bootstrap_self_managed_addons
 
   vpc_config {
@@ -66,10 +66,10 @@ resource "aws_eks_node_group" "this" {
 resource "aws_eks_addon" "ebs_csi" {
   count = var.enabled && var.enable_ebs_csi_addon ? 1 : 0
 
-  cluster_name      = aws_eks_cluster.this[0].name
-  addon_name        = "aws-ebs-csi-driver"
-  addon_version     = var.ebs_csi_addon_version
-  tags              = length(var.tags) > 0 ? var.tags : null
+  cluster_name  = aws_eks_cluster.this[0].name
+  addon_name    = "aws-ebs-csi-driver"
+  addon_version = var.ebs_csi_addon_version
+  tags          = length(var.tags) > 0 ? var.tags : null
 
   dynamic "pod_identity_association" {
     for_each = var.enable_ebs_csi_pod_identity_association && var.ebs_csi_pod_identity_role_arn != "" ? [1] : []
@@ -83,10 +83,10 @@ resource "aws_eks_addon" "ebs_csi" {
 resource "aws_eks_addon" "cloudwatch_observability" {
   count = var.enabled && var.enable_cloudwatch_observability_addon ? 1 : 0
 
-  cluster_name      = aws_eks_cluster.this[0].name
-  addon_name        = "amazon-cloudwatch-observability"
-  addon_version     = var.cloudwatch_observability_addon_version
-  tags              = length(var.tags) > 0 ? var.tags : null
+  cluster_name  = aws_eks_cluster.this[0].name
+  addon_name    = "amazon-cloudwatch-observability"
+  addon_version = var.cloudwatch_observability_addon_version
+  tags          = length(var.tags) > 0 ? var.tags : null
 
   dynamic "pod_identity_association" {
     for_each = var.enable_cloudwatch_pod_identity_association && var.cloudwatch_pod_identity_role_arn != "" ? [1] : []

@@ -16,3 +16,158 @@ rds_instance_identifier  = "agentic-rag-postgres"
 redis_alarm_dimensions = {
   CacheClusterId = "agentic-rag-redis"
 }
+
+redis_engine_alarm_dimensions = {
+  CacheName = "agentic-rag-redis"
+}
+
+eks_namespace = "agentic-rag"
+
+# Week 4 default is false to keep IAM migration import-first and reviewable.
+enable_iam = false
+
+aws_account_id = "543035741679"
+iam_tags       = {}
+
+eks_cluster_role_name                    = "agentic-rag-eks-cluster-role"
+eks_node_role_name                       = "agentic-rag-eks-node-role"
+eks_ebs_csi_role_name                    = "AmazonEKSPodIdentityAmazonEBSCSIDriverRole"
+eks_cloudwatch_observability_role_name   = "agentic-rag-eks-cloudwatch-observability-role"
+enable_eks_ebs_csi_role                  = true
+enable_eks_cloudwatch_observability_role = false
+
+ec2_backup_role_name        = "agentic-rag-ec2-s3-backup-role"
+ec2_backup_role_description = "Allow the Agentic RAG EC2 instance to upload, download, list, and delete PostgreSQL backup files in the backup S3 bucket."
+ec2_instance_profile_name   = "agentic-rag-ec2-s3-backup-role"
+
+s3_backup_policy_name        = "agentic-rag-s3-backup-policy"
+s3_backup_policy_description = "Allow EC2 to list, upload, download, and delete PostgreSQL backup files in the agentic-rag backup bucket."
+ecr_push_policy_name         = "agentic-rag-ecr-push-policy"
+ecr_push_policy_description  = "Allow the EC2 deployment host to authenticate to ECR and push frontend and backend images for the Agentic RAG project."
+
+s3_backup_bucket_name  = "agentic-rag-adv-s3-543035741679-eu-north-1-an"
+ecr_backend_repo_name  = "agentic-rag-backend"
+ecr_frontend_repo_name = "agentic-rag-frontend"
+
+# Week 6 default is false to keep ECR migration import-first and reviewable.
+enable_ecr = false
+
+ecr_image_tag_mutability = "MUTABLE"
+ecr_scan_on_push         = false
+ecr_encryption_type      = "AES256"
+ecr_kms_key              = null
+ecr_force_delete         = false
+ecr_tags                 = {}
+
+# Week 6 default is false to keep backup S3 bucket migration import-first and reviewable.
+enable_s3_backup_bucket = false
+
+s3_backup_force_destroy                       = false
+s3_backup_tags                                = {}
+s3_backup_manage_public_access_block          = true
+s3_backup_block_public_acls                   = true
+s3_backup_ignore_public_acls                  = true
+s3_backup_block_public_policy                 = true
+s3_backup_restrict_public_buckets             = true
+s3_backup_manage_server_side_encryption       = true
+s3_backup_bucket_key_enabled                  = true
+s3_backup_sse_algorithm                       = "AES256"
+s3_backup_kms_master_key_id                   = null
+s3_backup_manage_ownership_controls           = true
+s3_backup_object_ownership                    = "BucketOwnerEnforced"
+s3_backup_manage_lifecycle_configuration      = true
+s3_backup_transition_default_minimum_object_size = "all_storage_classes_128K"
+s3_backup_lifecycle_rule_id                   = "expire-postgres-backups-after-30-days"
+s3_backup_lifecycle_prefix                    = "postgres/"
+s3_backup_lifecycle_expiration_days           = 30
+
+# Week 7 default is false to keep security group migration import-first and reviewable.
+enable_security_groups = false
+
+# Week 8 default is false to keep default VPC baseline migration import-first and reviewable.
+enable_network_baseline = false
+
+# Week 6 default is false to keep EC2 migration import-first and reviewable.
+enable_ec2 = false
+
+ec2_ami_id                    = "ami-080254318c2d8932f"
+ec2_instance_type             = "t3.small"
+ec2_subnet_id                 = "subnet-078fedfabcf3ff892"
+ec2_vpc_security_group_ids    = ["sg-0b1650f56582fdff7"]
+ec2_key_name                  = "agentic-rag-eun"
+ec2_iam_instance_profile_name = "agentic-rag-ec2-s3-backup-role"
+ec2_monitoring                = false
+ec2_ebs_optimized             = true
+ec2_metadata_http_endpoint    = "enabled"
+ec2_metadata_http_tokens      = "required"
+ec2_metadata_http_put_response_hop_limit = 2
+ec2_root_block_device_delete_on_termination = true
+ec2_root_block_device_volume_size           = 30
+ec2_root_block_device_volume_type           = "gp3"
+ec2_root_block_device_iops                  = 3000
+ec2_root_block_device_throughput            = 125
+ec2_tags = {
+  Name = "agentic-rag"
+}
+
+# Week 6 default is false to keep RDS migration import-first and reviewable.
+enable_rds = false
+
+rds_engine                = "postgres"
+rds_engine_version        = "15.17"
+rds_instance_class        = "db.t4g.micro"
+rds_db_name               = "chatbot"
+rds_master_username       = "postgres"
+rds_master_password       = null
+rds_port                  = 5432
+rds_allocated_storage     = 20
+rds_max_allocated_storage = 1000
+rds_storage_type          = "gp3"
+rds_iops                  = 3000
+rds_storage_throughput    = 125
+rds_storage_encrypted     = true
+rds_kms_key_id            = "arn:aws:kms:eu-north-1:543035741679:key/458f3d51-30d6-4052-9475-91f9923e4427"
+rds_db_subnet_group_name  = "default-vpc-04fbc127649e7f25e"
+rds_vpc_security_group_ids = ["sg-022a4409eb6f0ea18"]
+rds_parameter_group_name  = "default.postgres15"
+rds_publicly_accessible   = false
+rds_multi_az              = false
+rds_auto_minor_version_upgrade          = true
+rds_backup_retention_period             = 1
+rds_backup_window                       = "03:38-04:08"
+rds_maintenance_window                  = "sun:23:42-mon:00:12"
+rds_copy_tags_to_snapshot               = true
+rds_deletion_protection                 = false
+rds_monitoring_interval                 = 0
+rds_performance_insights_enabled        = false
+rds_iam_database_authentication_enabled = false
+rds_ca_cert_identifier                  = "rds-ca-rsa2048-g1"
+rds_network_type                        = "IPV4"
+rds_apply_immediately                   = false
+rds_skip_final_snapshot                 = true
+rds_tags                                = {}
+
+# Week 6 default is false to keep ElastiCache migration import-first and reviewable.
+enable_elasticache = false
+
+elasticache_serverless_cache_name  = "agentic-rag-redis"
+elasticache_engine                 = "valkey"
+elasticache_major_engine_version   = "8"
+elasticache_description            = " "
+elasticache_kms_key_id             = null
+elasticache_user_group_id          = null
+elasticache_security_group_ids     = ["sg-019b31f41c90538b6"]
+elasticache_subnet_ids             = ["subnet-078fedfabcf3ff892", "subnet-05159408d4ed93c97"]
+elasticache_snapshot_retention_limit = 0
+elasticache_daily_snapshot_time    = "03:30"
+elasticache_tags                   = {}
+
+# Week 7 default is false to keep ACM migration import-first and reviewable.
+enable_acm = false
+
+acm_certificate_domain_name               = "wxwlabs.pro"
+acm_certificate_subject_alternative_names = ["www.wxwlabs.pro"]
+acm_validation_method                     = "DNS"
+acm_key_algorithm                         = "RSA_2048"
+acm_certificate_transparency_logging_preference = "ENABLED"
+acm_tags                                  = {}

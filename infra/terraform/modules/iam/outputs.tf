@@ -1,4 +1,4 @@
-﻿output "role_arns" {
+output "role_arns" {
   description = "IAM role ARNs keyed by logical role name."
   value       = { for key, role in aws_iam_role.this : key => role.arn }
 }
