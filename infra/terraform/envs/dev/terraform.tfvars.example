@@ -16,3 +16,45 @@ rds_instance_identifier  = "agentic-rag-postgres"
 redis_alarm_dimensions = {
   CacheClusterId = "agentic-rag-redis"
 }
+
+# Dimensions for EngineCPUUtilization alarm (legacy alarm parity).
+redis_engine_alarm_dimensions = {
+  CacheName = "agentic-rag-redis"
+}
+
+# Namespace used by ContainerInsights pod restart alarm.
+eks_namespace = "agentic-rag"
+
+# EKS module (all disabled by default for safe rollout).
+enable_eks = false
+enable_eks_nodegroup = false
+enable_eks_ebs_csi_addon = false
+enable_eks_cloudwatch_observability_addon = false
+enable_eks_ebs_csi_pod_identity_association = false
+enable_eks_cloudwatch_pod_identity_association = false
+
+eks_cluster_name    = "agentic-rag-eks"
+eks_cluster_version = "1.35"
+eks_cluster_bootstrap_self_managed_addons = false
+eks_tags = {}
+eks_cluster_tags = {
+  "alpha.eksctl.io/cluster-oidc-enabled" = "true"
+}
+eks_cluster_subnet_ids = [
+  "subnet-0f9fa5b7cd7170e81",
+  "subnet-05159408d4ed93c97",
+  "subnet-078fedfabcf3ff892",
+]
+eks_cluster_public_access_cidrs = ["0.0.0.0/0"]
+
+eks_nodegroup_name = "agentic-rag-general-ng"
+eks_nodegroup_subnet_ids = [
+  "subnet-0f9fa5b7cd7170e81",
+  "subnet-05159408d4ed93c97",
+  "subnet-078fedfabcf3ff892",
+]
+eks_nodegroup_instance_types = ["t3.medium"]
+eks_nodegroup_disk_size      = 30
+eks_nodegroup_min_size       = 0
+eks_nodegroup_max_size       = 1
+eks_nodegroup_desired_size   = 0
