@@ -37,7 +37,7 @@ locals {
       type     = upper(rec.type)
       content  = trimsuffix(rec.content, ".")
       ttl      = rec.ttl
-      priority = try(rec.priority, null)
+      priority = coalesce(rec.priority, 0)
       notes    = try(rec.notes, null)
     }
   }
@@ -48,12 +48,13 @@ locals {
 resource "porkbun_dns_record" "acm_validation" {
   for_each = var.manage_acm_validation_records ? local.acm_dns_records : {}
 
-  domain  = local.domain_normalized
-  name    = each.value.name
-  type    = each.value.type
-  content = each.value.content
-  ttl     = var.acm_validation_ttl
-  notes   = "Managed by Terraform for ACM DNS validation"
+  domain   = local.domain_normalized
+  name     = each.value.name
+  type     = each.value.type
+  content  = each.value.content
+  ttl      = var.acm_validation_ttl
+  priority = 0
+  notes    = "Managed by Terraform for ACM DNS validation"
 }
 
 resource "porkbun_dns_record" "app" {
