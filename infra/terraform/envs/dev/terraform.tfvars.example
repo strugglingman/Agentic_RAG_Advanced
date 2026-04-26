@@ -209,3 +209,39 @@ acm_validation_method                     = "DNS"
 acm_key_algorithm                         = "RSA_2048"
 acm_certificate_transparency_logging_preference = "ENABLED"
 acm_tags                                  = {}
+
+# Week 9 default is false to keep EKS access entries migration import-first and reviewable.
+enable_eks_access_entries = false
+
+eks_access_entries = {
+  account_root = {
+    principal_arn = "arn:aws:iam::543035741679:root"
+    type          = "STANDARD"
+    policy_associations = [
+      {
+        policy_arn        = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+        access_scope_type = "cluster"
+      }
+    ]
+  }
+
+  eks_service_linked_role = {
+    principal_arn = "arn:aws:iam::543035741679:role/aws-service-role/eks.amazonaws.com/AWSServiceRoleForAmazonEKS"
+    type          = "STANDARD"
+    policy_associations = [
+      {
+        policy_arn        = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterInsightsPolicy"
+        access_scope_type = "cluster"
+      },
+      {
+        policy_arn        = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSEventPolicy"
+        access_scope_type = "cluster"
+      }
+    ]
+  }
+
+  node_role = {
+    principal_arn = "arn:aws:iam::543035741679:role/agentic-rag-eks-node-role"
+    type          = "EC2_LINUX"
+  }
+}

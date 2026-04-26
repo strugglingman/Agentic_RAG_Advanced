@@ -324,3 +324,13 @@ module "eks" {
   cloudwatch_pod_identity_service_account    = var.eks_cloudwatch_pod_identity_service_account
   cloudwatch_pod_identity_role_arn           = local.eks_cw_role_arn_effective
 }
+
+module "eks_access" {
+  source = "../../modules/eks_access"
+
+  enabled        = var.enable_eks_access_entries
+  cluster_name   = var.eks_cluster_name
+  access_entries = var.eks_access_entries
+
+  depends_on = [module.eks]
+}

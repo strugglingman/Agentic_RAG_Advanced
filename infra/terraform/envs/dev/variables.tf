@@ -1605,3 +1605,26 @@ variable "eks_cloudwatch_observability_role_arn" {
   type        = string
   default     = ""
 }
+
+variable "enable_eks_access_entries" {
+  description = "Whether to manage EKS access entries and associated access policies."
+  type        = bool
+  default     = false
+}
+
+variable "eks_access_entries" {
+  description = "EKS access entries keyed by logical name."
+  type = map(object({
+    principal_arn     = string
+    type              = optional(string, "STANDARD")
+    kubernetes_groups = optional(list(string), [])
+    username          = optional(string, null)
+    tags              = optional(map(string), {})
+    policy_associations = optional(list(object({
+      policy_arn        = string
+      access_scope_type = optional(string, "cluster")
+      namespaces        = optional(list(string), [])
+    })), [])
+  }))
+  default = {}
+}
