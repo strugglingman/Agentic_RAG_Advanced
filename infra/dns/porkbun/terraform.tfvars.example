@@ -1,0 +1,33 @@
+aws_region      = "eu-north-1"
+domain          = "wxwlabs.pro"
+aws_state_bucket = "agentic-rag-tfstate-543035741679-eu-north-1"
+aws_state_key    = "envs/dev/terraform.tfstate"
+aws_state_region = "eu-north-1"
+
+# Use local-only tfvars (not committed) for real keys.
+porkbun_api_key        = "replace-me"
+porkbun_secret_api_key = "replace-me"
+
+manage_acm_validation_records   = true
+acm_validation_ttl              = 600
+enable_acm_certificate_validation = true
+
+# Point public hosts to your current ALB ingress address.
+# Example:
+# app_dns_records = [
+#   {
+#     name    = "www"
+#     type    = "CNAME"
+#     content = "k8s-agenticr-frontend-xxxx.eu-north-1.elb.amazonaws.com"
+#     ttl     = 600
+#     notes   = "Frontend ALB"
+#   },
+#   {
+#     name    = "api"
+#     type    = "CNAME"
+#     content = "k8s-agenticr-backend-xxxx.eu-north-1.elb.amazonaws.com"
+#     ttl     = 600
+#     notes   = "Backend ALB"
+#   }
+# ]
+app_dns_records = []

@@ -4,14 +4,17 @@ on:
   pull_request:
     paths:
       - "infra/terraform/**"
+      - "infra/dns/**"
       - ".github/workflows/terraform.yml"
       - "infra/terraform/README.md"
       - "TERRAFORM_DEPLOYMENT.md"
       - "docs/TERRAFORM_10_WEEK_EXECUTION_PLAN.md"
+      - "docs/TERRAFORM_DNS_EXTERNAL_PORKBUN.md"
   push:
     branches: [main, master]
     paths:
       - "infra/terraform/**"
+      - "infra/dns/**"
       - ".github/workflows/terraform.yml"
   workflow_dispatch:
     inputs:
@@ -38,6 +41,9 @@ jobs:
       - name: Terraform fmt (check)
         run: terraform -chdir=infra/terraform fmt -check -recursive
 
+      - name: DNS Terraform fmt (check)
+        run: terraform -chdir=infra/dns/porkbun fmt -check -recursive
+
       - name: Bootstrap init/validate (backend disabled)
         run: |
           terraform -chdir=infra/terraform/bootstrap init -backend=false -input=false
@@ -47,6 +53,11 @@ jobs:
         run: |
           terraform -chdir=infra/terraform/envs/dev init -backend=false -input=false
           terraform -chdir=infra/terraform/envs/dev validate
+
+      - name: Porkbun DNS init/validate (backend disabled)
+        run: |
+          terraform -chdir=infra/dns/porkbun init -backend=false -input=false
+          terraform -chdir=infra/dns/porkbun validate
 
   iac_security_scan:
     needs: fmt_validate
@@ -65,8 +76,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install checkov
 
-      - name: Run Checkov scan (informational)
-        run: checkov -d infra/terraform --framework terraform --soft-fail
+      - name: Run Checkov scan (high/critical gate)
+        run: |
+          checkov -d infra/terraform --framework terraform --check HIGH,CRITICAL
+          checkov -d infra/dns --framework terraform --check HIGH,CRITICAL
 
   speculative_plan:
     needs: [fmt_validate, iac_security_scan]
@@ -103,6 +116,21 @@ jobs:
             -var-file=terraform.tfvars.example \
             > dev-plan.txt
 
+      - name: Porkbun DNS speculative plan (CI placeholders)
+        run: |
+          terraform -chdir=infra/dns/porkbun init -backend=false -input=false
+          terraform -chdir=infra/dns/porkbun plan \
+            -input=false \
+            -lock=false \
+            -refresh=false \
+            -no-color \
+            -var "domain=example.com" \
+            -var "porkbun_api_key=ci-placeholder" \
+            -var "porkbun_secret_api_key=ci-placeholder" \
+            -var "manage_acm_validation_records=false" \
+            -var "enable_acm_certificate_validation=false" \
+            > dns-plan.txt
+
       - name: Upload plan artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -110,3 +138,4 @@ jobs:
           path: |
             bootstrap-plan.txt
             dev-plan.txt
+            dns-plan.txt
