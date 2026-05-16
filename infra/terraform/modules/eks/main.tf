@@ -72,7 +72,7 @@ resource "aws_eks_addon" "ebs_csi" {
   tags          = length(var.tags) > 0 ? var.tags : null
 
   dynamic "pod_identity_association" {
-    for_each = var.enable_ebs_csi_pod_identity_association && var.ebs_csi_pod_identity_role_arn != "" ? [1] : []
+    for_each = var.enable_ebs_csi_pod_identity_association ? [1] : []
     content {
       role_arn        = var.ebs_csi_pod_identity_role_arn
       service_account = var.ebs_csi_pod_identity_service_account
@@ -89,7 +89,7 @@ resource "aws_eks_addon" "cloudwatch_observability" {
   tags          = length(var.tags) > 0 ? var.tags : null
 
   dynamic "pod_identity_association" {
-    for_each = var.enable_cloudwatch_pod_identity_association && var.cloudwatch_pod_identity_role_arn != "" ? [1] : []
+    for_each = var.enable_cloudwatch_pod_identity_association ? [1] : []
     content {
       role_arn        = var.cloudwatch_pod_identity_role_arn
       service_account = var.cloudwatch_pod_identity_service_account
@@ -98,21 +98,35 @@ resource "aws_eks_addon" "cloudwatch_observability" {
 }
 
 resource "aws_eks_pod_identity_association" "ebs_csi" {
-  count = var.enabled && var.enable_ebs_csi_pod_identity_association && var.ebs_csi_pod_identity_role_arn != "" ? 1 : 0
+  count = var.enabled && var.enable_ebs_csi_pod_identity_association ? 1 : 0
 
   cluster_name    = aws_eks_cluster.this[0].name
   namespace       = var.ebs_csi_pod_identity_namespace
   service_account = var.ebs_csi_pod_identity_service_account
   role_arn        = var.ebs_csi_pod_identity_role_arn
   tags            = length(var.tags) > 0 ? var.tags : null
+
+  lifecycle {
+    precondition {
+      condition     = var.ebs_csi_pod_identity_role_arn != ""
+      error_message = "ebs_csi_pod_identity_role_arn must be set when enable_ebs_csi_pod_identity_association=true."
+    }
+  }
 }
 
 resource "aws_eks_pod_identity_association" "cloudwatch" {
-  count = var.enabled && var.enable_cloudwatch_pod_identity_association && var.cloudwatch_pod_identity_role_arn != "" ? 1 : 0
+  count = var.enabled && var.enable_cloudwatch_pod_identity_association ? 1 : 0
 
   cluster_name    = aws_eks_cluster.this[0].name
   namespace       = var.cloudwatch_pod_identity_namespace
   service_account = var.cloudwatch_pod_identity_service_account
   role_arn        = var.cloudwatch_pod_identity_role_arn
   tags            = length(var.tags) > 0 ? var.tags : null
+
+  lifecycle {
+    precondition {
+      condition     = var.cloudwatch_pod_identity_role_arn != ""
+      error_message = "cloudwatch_pod_identity_role_arn must be set when enable_cloudwatch_pod_identity_association=true."
+    }
+  }
 }

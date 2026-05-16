@@ -1,0 +1,5 @@
+bucket       = "agentic-rag-tfstate-<account-id>-<region>"
+key          = "envs/greenfield-dev/terraform.tfstate"
+region       = "eu-north-1"
+encrypt      = true
+use_lockfile = true

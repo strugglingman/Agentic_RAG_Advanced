@@ -1,0 +1,11 @@
+[Unit]
+Description=Agentic RAG PostgreSQL backup and upload job
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/ubuntu/Agentic_RAG_Advanced
+ExecStart=/home/ubuntu/Agentic_RAG_Advanced/scripts/run_postgres_backup_maintenance.sh
+User=ubuntu
+Group=ubuntu

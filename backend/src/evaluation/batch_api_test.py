@@ -4,7 +4,7 @@ Batch API Test Runner - Test backend chat API like frontend does.
 This script:
 1. Generates a valid JWT token for authentication
 2. Sends queries to the backend /chat/agent endpoint (same as frontend)
-3. Parses streaming response including __CONTEXT__ data
+3. Parses SSE streaming response (text, hitl, context events)
 4. Analyzes results: answer quality, sources, decomposition usage
 5. Exports results to JSON for analysis
 

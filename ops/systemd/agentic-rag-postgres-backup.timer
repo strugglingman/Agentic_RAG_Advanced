@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Agentic RAG PostgreSQL backup and upload daily
+
+[Timer]
+OnCalendar=*-*-* 02:00:00
+Persistent=true
+Unit=agentic-rag-postgres-backup.service
+
+[Install]
+WantedBy=timers.target

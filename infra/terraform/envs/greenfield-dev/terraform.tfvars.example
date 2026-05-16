@@ -1,0 +1,32 @@
+aws_region   = "eu-north-1"
+aws_profile  = "sso-dev"
+project_name = "agentic-rag"
+environment  = "greenfield-dev"
+
+# Required when EKS public endpoint is enabled.
+eks_public_access_cidrs = [
+  "203.0.113.10/32"
+]
+
+# Required when enable_rds = true.
+rds_master_password = "REPLACE_WITH_STRONG_PASSWORD"
+
+# Add at least one admin principal if you want EKS access managed here.
+eks_admin_principal_arns = [
+  "arn:aws:iam::123456789012:role/aws-reserved/sso.amazonaws.com/eu-north-1/AWSReservedSSO_Dev-Terraform-Admin_xxxxxxxxxxxx"
+]
+
+# Optional: enable certificate request.
+# enable_acm       = true
+# acm_domain_name  = "example.com"
+# acm_subject_alternative_names = ["www.example.com"]
+
+# Optional: enable SNS email subscription for alerts.
+# enable_monitoring    = true
+# alert_email_endpoint = "alerts@example.com"
+
+# Optional: enable legacy EC2 host.
+# enable_legacy_ec2 = true
+# ec2_ami_id        = "ami-xxxxxxxxxxxxxxxxx"
+# ec2_key_name      = "your-keypair-name"
+# ec2_ingress_cidrs = ["203.0.113.10/32"]
